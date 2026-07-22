@@ -48,10 +48,13 @@ case "${FIXTURE_TYPE}" in
     issue_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
       --json state,labels,assignees,milestone,title)
     comments_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
-      | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
+      | jq '[(.comments // [])[] | {author: .author.login, body: .body, created_at: .createdAt}]')
     # Code agent post-script opens exactly one PR today; --limit 1 is enough.
     # Raise the limit (or filter by headRefName) if a future case opens multiple.
-    # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
+    # Issue view above is the primary fixture signal and fails fast under
+    # set -euo pipefail (no fallback) so a broken fetch never masquerades as
+    # an empty/valid issue. gh pr list below is supplementary context only,
+    # so it is allowed to fail without aborting the whole capture.
     if ! prs_json=$(gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 1 \
       --json number,title,url,state,headRefName,baseRefName 2>/dev/null); then
       echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO}; recording pull_requests=[]" >&2
