@@ -74,6 +74,7 @@ emit_env() {
   fi
   value="${value//\\/\\\\}"
   value="${value//\"/\\\"}"
+  value="${value//\$/\\\$}"
   printf '%s="%s"\n' "$name" "$value"
 }
 
