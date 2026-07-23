@@ -33,7 +33,7 @@ fetch_pr_files() {
   local attempt files=""
   for attempt in 1 2 3; do
     if files=$(gh pr view "$num" --repo "$EPHEMERAL_REPO" --json files \
-      --jq '[.files[].path]' 2>/dev/null); then
+      --jq '[(.files // [])[].path]' 2>/dev/null); then
       printf '%s' "$files"
       return 0
     fi
