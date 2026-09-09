@@ -137,47 +137,98 @@ Flapping detection applies to PR-based workflows with code/fix cycles.
 Resolve the target PR before gathering data:
 
 - If the retro originates from a PR, use it directly: `PR_NUMBER` is its
-  number and `PR_REPO` is its `owner/repo` (`$REPO_FULL_NAME`).
-- If the retro originates from an issue, resolve the linked PR using your
-  forge-specific skill's issue-to-PR linkage recipe. If no linked PR
-  exists, skip flapping detection for this retro. Otherwise set
-  `PR_NUMBER` and `PR_REPO` from the linked PR — `PR_REPO` may differ
-  from `$REPO_FULL_NAME` when the issue and PR live in different repos.
+  number and `PR_REPO` is its `owner/repo` (parse both from
+  `$ORIGINATING_URL`).
+- If the retro originates from an issue, resolve linked PRs with the
+  `github-forge` / `gitlab-forge` skill's linked-PR/MR recipe
+  (`closedByPullRequestsReferences` / `closed_by`) — not the
+  forge-specific retro-analysis skill, which has no linkage recipe.
+  That query returns a list of up to 50 nodes, each with `state` and
+  `url`. Tie-break: prefer the single open linked PR; if none is open,
+  take the most recently updated; if several are open, either skip
+  flapping detection or analyse each separately and say which PR each
+  finding refers to. If no linked PR exists, skip flapping detection.
+  Derive `PR_REPO` by parsing the node's `url` — it may differ from
+  `$REPO_FULL_NAME`.
 
-Use the resolved `PR_NUMBER` and `PR_REPO` (not `$REPO_FULL_NAME`) for
+Once `PR_REPO` is resolved, re-derive `DISPATCH_REPO` from `PR_REPO`'s
+org (`${PR_ORG}/.fullsend`). `$DISPATCH_REPO` built from
+`$REPO_FULL_NAME` is the wrong dispatch repo when the PR lives under a
+different org. Use `PR_NUMBER` and `PR_REPO` (not `$REPO_FULL_NAME`) for
 all data gathering below.
 
 ### Data gathering
 
 Dispatch a subagent to identify the code/fix/review workflow runs for
-`PR_NUMBER` and collect what pattern detection needs:
+this PR. Reuse the `finding-agent-runs` discovery recipe rather than
+inventing a new listing; bound the search to the PR's
+`createdAt`..`updatedAt` window (pass `--created <start>..<end>` with a
+raised `--limit` per workflow). Dispatch-repo runs are
+`workflow_dispatch` with no PR in their ref, so identifying a candidate
+requires downloading its log and parsing `event_payload` — an unbounded
+"find all runs" will miss long-lived flaps (existing recipes cap at 10)
+or blow the retro timeout.
 
-- **Flapping data collector:** "Find all code, fix, and review workflow
-  runs related to PR #`PR_NUMBER` in `$DISPATCH_REPO`. Each run's log
-  carries an `event_payload` JSON line with `pull_request.head.sha` and
-  `pull_request.number`; parse it to correlate runs to PR commits and
-  confirm the run belongs to this PR. For each matched run, fetch the
-  commit's changed files and the named CI check results from `PR_REPO`.
-  Also fetch the PR's review comments/findings across all pages so
-  finding content can be compared across review cycles."
+**Matching.** `$DISPATCH_REPO` is org-wide; PR numbers are not unique
+across repos. A run belongs to this PR only if `source_repo` (or
+`pull_request.base.repo.full_name`) equals `PR_REPO` **and** a
+three-way number match mirroring the platform concurrency key holds:
+
+- `pull_request.number == PR_NUMBER`, **or**
+- `issue.number == PR_NUMBER` (comment-triggered fix; the PR number
+  lands in `issue.number`), **or**
+- `issue.number` equals the issue parsed from the `agent/{issue}-{slug}`
+  branch (code runs).
+
+Code runs carry **no** `pull_request` object in `event_payload` (code
+dispatches from issue events when `ready-to-code` is applied). Matching
+only on `pull_request.number` drops the first file-changing run and
+destroys Pattern 1's baseline.
+
+**Diffs.** `event_payload` is built at dispatch time from the triggering
+event, so `pull_request.head.sha` is the branch head *before* the run
+does any work. Attributing "the commit's changed files" at that SHA
+assigns each code/fix run its predecessor's diff. Define run N's
+changes as the patch between `head.sha(run N)` and `head.sha(the next
+run)` — equivalently, the head SHA of the review run that follows it
+(a review is triggered on the pushed commit, so its `head.sha` *is*
+the preceding code/fix output). Fetch that compare diff (patch/hunks),
+not a file-path list: Pattern 1 needs line-level A→B→A.
+
+**Ordering.** Order runs by workflow `createdAt`, not by commit.
+Collapse same-SHA reruns into a single step. The fix agent rebases and
+amends, so a `head.sha` recorded in an earlier payload is often no
+longer reachable from the PR head — commit order is not a total order
+on the PRs this section targets.
+
+Collector prompt sketch: "Using `finding-agent-runs`, list code, fix,
+and review runs in `$DISPATCH_REPO` whose `createdAt` falls in this
+PR's lifetime. A run matches only if `source_repo == PR_REPO` and the
+three-way number rule above holds. For each matched file-changing run,
+fetch the compare patch from `head.sha(this run)` to `head.sha(next
+run)` and the named CI check results from `PR_REPO`. Also fetch the
+PR's review comments/findings across all pages."
 
 ### Patterns to detect
 
-Order runs by commit and count only **file-changing** (code/fix) runs as
-steps; review runs typically touch no files and serve only to correlate
-finding text.
+Count only **file-changing** (code/fix) runs as steps after collapsing
+same-SHA reruns; review runs typically touch no files and serve as
+diff anchors and finding-text correlation.
 
 1. **File oscillation:** across three or more consecutive file-changing
    runs, the same lines in a file are changed, reverted, then changed
    again — a repeated A→B→A pattern (run N adds a line, run N+1 removes
-   it, run N+2 adds it back). A single add-then-remove is the normal
+   it, run N+2 adds it back). Compare hunks from the consecutive-head
+   patches, not file-path lists. A single add-then-remove is the normal
    review-fix cycle, not oscillation.
 2. **Check-status flipping:** the same named CI check (e.g. `unit-tests`)
-   flips pass→fail→pass across three or more runs whose commits touch
-   overlapping changed files. CI results are reported at check/job level,
-   not per test, so compare at the named-check level. A check that flips
-   with no overlap in the agent's changed files is likely test flakiness
-   (above), not agent-caused flapping.
+   flips *twice* (pass→fail→pass→fail, or two full oscillations) across
+   runs whose patches touch overlapping files. A single
+   pass→fail→pass is ordinary regress-then-recover: `pass` is the
+   desired attractor, so that shape is convergence, not oscillation.
+   CI results are reported at check/job level, not per test. A check
+   that flips with no overlap in the agent's changed files is likely
+   test flakiness (above), not agent-caused flapping.
 3. **Cycle count:** repeated review-fix cycles on the same PR without
    convergence — the review keeps raising the same or alternating
    findings (a fix for one issue reintroduces a previously resolved one).
@@ -204,6 +255,11 @@ Include a proposal with these specifics:
 - A single rework cycle (review requested changes, fix addressed them, review approved) is normal.
 - Different files changing across runs is normal iteration, not oscillation.
 - A CI check flipping with no overlap in the agent's changed files is flakiness, not flapping.
+- A single pass→fail→pass on a named check that then stays green is recovery, not oscillation.
+- If a recorded `head.sha` is no longer reachable from the PR head
+  (rebase / force-push), treat a reversal signal as unreliable rather
+  than as oscillation.
+- Same-SHA workflow reruns are not additional steps.
 - Only flag when the same change is applied and reversed repeatedly, or the review-fix loop clearly fails to converge.
 
 ## Before proposing: check for existing issues
