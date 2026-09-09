@@ -897,12 +897,14 @@ When merging
 - Combine descriptions if they add complementary detail
 - Keep the more specific remediation
 - Preserve `actionable: true` if either finding had it
-- If the merged findings disagreed on severity, record that disagreement
-  and the size of the gap (in severity levels) in your synthesis notes.
-  Merging to the higher severity discards the disagreement from the
-  finding set, so step 6g reads these notes when setting confidence. This
-  applies only to the same-category merges here in 6b, not to the
-  distinct-category findings preserved in 6c.
+- If the merged findings disagreed on severity, attach an internal
+  `merged_from` array on the merged finding listing each input
+  severity, e.g. `merged_from: [{severity: low}, {severity: high}]`.
+  Carry this field through 6c–6f so step 6g can measure the gap.
+  Strip `merged_from` before writing `agent-result.json` — it is not
+  part of the output schema. This applies only to the same-category
+  merges here in 6b, not to the distinct-category findings preserved
+  in 6c.
 
 #### 6c. Preserve distinct-category findings
 
@@ -994,7 +996,10 @@ budget section), skip the challenger: keep the merged finding set from
      that removes all findings is unlikely — an empty result more likely
      indicates a parsing error or context truncation.
    - Otherwise, replace the challenged subset with the challenger's
-     `adjudicated_findings` (then re-append anything withheld).
+     `adjudicated_findings` (then re-append anything withheld). Copy
+     each finding's internal `merged_from` (if present) from the
+     pre-challenger finding that shares category and location — the
+     challenger is not shown that field, and 6g still needs it.
    - Log any `removed_findings` for transparency but do not include
      them in the final review.
 
@@ -1221,18 +1226,21 @@ reviewer and for downstream graduated-approval work (see
 [`graduated-approval-policy.md`](https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/graduated-approval-policy.md)).
 Omit `confidence` entirely for the `failure` action.
 
-**Evaluation order.** The bands below can overlap, so evaluate them in a
-fixed order and assign the **first** band whose condition holds: low
-first, then medium, then high. The most cautious matching band wins;
-never promote to a higher band once a lower one has matched.
+Confidence is two steps that must not be mixed: pick a band from
+evidence, then apply action ceilings that can only lower it.
+
+**Step 1 — evidence band.** Evaluate only the evidence conditions below,
+in order: low first, then medium, then high. Assign the first band whose
+condition holds. Do not consider the action (`comment-only`, `reject`,
+`approve`) in this step.
 
 **Low** (checked first). Assign if any of:
 
 - The challenger pass failed and you fell back to the pre-challenger
   finding set (a `sub-agent-failure` info finding is present, see 6d).
 - A 6b merge combined findings that disagreed on severity by two or more
-  levels (for example, one sub-agent said `low` and another said `high`
-  for the same category and location), and that finding drives the
+  levels (read `merged_from` on the merged finding; for example
+  `{severity: low}` and `{severity: high}`), and that finding drives the
   verdict.
 - The verdict rests on a finding the challenger downgraded, or on a
   reconciliation (6e-1) that resolved a direct contradiction between
@@ -1242,24 +1250,15 @@ never promote to a higher band once a lower one has matched.
 **Medium** (checked next). Assign if no low condition holds and any of:
 
 - A 6b merge combined findings that disagreed on severity by exactly one
-  level.
+  level (read `merged_from`).
 - The verdict rests on a single finding with no corroboration from a
   second sub-agent or from the challenger.
-- The action is `comment-only`. Medium is the ceiling for `comment-only`
-  unless the single driving medium finding was raised by more than one
-  sub-agent AND survived the challenger unchanged; only then may
-  `comment-only` reach high.
-- The action is `reject`. A reject reflects a judgment call on
-  architecture or scope, so default to medium. Promote to high only when
-  the architectural objection is corroborated, meaning it was raised
-  independently by more than one sub-agent or explicitly confirmed by the
-  challenger.
 
 **High** (checked last). Assign only if no low or medium condition holds
 and:
 
 - No detected conflict survived synthesis: no `sub-agent-failure`
-  finding, no severity disagreement in any 6b merge, and no
+  finding, no `merged_from` severity disagreement in any 6b merge, and no
   reconciliation contradiction. This is *absence of detected conflict*,
   not positive corroboration. Sub-agents that examined disjoint areas do
   not corroborate each other, so high additionally requires that each
@@ -1267,6 +1266,16 @@ and:
   sub-agent or confirmed by the challenger.
 - For an `approve` with no findings, high is appropriate when all
   dimension sub-agents ran and returned without error.
+
+**Step 2 — action ceilings.** After step 1, apply these caps. A ceiling
+may only lower the band; it never raises it.
+
+- `comment-only`: cap at medium unless the single driving medium finding
+  was raised by more than one sub-agent AND survived the challenger
+  unchanged. Only then may the step-1 band of high stand.
+- `reject`: cap at medium unless the architectural objection was raised
+  independently by more than one sub-agent or explicitly confirmed by
+  the challenger. Only then may the step-1 band of high stand.
 
 **Provisional boundaries.** The one-level and two-level severity-gap
 splits above are provisional heuristics, not calibrated thresholds. Per

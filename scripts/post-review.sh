@@ -578,6 +578,8 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
       if [ "${original_action}" = "request-changes" ] || [ "${original_action}" = "reject" ]; then
         echo "All findings removed by severity filter — downgrading '${original_action}' to 'comment'"
         jq 'del(.findings) | .action = "comment"' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
+        CONFIDENCE_AGENT_ACTION="${original_action}"
+        CONFIDENCE_DOWNGRADE_REASON="severity filter"
       else
         jq 'del(.findings)' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
       fi
@@ -590,6 +592,11 @@ fi
 
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # ACTION retains the original value for the entire script — not re-read after protected-path downgrade.
+# CONFIDENCE_AGENT_ACTION / CONFIDENCE_DOWNGRADE_REASON record a verdict the
+# post-script overrode so the confidence annotation can name the agent's
+# original action (severity-filter sets them above; protected-path below).
+CONFIDENCE_AGENT_ACTION="${CONFIDENCE_AGENT_ACTION:-}"
+CONFIDENCE_DOWNGRADE_REASON="${CONFIDENCE_DOWNGRADE_REASON:-}"
 
 # ---------------------------------------------------------------------------
 # Protected-path check: the review agent must not approve PRs that touch
@@ -683,6 +690,8 @@ if [ "${ACTION}" = "approve" ]; then
         "${RESULT_FILE}" > "${MODIFIED_RESULT}"
       RESULT_FILE="${MODIFIED_RESULT}"
       DOWNGRADED=true
+      CONFIDENCE_AGENT_ACTION="${ACTION}"
+      CONFIDENCE_DOWNGRADE_REASON="protected-path check"
     fi
   fi
 fi
@@ -798,7 +807,11 @@ fi
 
 CONFIDENCE=$(jq -r '.confidence // empty' "${RESULT_FILE}")
 if [ -n "${CONFIDENCE}" ] && [ "${ACTION}" != "failure" ]; then
-  CONFIDENCE_NOTICE=$'\n\n---\n'"**Confidence:** ${CONFIDENCE}"
+  if [ -n "${CONFIDENCE_DOWNGRADE_REASON}" ]; then
+    CONFIDENCE_NOTICE=$'\n\n---\n'"**Confidence:** ${CONFIDENCE} (agent verdict: ${CONFIDENCE_AGENT_ACTION} — downgraded by ${CONFIDENCE_DOWNGRADE_REASON})"
+  else
+    CONFIDENCE_NOTICE=$'\n\n---\n'"**Confidence:** ${CONFIDENCE}"
+  fi
   CONFIDENCE_RESULT=$(mktemp)
   CLEANUP_FILES+=("${CONFIDENCE_RESULT}")
   jq --arg notice "${CONFIDENCE_NOTICE}" \
