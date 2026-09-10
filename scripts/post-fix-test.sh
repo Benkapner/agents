@@ -1022,6 +1022,124 @@ run_prefix_github_validation_test "prefix-github-dotdot" \
 
 rm -rf "${PRE_TMPDIR}"
 
+# ---------------------------------------------------------------------------
+# Budget-aware needs-human mirror (post-fix section 6)
+# ---------------------------------------------------------------------------
+# On main the script sets NO_PUSH=true and still reaches the iteration-cap
+# warning. Leave FULLSEND_VALIDATED_ITERATION_DIR unset so a missing
+# agent-result.json is a warning, not a fail-closed exit.
+
+# post-fix prepends $HOME/.local/bin to PATH (pre-commit deps). Point HOME
+# at an empty temp dir so a developer/CI gh there cannot hide this mock.
+BUDGET_TMPDIR="$(mktemp -d)"
+BUDGET_MOCK="${BUDGET_TMPDIR}/bin"
+mkdir -p "${BUDGET_MOCK}"
+cat > "${BUDGET_MOCK}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_LABEL_LOG}"
+exit 0
+MOCKEOF
+chmod +x "${BUDGET_MOCK}/gh"
+
+run_postfix_budget_test() {
+  local test_name="$1"
+  local trigger="$2"
+  local iteration="$3"
+  local bot_cap="$4"
+  local human_cap="$5"
+  local labels="$6"
+  local expect_summary="$7"
+  local expect_needs_human="$8" # "yes" or "no"
+
+  local run_dir="${BUDGET_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  mkdir -p "${repo_dir}"
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+
+  local log="${BUDGET_TMPDIR}/gh-${test_name}.log"
+  : > "${log}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${BUDGET_MOCK}:${PATH}"
+    export HOME="${BUDGET_TMPDIR}/home"
+    mkdir -p "${HOME}"
+    export GH_LABEL_LOG="${log}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="${trigger}"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export FIX_ITERATION="${iteration}"
+    export ITERATION_CAP="${bot_cap}"
+    export ITERATION_CAP_HUMAN="${human_cap}"
+    export PR_LABELS="${labels}"
+    bash "${POST_SCRIPT}"
+  ) > "${BUDGET_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit ${exit_code}"
+    cat "${BUDGET_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF "${expect_summary}" "${BUDGET_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — missing summary '${expect_summary}'"
+    cat "${BUDGET_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${expect_needs_human}" == "yes" ]]; then
+    if ! grep -q -- '--add-label needs-human' "${log}"; then
+      echo "FAIL: ${test_name} — expected needs-human label"
+      echo "gh log:"; cat "${log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if grep -q -- '--add-label needs-human' "${log}"; then
+      echo "FAIL: ${test_name} — unexpected needs-human label"
+      echo "gh log:"; cat "${log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+  echo "PASS: ${test_name}"
+}
+
+BOT="fixbot[bot]"
+
+run_postfix_budget_test "budget-tightens-needs-human-and-summary" \
+  "${BOT}" 2 5 10 $'fullsend-fix-budget/2' \
+  "Iteration: 2 of 2 (bot cap)" "yes"
+
+run_postfix_budget_test "budget-above-global-cap-has-no-effect" \
+  "${BOT}" 3 5 10 $'fullsend-fix-budget/9' \
+  "Iteration: 3 of 5 (bot cap)" "no"
+
+run_postfix_budget_test "budget-1-escalates-on-iteration-1" \
+  "${BOT}" 1 5 10 $'fullsend-fix-budget/1' \
+  "Iteration: 1 of 1 (bot cap)" "yes"
+
+run_postfix_budget_test "human-trigger-keeps-full-human-cap" \
+  "alice" 3 5 10 $'fullsend-fix-budget/2' \
+  "Iteration: 3 of 10 (human cap, total across bot+human)" "no"
+
+run_postfix_budget_test "malformed-label-leaves-global-cap" \
+  "${BOT}" 3 5 10 $'fullsend-fix-budget/abc' \
+  "Iteration: 3 of 5 (bot cap)" "no"
+
+run_postfix_budget_test "absent-label-leaves-global-cap" \
+  "${BOT}" 3 5 10 "" \
+  "Iteration: 3 of 5 (bot cap)" "no"
+
+rm -rf "${BUDGET_TMPDIR}"
+
 # --- Summary ---
 
 echo ""
