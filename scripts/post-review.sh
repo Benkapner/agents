@@ -545,6 +545,13 @@ severity_rank() {
 
 threshold_rank=$(severity_rank "$REVIEW_FINDING_SEVERITY_THRESHOLD")
 
+# Unconditional — do not use ${var:-}. A pre-set environment variable
+# would otherwise survive into the confidence annotation and claim a
+# downgrade that this run never performed. The severity-filter and
+# protected-path blocks below are the only writers.
+CONFIDENCE_AGENT_ACTION=""
+CONFIDENCE_DOWNGRADE_REASON=""
+
 if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
   FILTERED_RESULT=$(mktemp)
@@ -592,11 +599,9 @@ fi
 
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # ACTION retains the original value for the entire script — not re-read after protected-path downgrade.
-# CONFIDENCE_AGENT_ACTION / CONFIDENCE_DOWNGRADE_REASON record a verdict the
-# post-script overrode so the confidence annotation can name the agent's
-# original action (severity-filter sets them above; protected-path below).
-CONFIDENCE_AGENT_ACTION="${CONFIDENCE_AGENT_ACTION:-}"
-CONFIDENCE_DOWNGRADE_REASON="${CONFIDENCE_DOWNGRADE_REASON:-}"
+# CONFIDENCE_AGENT_ACTION / CONFIDENCE_DOWNGRADE_REASON were cleared above
+# the severity-filter block; that block and the protected-path check are
+# the only writers.
 
 # ---------------------------------------------------------------------------
 # Protected-path check: the review agent must not approve PRs that touch

@@ -897,14 +897,7 @@ When merging
 - Combine descriptions if they add complementary detail
 - Keep the more specific remediation
 - Preserve `actionable: true` if either finding had it
-- If the merged findings disagreed on severity, attach an internal
-  `merged_from` array on the merged finding listing each input
-  severity, e.g. `merged_from: [{severity: low}, {severity: high}]`.
-  Carry this field through 6c–6f so step 6g can measure the gap.
-  Strip `merged_from` before writing `agent-result.json` — it is not
-  part of the output schema. This applies only to the same-category
-  merges here in 6b, not to the distinct-category findings preserved
-  in 6c.
+- Attach merged_from on every 6b merge (confidence.md).
 
 #### 6c. Preserve distinct-category findings
 
@@ -941,7 +934,7 @@ budget section), skip the challenger: keep the merged finding set from
 
    **Part 3 — Context package:** the merged finding set from steps
    6a–6c (as a JSON array), plus the full PR diff and changed files
-   list. Format as:
+   list. Strip/restore merged_from via confidence.md. Format as:
 
    ```markdown
    ## Context
@@ -992,14 +985,9 @@ budget section), skip the challenger: keep the merged finding set from
      part of the standard finding schema.
    - If `adjudicated_findings` is empty but the set sent to the
      challenger was non-empty, treat this as a challenger failure (fall back
-     per the immediate next step below). A legitimate challenger pass
-     that removes all findings is unlikely — an empty result more likely
-     indicates a parsing error or context truncation.
+     per the immediate next step below).
    - Otherwise, replace the challenged subset with the challenger's
-     `adjudicated_findings` (then re-append anything withheld). Copy
-     each finding's internal `merged_from` (if present) from the
-     pre-challenger finding that shares category and location — the
-     challenger is not shown that field, and 6g still needs it.
+     `adjudicated_findings` (then re-append anything withheld).
    - Log any `removed_findings` for transparency but do not include
      them in the final review.
 
@@ -1216,72 +1204,9 @@ require action, because `comment` (COMMENTED review state) does not
 block the PR. When the summary language and the verdict action
 contradict each other, escalate the verdict to match the language.
 
-#### 6g. Determine confidence level
+#### 6g. Confidence
 
-After the outcome is fixed (6f), set an optional `confidence` value
-(`high`, `medium`, or `low`) describing how strongly the evidence and
-sub-agent agreement support the verdict. Confidence is advisory: it does
-not change the action, it only annotates the verdict for the human
-reviewer and for downstream graduated-approval work (see
-[`graduated-approval-policy.md`](https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/graduated-approval-policy.md)).
-Omit `confidence` entirely for the `failure` action.
-
-Confidence is two steps that must not be mixed: pick a band from
-evidence, then apply action ceilings that can only lower it.
-
-**Step 1 — evidence band.** Evaluate only the evidence conditions below,
-in order: low first, then medium, then high. Assign the first band whose
-condition holds. Do not consider the action (`comment-only`, `reject`,
-`approve`) in this step.
-
-**Low** (checked first). Assign if any of:
-
-- The challenger pass failed and you fell back to the pre-challenger
-  finding set (a `sub-agent-failure` info finding is present, see 6d).
-- A 6b merge combined findings that disagreed on severity by two or more
-  levels (read `merged_from` on the merged finding; for example
-  `{severity: low}` and `{severity: high}`), and that finding drives the
-  verdict.
-- The verdict rests on a finding the challenger downgraded, or on a
-  reconciliation (6e-1) that resolved a direct contradiction between
-  sub-agents.
-- Required PR context was missing or partial.
-
-**Medium** (checked next). Assign if no low condition holds and any of:
-
-- A 6b merge combined findings that disagreed on severity by exactly one
-  level (read `merged_from`).
-- The verdict rests on a single finding with no corroboration from a
-  second sub-agent or from the challenger.
-
-**High** (checked last). Assign only if no low or medium condition holds
-and:
-
-- No detected conflict survived synthesis: no `sub-agent-failure`
-  finding, no `merged_from` severity disagreement in any 6b merge, and no
-  reconciliation contradiction. This is *absence of detected conflict*,
-  not positive corroboration. Sub-agents that examined disjoint areas do
-  not corroborate each other, so high additionally requires that each
-  finding driving the verdict was either raised by more than one
-  sub-agent or confirmed by the challenger.
-- For an `approve` with no findings, high is appropriate when all
-  dimension sub-agents ran and returned without error.
-
-**Step 2 — action ceilings.** After step 1, apply these caps. A ceiling
-may only lower the band; it never raises it.
-
-- `comment-only`: cap at medium unless the single driving medium finding
-  was raised by more than one sub-agent AND survived the challenger
-  unchanged. Only then may the step-1 band of high stand.
-- `reject`: cap at medium unless the architectural objection was raised
-  independently by more than one sub-agent or explicitly confirmed by
-  the challenger. Only then may the step-1 band of high stand.
-
-**Provisional boundaries.** The one-level and two-level severity-gap
-splits above are provisional heuristics, not calibrated thresholds. Per
-`graduated-approval-policy.md`, confidence bands should ultimately be
-derived from observed review outcomes; treat this rubric as a starting
-point pending eval-case calibration.
+Follow confidence.md.
 
 ### 7. Produce the review result
 
@@ -1358,10 +1283,6 @@ The table below lists the **additional** required fields per action:
 | comment-only    | `comment`         | `body`, `head_sha`                                                                            |
 | failure         | `failure`         | `reason` (body optional)                                                                      |
 | reject          | `reject`          | `body`, `head_sha`, `findings[]`                                                              |
-
-`confidence` (`high`/`medium`/`low`, from step 6g) is an optional field on
-every action except `failure`. Include it when you have determined a band;
-the schema rejects it on `failure`.
 
 #### Pipeline mode (`$FULLSEND_OUTPUT_DIR` is set)
 

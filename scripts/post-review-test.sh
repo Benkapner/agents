@@ -1374,6 +1374,21 @@ run_body_test_with_env "confidence-severity-filter-scopes-original-verdict" \
   "**Confidence:** medium (agent verdict: request-changes — downgraded by severity filter)" \
   'export REVIEW_FINDING_SEVERITY_THRESHOLD="high"; export MOCK_PR_FILES="src/main.go"'
 
+# A leaked env var must not invent a downgrade the script did not perform.
+run_body_test_with_env "confidence-stale-env-downgrade-ignored" \
+  "${CONFIDENCE_JSON}" \
+  "**Confidence:** high" \
+  'export CONFIDENCE_DOWNGRADE_REASON=stale-env CONFIDENCE_AGENT_ACTION=reject'
+
+if [[ -f "${TMPDIR}/last-result.json" ]]; then
+  stale_body="$(jq -r '.body' "${TMPDIR}/last-result.json")"
+  if echo "${stale_body}" | grep -qF "downgraded by stale-env"; then
+    echo "FAIL: confidence-stale-env-downgrade-ignored — leaked env produced a fake downgrade"
+    echo "${stale_body}"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # REVIEW_PROTECTED_PATHS override tests
 # Verify that setting REVIEW_PROTECTED_PATHS overrides the default list.
