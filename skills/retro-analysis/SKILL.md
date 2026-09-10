@@ -133,7 +133,14 @@ by the agent's *own changes* across successive code/fix runs.
 
 ### Applicability
 
-Flapping detection applies to PR-based workflows with code/fix cycles.
+Flapping detection applies to PR-based workflows with code/fix cycles
+**on GitHub**. Matching, diff, and check recipes are GitHub
+payloads and `gh` flags; they live in
+`skills/retro-analysis/github/SKILL.md`. GitLab retros load this shared
+file too, but `skills/retro-analysis/gitlab/SKILL.md` has no equivalent
+listing, payload, or per-SHA check recipe — **skip flapping detection
+when the forge is GitLab** rather than running GitHub commands.
+
 Resolve the target PR before gathering data:
 
 - If the retro originates from a PR, use it directly: `PR_NUMBER` is its
@@ -143,9 +150,10 @@ Resolve the target PR before gathering data:
   `github-forge` / `gitlab-forge` skill's linked-PR/MR recipe
   (`closedByPullRequestsReferences` / `closed_by`) — not the
   forge-specific retro-analysis skill, which has no linkage recipe.
-  That query returns a list of up to 50 nodes, each with `state` and
-  `url`. Tie-break: prefer the single open linked PR; if none is open,
-  take the most recently updated; if several are open, either skip
+  That query returns a list of up to 50 nodes, each with `state`,
+  `url`, and an updated-at field (`updatedAt` / `updated_at`).
+  Tie-break: prefer the single open linked PR; if none is open, take
+  the most recently updated; if several are open, either skip
   flapping detection or analyse each separately and say which PR each
   finding refers to. If no linked PR exists, skip flapping detection.
   Derive `PR_REPO` by parsing the node's `url` — it may differ from
@@ -160,54 +168,40 @@ all data gathering below.
 ### Data gathering
 
 Dispatch a subagent to identify the code/fix/review workflow runs for
-this PR. Reuse the `finding-agent-runs` discovery recipe rather than
-inventing a new listing; bound the search to the PR's
-`createdAt`..`updatedAt` window (pass `--created <start>..<end>` with a
-raised `--limit` per workflow). Dispatch-repo runs are
-`workflow_dispatch` with no PR in their ref, so identifying a candidate
-requires downloading its log and parsing `event_payload` — an unbounded
-"find all runs" will miss long-lived flaps (existing recipes cap at 10)
-or blow the retro timeout.
+this PR. **Reuse the GitHub recipes in
+`skills/retro-analysis/github/SKILL.md` (Flapping detection)** — that
+skill lists `code.yml`, `fix.yml`, and `review.yml` at `--limit 10`.
+Do not point at `finding-agent-runs` (it has no `fix.yml` recipe and
+caps at 5).
 
-**Matching.** `$DISPATCH_REPO` is org-wide; PR numbers are not unique
-across repos. A run belongs to this PR only if `source_repo` (or
-`pull_request.base.repo.full_name`) equals `PR_REPO` **and** a
-three-way number match mirroring the platform concurrency key holds:
+Bound the search; do not list every historic run:
 
-- `pull_request.number == PR_NUMBER`, **or**
-- `issue.number == PR_NUMBER` (comment-triggered fix; the PR number
-  lands in `issue.number`), **or**
-- `issue.number` equals the issue parsed from the `agent/{issue}-{slug}`
-  branch (code runs).
+- **Fix and review** runs: the PR's lifetime (`createdAt`..`updatedAt`).
+- **Code** runs: at or before `PR.createdAt` (the code run *creates*
+  the PR; a lifetime window drops it and destroys Pattern 1's
+  baseline). Confirm a candidate via the log printing
+  `PR_REPO/pull/PR_NUMBER`.
 
-Code runs carry **no** `pull_request` object in `event_payload` (code
-dispatches from issue events when `ready-to-code` is applied). Matching
-only on `pull_request.number` drops the first file-changing run and
-destroys Pattern 1's baseline.
+**Matching.** `$DISPATCH_REPO` is org-wide. A run matches only if
+source repo equals `PR_REPO` and one of: the pull-request number,
+the comment-issue number, or the issue parsed from
+`agent/{issue}-{slug}`. Code runs have no pull-request object;
+matching only on PR number drops them.
 
-**Diffs.** `event_payload` is built at dispatch time from the triggering
-event, so `pull_request.head.sha` is the branch head *before* the run
-does any work. Attributing "the commit's changed files" at that SHA
-assigns each code/fix run its predecessor's diff. Define run N's
-changes as the patch between `head.sha(run N)` and `head.sha(the next
-run)` — equivalently, the head SHA of the review run that follows it
-(a review is triggered on the pushed commit, so its `head.sha` *is*
-the preceding code/fix output). Fetch that compare diff (patch/hunks),
-not a file-path list: Pattern 1 needs line-level A→B→A.
+**Diffs.** Dispatch-time head SHA is the branch *before* the run.
+Run N's patch is consecutive output heads (the following review
+run's head). Compare patch/hunks, not file paths. The code run has
+no start SHA: PR `baseRefOid` (or merge-base with the first review
+head) → first review head. Skipping it collapses three file-changing
+runs into the normal add-then-remove that must not be flagged.
 
-**Ordering.** Order runs by workflow `createdAt`, not by commit.
-Collapse same-SHA reruns into a single step. The fix agent rebases and
-amends, so a `head.sha` recorded in an earlier payload is often no
-longer reachable from the PR head — commit order is not a total order
-on the PRs this section targets.
+**Ordering.** By workflow creation time; collapse same-SHA reruns.
+Recorded heads may be unreachable after rebase.
 
-Collector prompt sketch: "Using `finding-agent-runs`, list code, fix,
-and review runs in `$DISPATCH_REPO` whose `createdAt` falls in this
-PR's lifetime. A run matches only if `source_repo == PR_REPO` and the
-three-way number rule above holds. For each matched file-changing run,
-fetch the compare patch from `head.sha(this run)` to `head.sha(next
-run)` and the named CI check results from `PR_REPO`. Also fetch the
-PR's review comments/findings across all pages."
+**Checks.** Named check at each run's output-anchor SHA (following
+review head; last run: PR head at retro time), not dispatch-time
+head or the current-head listing. Per-SHA recipe is in the GitHub
+skill.
 
 ### Patterns to detect
 
@@ -222,13 +216,13 @@ diff anchors and finding-text correlation.
    patches, not file-path lists. A single add-then-remove is the normal
    review-fix cycle, not oscillation.
 2. **Check-status flipping:** the same named CI check (e.g. `unit-tests`)
-   flips *twice* (pass→fail→pass→fail, or two full oscillations) across
-   runs whose patches touch overlapping files. A single
-   pass→fail→pass is ordinary regress-then-recover: `pass` is the
-   desired attractor, so that shape is convergence, not oscillation.
-   CI results are reported at check/job level, not per test. A check
-   that flips with no overlap in the agent's changed files is likely
-   test flakiness (above), not agent-caused flapping.
+   must go `pass→fail→pass→fail` across runs whose patches touch
+   overlapping files: the failure must reappear after an intervening
+   pass. A single `pass→fail→pass` is ordinary regress-then-recover:
+   `pass` is the desired attractor, so that shape is convergence, not
+   oscillation. CI results are reported at check/job level, not per
+   test. A check that flips with no overlap in the agent's changed
+   files is likely test flakiness (above), not agent-caused flapping.
 3. **Cycle count:** repeated review-fix cycles on the same PR without
    convergence — the review keeps raising the same or alternating
    findings (a fix for one issue reintroduces a previously resolved one).
@@ -255,12 +249,13 @@ Include a proposal with these specifics:
 - A single rework cycle (review requested changes, fix addressed them, review approved) is normal.
 - Different files changing across runs is normal iteration, not oscillation.
 - A CI check flipping with no overlap in the agent's changed files is flakiness, not flapping.
-- A single pass→fail→pass on a named check that then stays green is recovery, not oscillation.
-- If a recorded `head.sha` is no longer reachable from the PR head
+- A single `pass→fail→pass` on a named check that then stays green is recovery, not oscillation.
+- If a recorded head SHA is no longer reachable from the PR head
   (rebase / force-push), treat a reversal signal as unreliable rather
   than as oscillation.
 - Same-SHA workflow reruns are not additional steps.
 - Only flag when the same change is applied and reversed repeatedly, or the review-fix loop clearly fails to converge.
+- Skip this section entirely on GitLab (no recipe yet).
 
 ## Before proposing: check for existing issues
 
