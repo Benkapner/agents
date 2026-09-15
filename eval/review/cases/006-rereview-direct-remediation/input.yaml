@@ -19,11 +19,6 @@ fixture:
         # Foo
 
         `Foo` returns the string `foo`.
-    - path: CHANGELOG.md
-      content: |
-        # Changelog
-
-        Unrelated release-note placeholder.
 prior_review:
   provenance: app-verified
   body: |
