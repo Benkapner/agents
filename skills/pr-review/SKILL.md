@@ -1175,6 +1175,13 @@ than risk a false statement.
 
 ##### Scope authorization
 
+For a complete `app-verified` re-review, when the structured
+prior-finding candidate and incremental diff unambiguously establish a direct
+remediation of the cited finding, treat it as authorized scope even when the
+linked issue does not name the file. This exception is limited to that direct
+remediation: extra hunks and ambiguous candidates are unanchored and require
+normal linked-issue authorization. It does not waive protected-path checks.
+
 Verify the change scope matches the linked issue's authorization. A PR
 labeled "bug fix" that adds new capability is a feature, regardless of
 the label. Add a finding if the scope exceeds authorization.

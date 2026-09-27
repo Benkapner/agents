@@ -19,6 +19,7 @@ review_expectations: |
   only Foo, not documentation. The follow-up adds that direct remediation, an
   unrelated deployment section in the same docs/foo.md candidate, an unrelated
   CHANGELOG.md, and an unrelated function inside internal/foo.go. A good review
-  must not report the Foo documentation as scope creep: it directly remediates
-  the prior finding. It must still report all three unrelated edits as scope
-  creep, including the extra deployment content inside the remediated file.
+  must not report the Foo documentation as scope creep, unauthorized-change,
+  scope-exceeded, or missing-authorization: it directly remediates the prior
+  finding. It must still report all three unrelated edits as scope creep,
+  including the extra deployment content inside the remediated file.

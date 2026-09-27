@@ -9,6 +9,9 @@ labels:
 findings:
   forbidden:
     - scope-creep
+    - unauthorized-change
+    - scope-exceeded
+    - missing-authorization
 
 max_turns: 60
 max_cost_usd: 5.00
@@ -17,4 +20,5 @@ review_expectations: |
   This is a trusted GitHub re-review whose only follow-up is docs/foo.md. The
   linked issue does not authorize documentation, but the prior review's
   structured file field does. A good review must treat the file as the direct
-  remediation and must not report it as scope creep.
+  remediation and must not report it as scope creep, unauthorized-change,
+  scope-exceeded, or missing-authorization.

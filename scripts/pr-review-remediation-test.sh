@@ -344,6 +344,8 @@ assert_not_contains "obsolete unconditional dispatch removed" "${SKILL}" \
   'always re-qualifies when `changed_since_prior` is non-empty'
 assert_contains "intent exemption requires a direct remediation" "${INTENT}" \
   "matched candidate as authorized only when"
+assert_contains "orchestrator shares direct-remediation exemption" "${SKILL}" \
+  "treat it as authorized scope even when the"
 assert_not_contains "intent removes do-not-only-when ambiguity" "${INTENT}" \
   "Do not report a matched remediation candidate as scope creep only when"
 assert_contains "intent retains issue authorization" "${INTENT}" \
