@@ -1486,6 +1486,12 @@ LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo
 run_no_projection_test "projection-omits-mixed-sub-agent-failure" \
   "${LOSSY_FAILURE_PROJECTION_INPUT}"
 
+META_AND_PROJECTABLE_PROJECTION_INPUT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"medium","category":"protected-path","file":"N/A","description":"human approval required"},{"severity":"low","category":"stale-doc","file":"docs/x.md","description":"update docs"}]}'
+META_AND_PROJECTABLE_PROJECTION_EXPECTED='{"version":1,"findings":[{"severity":"low","category":"stale-doc","file":"docs/x.md"}]}'
+run_projection_test "projection-omits-meta-findings" \
+  "${META_AND_PROJECTABLE_PROJECTION_INPUT}" \
+  "${META_AND_PROJECTABLE_PROJECTION_EXPECTED}"
+
 run_no_projection_test "failure-without-body-posts-no-projection" \
   '{"action":"failure","reason":"time-budget"}'
 

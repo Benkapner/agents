@@ -25,12 +25,11 @@ whether naming/abstraction choices align with existing project trajectory.
 ## Re-review remediation rule
 
 When the context package includes `Prior-finding remediation candidates`,
-use only its structured category and paths plus the incremental diff. Report a
-matched candidate as scope creep unless those inputs unambiguously show a
-direct remediation of the cited finding; extra hunks in a candidate file stay
-unanchored.
-When the structured metadata is insufficient to establish directness, treat
-the change as unanchored and evaluate it against the linked issue normally.
+use only its structured category and paths plus the incremental diff. Treat a
+matched candidate as authorized only when those inputs unambiguously show a
+direct remediation of the cited finding; extra hunks in a candidate file and
+ambiguous matches stay unanchored. Evaluate unanchored changes against the
+linked issue normally.
 Determining whether the match establishes authorized scope is scope
 verification; it is not a second correctness pass. Correctness and remediation
 completeness remain the owning

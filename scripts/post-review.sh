@@ -1083,15 +1083,20 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c '
   def safe_path:
     type == "string" and length > 0 and . != "N/A" and
     (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+  def non_dimensional_category:
+    type == "string" and IN(
+      "protected-path", "provenance-warning", "scope-authorization-implicit"
+    );
   def projectable:
     (.category | type == "string" and allowed_category) and (.file | safe_path);
   (.findings // []) as $findings
+  | ($findings | map(select((.category | non_dimensional_category) | not))) as $dimension_findings
   | if (.action | IN("approve", "request-changes", "comment", "reject"))
-      and ($findings | all(.[]; projectable)) then
+      and ($dimension_findings | all(.[]; projectable)) then
       {
         version: 1,
         findings: [
-          $findings[]
+          $dimension_findings[]
           | {severity, category, file} + (if (.line | type) == "number" then {line} else {} end)
         ]
       }

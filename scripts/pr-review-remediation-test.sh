@@ -342,8 +342,8 @@ assert_contains "GitLab re-review example keeps base dispatch" "${SKILL}" \
   "GitLab bot-verified re-review"
 assert_not_contains "obsolete unconditional dispatch removed" "${SKILL}" \
   'always re-qualifies when `changed_since_prior` is non-empty'
-assert_contains "intent exemption is stated without ambiguous negation" "${INTENT}" \
-  "matched candidate as scope creep unless"
+assert_contains "intent exemption requires a direct remediation" "${INTENT}" \
+  "matched candidate as authorized only when"
 assert_not_contains "intent removes do-not-only-when ambiguity" "${INTENT}" \
   "Do not report a matched remediation candidate as scope creep only when"
 assert_contains "intent retains issue authorization" "${INTENT}" \
@@ -351,7 +351,7 @@ assert_contains "intent retains issue authorization" "${INTENT}" \
 assert_contains "intent keeps correctness ownership separate" "${INTENT}" \
   "not a second correctness pass"
 assert_contains "ambiguous candidates remain unanchored" "${INTENT}" \
-  "structured metadata is insufficient to establish directness"
+  "ambiguous matches stay unanchored"
 assert_not_contains "intent does not claim correctness ownership" "${INTENT}" \
   "candidates for correctness and completeness"
 assert_contains "review agent documents GitLab provenance" "${REVIEW_AGENT}" \
