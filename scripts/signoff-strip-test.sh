@@ -374,6 +374,53 @@ check "staged-index-names-the-cause" "1" \
   "$(printf '%s' "${err}" | grep -c 'staged changes')"
 
 # ---------------------------------------------------------------------------
+# 7b. A forge-conflict merge plus a later agent commit with a trailer:
+#     filter-branch's underlying rev-list must stay first-parent-only so the
+#     merge's second parent (target-branch history) is never regenerated.
+#     Regression test for the class of bug where a copy/bundle drops
+#     --first-parent from the filter-branch invocation and silently changes
+#     the merge's second-parent SHA, breaking TRUSTED_TARGET_SHA ancestry in
+#     post-fix.src.sh's forge-conflict-merge publish path.
+# ---------------------------------------------------------------------------
+d="$(mk_repo mergecase)"
+base="$(git -C "${d}" rev-parse HEAD)"
+
+# A "target" branch with its own commit — this becomes the merge's second
+# parent and must survive the rewrite with an unchanged SHA.
+git -C "${d}" checkout -q -b target-branch
+commit_as "${d}" "${HUMAN_EMAIL}" "Real Human" "2024-01-10T10:00:00+0000" "2024-01-10T10:00:00+0000" \
+  t1 "chore: target-branch commit"
+target_sha="$(git -C "${d}" rev-parse HEAD)"
+git -C "${d}" checkout -q main
+
+# The agent creates a forge-conflict merge commit resolving target-branch
+# into main, then a later fix commit carrying a Signed-off-by trailer —
+# two contiguous bot commits at the tip (_ss_tip_n=2), so this exercises the
+# filter-branch path rather than the single-commit --amend path.
+GIT_AUTHOR_NAME="Bot" GIT_AUTHOR_EMAIL="${BOT_EMAIL}" GIT_AUTHOR_DATE="2024-02-01T10:00:00+0000" \
+GIT_COMMITTER_NAME="Bot" GIT_COMMITTER_EMAIL="${BOT_EMAIL}" GIT_COMMITTER_DATE="2024-02-01T10:00:00+0000" \
+  git -C "${d}" merge -q --no-ff -m "merge target-branch (resolve forge conflict)" target-branch
+merge_sha="$(git -C "${d}" rev-parse HEAD)"
+commit_as "${d}" "${BOT_EMAIL}" "Bot" "2024-02-02T10:00:00+0000" "2024-02-02T11:00:00+0000" \
+  f1 "fix: agent change
+
+${TRAILER}"
+
+check "mergecase-second-parent-before" "${target_sha}" \
+  "$(git -C "${d}" log -1 --format='%P' "${merge_sha}" | awk '{print $2}')"
+
+( cd "${d}" && GIT_BOT_EMAIL="${BOT_EMAIL}" signoff_strip_range "${base}..HEAD" ) >/dev/null 2>&1
+check "mergecase-strip-exit-zero" "0" "$?"
+check "mergecase-no-residual-trailer" "0" \
+  "$(git -C "${d}" log --first-parent --format='%B' "${base}..HEAD" | grep -c '^Signed-off-by:')"
+# filter-branch rewrites the merge commit too (it sits in the first-parent
+# range), so it gets a new SHA — find it by subject instead of the original.
+new_merge_sha="$(git -C "${d}" log --first-parent --format='%H %s' "${base}..HEAD" \
+  | grep 'resolve forge conflict' | awk '{print $1}')"
+check "mergecase-merge-second-parent-unchanged" "${target_sha}" \
+  "$(git -C "${d}" log -1 --format='%P' "${new_merge_sha}" | awk '{print $2}')"
+
+# ---------------------------------------------------------------------------
 # 7. Detection helpers on a clean range.
 # ---------------------------------------------------------------------------
 d="$(mk_repo clean)"

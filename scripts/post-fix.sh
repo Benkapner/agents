@@ -48,6 +48,9 @@
 #                       human-triggered runs); used to confirm a rebase or
 #                       squash/redo was actually requested before trusting
 #                       rebased_onto_target / history_rewritten
+#   FIX_CONFLICT_UPDATE_STRATEGY
+#                     — merge (default) or rebase; how to publish a
+#                       forge-reported merge conflict the agent reconciled
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
 #
@@ -121,6 +124,42 @@ forge_get_pr_head_ref() {
   local pr_number="$1"
   GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
     --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null
+}
+
+# forge_get_pr_base_branch PR_NUMBER — PR base branch (not the repo default).
+# Empty on API failure; callers fall back to TARGET_BRANCH / main.
+forge_get_pr_base_branch() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json baseRefName --jq '.baseRefName // empty' 2>/dev/null
+}
+
+# forge_get_pr_merge_state PR_NUMBER — GitHub GraphQL MergeableState
+# (MERGEABLE | CONFLICTING | UNKNOWN). Prints "unknown" on API failure or
+# empty response so callers never treat a missing signal as a conflict.
+forge_get_pr_merge_state() {
+  local pr_number="$1"
+  local mergeable
+  mergeable="$(GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json mergeable --jq '.mergeable // empty' 2>/dev/null)" || {
+    echo "unknown"
+    return 0
+  }
+  if [ -z "${mergeable}" ]; then
+    echo "unknown"
+    return 0
+  fi
+  echo "${mergeable}"
+}
+
+# forge_pr_has_merge_conflict PR_NUMBER — return 0 only when GitHub reports
+# mergeable=CONFLICTING. BLOCKED / BEHIND / UNSTABLE / UNKNOWN / MERGEABLE
+# and API failures are not conflicts (issue #1518).
+forge_pr_has_merge_conflict() {
+  local pr_number="$1"
+  local mergeable
+  mergeable="$(forge_get_pr_merge_state "${pr_number}")" || return 1
+  [ "${mergeable}" = "CONFLICTING" ]
 }
 
 # --- Push operations ---
@@ -312,6 +351,63 @@ forge_get_pr_head_ref() {
   ) | jq -r '.source_branch // empty'
 }
 
+# forge_get_pr_base_branch PR_NUMBER — MR target_branch (not the repo default).
+# Empty on API failure; callers fall back to TARGET_BRANCH / main.
+forge_get_pr_base_branch() {
+  local pr_number="$1"
+  (
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  ) | jq -r '.target_branch // empty'
+}
+
+# forge_get_pr_merge_state PR_NUMBER — GitLab detailed_merge_status, or
+# "unknown" when the field is absent / the API fails. Callers must not treat
+# not_approved, ci_must_pass, need_rebase, checking, or unknown as a conflict.
+forge_get_pr_merge_state() {
+  local pr_number="$1"
+  local json status
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || {
+    echo "unknown"
+    return 0
+  }
+  status="$(echo "${json}" | jq -r '.detailed_merge_status // empty')"
+  if [ -z "${status}" ]; then
+    echo "unknown"
+    return 0
+  fi
+  echo "${status}"
+}
+
+# forge_pr_has_merge_conflict PR_NUMBER — return 0 only when GitLab reports
+# a real merge conflict. Prefer detailed_merge_status=conflict. Fall back to
+# has_conflicts=true only when detailed_merge_status is absent and the older
+# merge_status is cannot_be_merged (not checking / unchecked).
+forge_pr_has_merge_conflict() {
+  local pr_number="$1"
+  local json status has_conflicts merge_status
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || return 1
+  status="$(echo "${json}" | jq -r '.detailed_merge_status // empty')"
+  if [ "${status}" = "conflict" ]; then
+    return 0
+  fi
+  if [ -n "${status}" ]; then
+    return 1
+  fi
+  has_conflicts="$(echo "${json}" | jq -r '.has_conflicts // false')"
+  merge_status="$(echo "${json}" | jq -r '.merge_status // empty')"
+  [ "${has_conflicts}" = "true" ] && [ "${merge_status}" = "cannot_be_merged" ]
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
@@ -456,6 +552,29 @@ is_human_reset_request() {
 # after the agent rewrote the authorized fix-agent range.
 is_human_history_rewrite_request() {
   is_human_squash_request "${1:-}" || is_human_reset_request "${1:-}"
+}
+
+# fix_conflict_update_strategy — prints merge or rebase.
+# FIX_CONFLICT_UPDATE_STRATEGY is the harness-configured reconciliation
+# strategy used when the forge reports a real merge conflict (issue #1518).
+# Empty/unset and unrecognized values fall back to merge, which preserves
+# existing PR/MR commit history. rebase rewrites the branch onto the target.
+fix_conflict_update_strategy() {
+  local raw
+  raw="$(printf '%s' "${FIX_CONFLICT_UPDATE_STRATEGY:-merge}" | tr '[:upper:]' '[:lower:]')"
+  case "${raw}" in
+    rebase) printf '%s\n' "rebase" ;;
+    *) printf '%s\n' "merge" ;;
+  esac
+}
+
+# fix_conflict_update_strategy_raw_is_known — true when the configured
+# value is empty (default) or a supported enum member. Used to warn on typos
+# without failing the run.
+fix_conflict_update_strategy_raw_is_known() {
+  local raw
+  raw="$(printf '%s' "${FIX_CONFLICT_UPDATE_STRATEGY:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -z "${raw}" ] || [ "${raw}" = "merge" ] || [ "${raw}" = "rebase" ]
 }
 # END bundled: lib/fix-ops.lib.sh
 # shellcheck source=lib/post-failure-report.lib.sh
@@ -1015,9 +1134,12 @@ signoff_is_bot_commit() {
 }
 
 # signoff_count_range <range> — number of in-scope commits carrying a trailer.
+# --first-parent is hardcoded here (not folded into the range string) so a
+# forge-conflict merge's second parent (historical target-branch commits)
+# is never walked; it's a no-op when the range has no merge commits.
 signoff_count_range() {
   local _sc_n=0 _sc_sha
-  for _sc_sha in $(git rev-list "$1" 2>/dev/null); do
+  for _sc_sha in $(git rev-list --first-parent "$1" 2>/dev/null); do
     if signoff_is_bot_commit "${_sc_sha}" \
        && git log -1 --format='%B' "${_sc_sha}" | grep -q '^Signed-off-by:'; then
       _sc_n=$((_sc_n + 1))
@@ -1053,7 +1175,9 @@ signoff_strip_range() {
   # cat, and commit-tree cannot reproduce gpgsig, so a human commit inside the
   # range would lose its signature and change SHA. Agent commits sit at the
   # tip in practice; an in-scope trailer below a human commit fails closed.
-  for _ss_sha in $(git rev-list "${_ss_range}" 2>/dev/null); do
+  # --first-parent (hardcoded, not folded into the range string) keeps a
+  # forge-conflict merge's second parent out of scope; no-op otherwise.
+  for _ss_sha in $(git rev-list --first-parent "${_ss_range}" 2>/dev/null); do
     if [ "${_ss_in_tip}" -eq 1 ] && signoff_is_bot_commit "${_ss_sha}"; then
       _ss_tip_n=$((_ss_tip_n + 1))
       _ss_base="${_ss_sha}"
@@ -1113,10 +1237,15 @@ signoff_strip_range() {
   # commit's identity, so $GIT_AUTHOR_EMAIL is the commit being rewritten. The
   # bot address goes through the environment, not the filter text: it
   # contains "[bot]" and "+".
+  # --first-parent (passed to the underlying rev-list, same as the walk above)
+  # keeps a forge-conflict merge's second parent — historical target-branch
+  # commits — out of the rewrite. Without it, filter-branch regenerates every
+  # commit it is handed, including that second-parent history, which changes
+  # its SHAs and breaks the merge's TRUSTED_TARGET_SHA ancestry.
   if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_BOT_EMAIL="${_ss_bot}" \
        git filter-branch -f \
        --msg-filter 'if [ "${GIT_AUTHOR_EMAIL}" = "${SIGNOFF_BOT_EMAIL}" ]; then sed '"'${_ss_sed}'"'; else cat; fi' \
-       -- "${_ss_base}^..HEAD" >/dev/null; then
+       -- --first-parent "${_ss_base}^..HEAD" >/dev/null; then
     echo "signoff-strip: git filter-branch failed" >&2
     return 1
   fi
@@ -1202,7 +1331,11 @@ precommit_install_deps() {
 #
 # Parameters:
 #   $1 — name of a bash array variable holding changed file paths (nameref)
-#   $2 — git range for gitleaks re-scan after auto-fix (e.g. "abc123..HEAD")
+#   $2 — gitleaks --log-opts for the re-scan after auto-fix: a plain range
+#        (e.g. "abc123..HEAD") or "--first-parent abc123..HEAD" when the
+#        caller detected a merge commit in range. The signoff helpers below
+#        need a plain git-rev-list range, so any "--first-parent " prefix is
+#        stripped before use — they add --first-parent internally instead.
 #   $3 — target branch name (for fallback diff derivation)
 #   $4 — merge-base commit (for diff derivation after auto-fix)
 #
@@ -1219,6 +1352,10 @@ precommit_run_gate() {
   local _pg_scan_range="$2"
   local _pg_target_branch="$3"
   local _pg_merge_base="$4"
+  # signoff_* helpers take a plain git-rev-list range and add --first-parent
+  # themselves; strip any "--first-parent " prefix a caller folded into $2
+  # for the gitleaks --log-opts use below, so the two don't fight over quoting.
+  local _pg_plain_range="${_pg_scan_range#--first-parent }"
 
   # Output contract — callers read these after the function returns.
   # shellcheck disable=SC2034
@@ -1291,9 +1428,9 @@ precommit_run_gate() {
     # Re-check signed-off-by trailers — strip if present (defense-in-depth).
     # The auto-fix amend above can only have re-added a trailer to HEAD (a repo
     # commit-msg hook); section 3b already cleaned the rest of the range.
-    if signoff_present_in_range "${_pg_scan_range}"; then
+    if signoff_present_in_range "${_pg_plain_range}"; then
       gha_echo warning "Signed-off-by trailer found after auto-fix amend — stripping"
-      if ! signoff_strip_range "${_pg_scan_range}"; then
+      if ! signoff_strip_range "${_pg_plain_range}"; then
         # shellcheck disable=SC2034
         PRECOMMIT_GATE_SIGNOFF_FAIL="true"
         # shellcheck disable=SC2034
@@ -1305,7 +1442,7 @@ precommit_run_gate() {
         return 0
       fi
       # Re-scan: fail only if a trailer survives a rewrite that reported success
-      if signoff_present_in_range "${_pg_scan_range}"; then
+      if signoff_present_in_range "${_pg_plain_range}"; then
         # shellcheck disable=SC2034
         PRECOMMIT_GATE_SIGNOFF_FAIL="true"
         # shellcheck disable=SC2034
@@ -1509,6 +1646,24 @@ if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
   export GITLAB_HOST REPO_ENCODED
 fi
 
+# Prefer the change request's actual base branch over a hardcoded default,
+# but only while reconciling a real forge-reported conflict (issue #1518).
+# TARGET_BRANCH otherwise feeds unrelated pre-existing logic (merge-base
+# computation, precommit scan range, squash-request validation) that
+# predates this feature and must keep using the harness-configured value —
+# substituting the forge base branch on every run would change that
+# logic's behavior far beyond issue #1518's stated scope. Empty API
+# responses keep TARGET_BRANCH as-is.
+if forge_pr_has_merge_conflict "${PR_NUMBER}" 2>/dev/null; then
+  _forge_base="$(forge_get_pr_base_branch "${PR_NUMBER}" 2>/dev/null || true)"
+  if [ -n "${_forge_base}" ]; then
+    if [ "${TARGET_BRANCH}" != "${_forge_base}" ]; then
+      echo "PR/MR base branch is ${_forge_base} (TARGET_BRANCH was ${TARGET_BRANCH})"
+    fi
+    TARGET_BRANCH="${_forge_base}"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # 0. Check for agent commits
 # ---------------------------------------------------------------------------
@@ -1667,9 +1822,101 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   SCAN_RANGE="${DIFF_BASE}..HEAD"
 
-  if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
+  # A forge-conflict merge (issue #1518) keeps DIFF_BASE an ancestor of HEAD,
+  # so the rebase/squash merge-base fallback above never fires and the
+  # two-dot SCAN_RANGE still walks the merge commit's second parent —
+  # historical target-branch commits unrelated to this PR. Detect any merge
+  # commit in range and scope the gitleaks scan to first-parent history
+  # only, mirroring the isolation the rebase/squash path already gets.
+  #
+  # Collect the merge SHAs themselves with --first-parent too: a plain
+  # two-dot `rev-list --merges` also walks the second-parent side and can
+  # surface historical merges on the target branch that only became
+  # reachable through this merge's second parent. Those are not agent-
+  # introduced content and must not feed the per-merge scan below.
+  GITLEAKS_LOG_OPTS="${SCAN_RANGE}"
+  MERGE_COMMITS_IN_RANGE="$(git rev-list --first-parent --merges "${SCAN_RANGE}" 2>/dev/null || true)"
+  if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
+    echo "Merge commit(s) found in ${SCAN_RANGE} — scoping secret scan to first-parent history"
+    GITLEAKS_LOG_OPTS="--first-parent ${SCAN_RANGE}"
+  fi
+
+  if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${GITLEAKS_LOG_OPTS}" --redact 2>&1)"; then
     print_sanitized_gha_log "${GITLEAKS_OUTPUT}" stderr
     post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
+  fi
+
+  # gitleaks drives `git log -p` under the hood without `-m`; it never emits
+  # a patch for a commit with a "Merge:" header, even when --first-parent
+  # forces git itself to print one (the diff against the merge's first
+  # parent). Content that only exists because of the merge itself — i.e. the
+  # forge-conflict resolution — is therefore invisible to the scan above.
+  # Scan each merge's *combined* diff — `git show`'s default format for a
+  # merge commit (equivalent to `--cc`), which includes only blobs that
+  # differ from every parent — so only the actual conflict-resolution
+  # content is checked. A pairwise `-m --first-parent` diff dumps the entire
+  # incoming-target tree delta (every file the merge brought in, whether or
+  # not it was touched by conflict resolution), including target-branch
+  # content this PR never modified — a secret already on the target branch
+  # would then false-fail this authoritative gate and block publishing a
+  # legitimate conflict merge.
+  #
+  # `--cc` is only safe when EVERY non-first parent of the merge is actually
+  # part of trusted target-branch history: combined-diff format omits any
+  # path whose merge-result blob matches *any* parent, not just the one
+  # checked. Checking only `^2` is incomplete for a merge with more than two
+  # parents — a third (or later) parent that cleanly adds a file (no
+  # conflict) would never appear in `--cc` output even though it was never
+  # verified as trusted. MERGE_COMMITS_IN_RANGE is limited to the agent's
+  # own first-parent merge(s), but nothing else guarantees every parent of a
+  # given merge actually IS trusted target-branch history — a compromised
+  # sandboxed agent could create a different (possibly octopus) merge during
+  # the same session (e.g. of a throwaway branch carrying a planted secret)
+  # and `--cc` would silently miss a cleanly-added file. Walk every non-first
+  # parent (`^2`, `^3`, ... until `git rev-parse` fails) and require each one
+  # to be an ancestor of TRUSTED_TARGET_SHA (fetched fresh, not the mutable
+  # local ref) before trusting `--cc`; fall back to the full pairwise
+  # first-parent diff whenever any extra parent is missing, unresolvable, or
+  # not trusted-target history, since that diff captures everything the
+  # merge brought in regardless of conflict status.
+  # Materialize the diff to a file rather than piping `git show` straight
+  # into `gitleaks --pipe`: with `set -o pipefail` (enabled at the top of
+  # this script), a downstream reader that exits before draining stdin can
+  # SIGPIPE the upstream `git show`, which would then fail the pipeline
+  # regardless of what gitleaks itself reported.
+  if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
+    fetch_trusted_target_sha
+    MERGE_DIFF_TMP="$(mktemp)"
+    while IFS= read -r _merge_sha; do
+      [ -z "${_merge_sha}" ] && continue
+      MERGE_SHOW_ARGS=(-m --first-parent)
+      _merge_extra_parents_trusted=false
+      _merge_parent_n=2
+      while _merge_parent="$(git rev-parse "${_merge_sha}^${_merge_parent_n}" 2>/dev/null)" \
+        && [ -n "${_merge_parent}" ]; do
+        if ! git merge-base --is-ancestor "${_merge_parent}" "${TRUSTED_TARGET_SHA}" 2>/dev/null; then
+          _merge_extra_parents_trusted=false
+          break
+        fi
+        _merge_extra_parents_trusted=true
+        _merge_parent_n=$((_merge_parent_n + 1))
+      done
+      if [ "${_merge_extra_parents_trusted}" = true ]; then
+        MERGE_SHOW_ARGS=(--cc)
+      fi
+      if ! git show "${MERGE_SHOW_ARGS[@]}" "${_merge_sha}" > "${MERGE_DIFF_TMP}" 2>&1; then
+        MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
+        rm -f "${MERGE_DIFF_TMP}"
+        print_sanitized_gha_log "${MERGE_SHOW_OUTPUT}" stderr
+        post_fail_to_pr setup-error "Could not read merge commit ${_merge_sha} for the authoritative secret scan"
+      fi
+      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_DIFF_TMP}" 2>&1)"; then
+        rm -f "${MERGE_DIFF_TMP}"
+        print_sanitized_gha_log "${MERGE_GITLEAKS_OUTPUT}" stderr
+        post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
+      fi
+    done <<< "${MERGE_COMMITS_IN_RANGE}"
+    rm -f "${MERGE_DIFF_TMP}"
   fi
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
@@ -1724,7 +1971,12 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   SCAN_RANGE="${DIFF_BASE}..HEAD"
 
-  precommit_run_gate changed_array "${SCAN_RANGE}" "${TARGET_BRANCH}" "${MERGE_BASE}"
+  # Pass GITLEAKS_LOG_OPTS (computed in section 1, same SCAN_RANGE) rather
+  # than the raw two-dot SCAN_RANGE: a forge-conflict merge (issue #1518)
+  # keeps DIFF_BASE an ancestor of HEAD, so the autofix re-scan inside
+  # precommit_run_gate would otherwise walk the merge's second parent and
+  # can fail on historical target-branch secrets unrelated to this PR.
+  precommit_run_gate changed_array "${GITLEAKS_LOG_OPTS}" "${TARGET_BRANCH}" "${MERGE_BASE}"
 
   if [ "${PRECOMMIT_GATE_SECRET_FAIL}" = "true" ]; then
     post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
@@ -1779,11 +2031,14 @@ fi
 # "false", the fail-closed default — see issue #565.
 AGENT_REBASED_ONTO_TARGET=false
 AGENT_HISTORY_REWRITTEN=false
+AGENT_MERGED_TARGET=false
 if [ -n "${RESULT_FILE}" ] && [ -f "${RESULT_FILE}" ]; then
   AGENT_REBASED_ONTO_TARGET="$(jq -r 'if .rebased_onto_target == true then "true" else "false" end' "${RESULT_FILE}" 2>/dev/null || echo false)"
   [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ] || AGENT_REBASED_ONTO_TARGET=false
   AGENT_HISTORY_REWRITTEN="$(jq -r 'if .history_rewritten == true then "true" else "false" end' "${RESULT_FILE}" 2>/dev/null || echo false)"
   [ "${AGENT_HISTORY_REWRITTEN}" = "true" ] || AGENT_HISTORY_REWRITTEN=false
+  AGENT_MERGED_TARGET="$(jq -r 'if .merged_target == true then "true" else "false" end' "${RESULT_FILE}" 2>/dev/null || echo false)"
+  [ "${AGENT_MERGED_TARGET}" = "true" ] || AGENT_MERGED_TARGET=false
 fi
 
 # A non-bot TRIGGER_SOURCE only proves a human triggered *this run* — it
@@ -1799,6 +2054,19 @@ HUMAN_REBASE_REQUESTED=false
 if ! is_bot_user "${TRIGGER_SOURCE}" && is_human_rebase_request "${HUMAN_INSTRUCTION:-}"; then
   HUMAN_REBASE_REQUESTED=true
 fi
+
+# Runner-side forge conflict query (issue #1518). agent-result.json is
+# sandbox-written; the skip below must not trust merged_target /
+# rebased_onto_target from a bot-triggered run unless this independently
+# verified signal is true. Approval/check gating, a stale branch, and
+# unknown API responses are not conflicts.
+FIX_CONFLICT_STRATEGY="$(fix_conflict_update_strategy)"
+FORGE_PR_HAS_CONFLICT=false
+FORGE_PR_MERGE_STATE="$(forge_get_pr_merge_state "${PR_NUMBER}" 2>/dev/null || echo unknown)"
+if forge_pr_has_merge_conflict "${PR_NUMBER}"; then
+  FORGE_PR_HAS_CONFLICT=true
+fi
+echo "Forge mergeability: state=${FORGE_PR_MERGE_STATE} conflict=${FORGE_PR_HAS_CONFLICT} strategy=${FIX_CONFLICT_STRATEGY}"
 
 # Same trust boundary for squash/redo: history_rewritten in agent-result.json
 # is sandbox-written. Only a harness-captured human squash or redo instruction
@@ -1854,8 +2122,20 @@ FIX_AGENT_GIT_NAME="fullsend-fix"
 # Fail closed when the agent identity is unknown (cannot tell humans/code-
 # agent from this fix agent) or when a non-fix-agent commit would be lost
 # by publishing the rewrite.
+#
+# Sets the global HISTORY_REWRITE_PATCH_ID_ONLY_MATCH to "true" when at
+# least one remote commit was only recognized via the patch-id fallback
+# (never as an exact-SHA ancestor nor via the same-tree fallback). The
+# patch-id fallback alone is consistent with a genuine rebase having
+# happened, not merely a reconstruction or merge — callers that trust this
+# function to authorize a *merge*-only skip must additionally require
+# explicit rebase authorization (FIX_CONFLICT_STRATEGY=rebase or
+# HUMAN_REBASE_REQUESTED) whenever this flag is "true", or a rebase could
+# be disguised as a merge (see the auth-bypass class of finding on PR
+# #1296, and the merged_target GitLab-reconstruction fallback below).
 history_rewrite_preserves_remote_human_commits() {
   local bot remote_ref target_ref mb sha author_email author_name tree patch_id candidate candidate_name candidate_email candidate_patch_id candidate_tree
+  HISTORY_REWRITE_PATCH_ID_ONLY_MATCH=false
   bot="$(signoff_bot_email)"
   if [ -z "${bot}" ]; then
     echo "history-rewrite: agent git identity unavailable; refusing to publish rewrite" >&2
@@ -1911,6 +2191,7 @@ history_rewrite_preserves_remote_human_commits() {
           [ "${candidate_email}" = "${author_email}" ] || continue
           candidate_patch_id="$(git show "${candidate}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
           if [ -n "${candidate_patch_id}" ] && [ "${candidate_patch_id}" = "${patch_id}" ]; then
+            HISTORY_REWRITE_PATCH_ID_ONLY_MATCH=true
             continue 2
           fi
         done < <(git log --format='%H%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
@@ -1975,6 +2256,106 @@ if [ "${NO_PUSH}" = "false" ]; then
       && ! git merge-base --is-ancestor "origin/${TARGET_BRANCH}" "origin/${BRANCH}" 2>/dev/null; then
       SKIP_REMOTE_REBASE=true
       echo "Local HEAD is already based on origin/${TARGET_BRANCH} and has diverged from origin/${BRANCH} (target is ahead of the remote PR tip) — skipping rebase onto origin/${BRANCH} to preserve the agent rebase onto the target"
+    fi
+    # Forge-reported conflict (issue #1518). Bot-triggered runs are not
+    # human rebase requests, so HUMAN_REBASE_REQUESTED cannot authorize the
+    # rebase branch below on its own — it only widens that branch's
+    # strategy gate to a human-requested override. The runner re-queries
+    # the forge independently of the sandbox-written merged_target /
+    # rebased_onto_target flags; ancestry still has to show that HEAD
+    # already contains the target. Replaying onto origin/BRANCH would
+    # re-hit the conflict the agent just resolved (a merge commit is
+    # dropped by a default git rebase; a rebase onto the target is undone
+    # by replaying onto the stale PR tip).
+    if [ "${SKIP_REMOTE_REBASE}" = "false" ] && [ "${FORGE_PR_HAS_CONFLICT}" = "true" ]; then
+      if [ "${AGENT_MERGED_TARGET}" = "true" ] || [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ]; then
+        fetch_trusted_target_sha
+        if [ -n "${TRUSTED_TARGET_SHA}" ] \
+          && git merge-base --is-ancestor "${TRUSTED_TARGET_SHA}" HEAD 2>/dev/null; then
+          # merged_target: also require the real remote PR tip
+          # (origin/${BRANCH}, freshly fetched above) to be an ancestor of
+          # HEAD. Containing the target SHA alone is not enough — a GitLab
+          # reconstruction can start from the target branch and trivially
+          # satisfy that check without ever containing the real remote
+          # commits, which the force-push fallback would then drop.
+          if [ "${AGENT_MERGED_TARGET}" = "true" ] \
+            && git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null; then
+            SKIP_REMOTE_REBASE=true
+            echo "Local HEAD already contains origin/${TARGET_BRANCH} via a forge-conflict merge — skipping rebase onto origin/${BRANCH} to preserve the merge commit"
+          # rebased_onto_target: only trust the sandbox-written flag when
+          # the runner-computed strategy actually authorizes a rebase, or a
+          # human's own /fs-fix text explicitly asked for one. Without this,
+          # a bot-triggered run (or an unrelated human /fs-fix instruction)
+          # could force-push over the remote PR tip via this flag even
+          # though the configured strategy is the conservative "merge"
+          # default (see the auth-bypass class of finding on PR #1296).
+          elif [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ] \
+            && { [ "${FIX_CONFLICT_STRATEGY}" = "rebase" ] || [ "${HUMAN_REBASE_REQUESTED}" = "true" ]; } \
+            && ! git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null \
+            && ! git merge-base --is-ancestor "${TRUSTED_TARGET_SHA}" "origin/${BRANCH}" 2>/dev/null; then
+            SKIP_REMOTE_REBASE=true
+            echo "Local HEAD is already based on origin/${TARGET_BRANCH} after a forge-conflict rebase — skipping rebase onto origin/${BRANCH} to preserve the agent rebase onto the target"
+          # merged_target / GitLab reconstruction fallback: on GitLab the
+          # sandbox cannot git-fetch the real source branch, so it
+          # reconstructs BRANCH from API content and the resulting merge
+          # commit's ancestry never lines up with origin/${BRANCH}'s real
+          # SHAs, even though the content is equivalent — the ancestor
+          # check above (line 690) can never pass for a genuine GitLab
+          # conflict-merge. A default `git rebase origin/${BRANCH}` below
+          # would then silently drop the merge commit and the conflict
+          # resolution it carries. Detect the reconstruction case without
+          # relying on SHA ancestry into HEAD: PRE_AGENT_HEAD is set by the
+          # runner before the sandbox ever ran (harness/fix.yaml), so it is
+          # not sandbox-influenceable. If origin/${BRANCH} (the real,
+          # freshly-fetched remote tip) is unchanged since PRE_AGENT_HEAD,
+          # nobody pushed anything new to the remote branch during this
+          # run. That alone only proves the remote tip did not move — it
+          # does NOT prove HEAD's reconstruction actually contains what
+          # origin/${BRANCH} has (the same target-SHA-in-HEAD gap the
+          # merged_target ancestry check above exists to close): a
+          # reconstruction that starts from the target, or an API replay
+          # that omits PR-unique commits, would satisfy every check above
+          # without ever containing the real remote commits. Require the
+          # same content-preservation guarantee the squash/redo publish
+          # gate relies on before trusting this fallback; fall through to
+          # the default rebase when it fails.
+          #
+          # This fallback exists only for GitLab's reconstructed-history
+          # model (its justification above is entirely GitLab-specific); a
+          # genuine GitHub merge already satisfies the ancestor-based arm
+          # earlier in this if-chain. Gate on FULLSEND_FORGE=gitlab so a
+          # GitHub run cannot reach it.
+          #
+          # history_rewrite_preserves_remote_human_commits alone is not
+          # sufficient here: it also tolerates a genuine rebase via its
+          # same-author-identity + same-patch-id fallback (documented at
+          # its definition above), which is the exact operation the
+          # sibling rebased_onto_target arm two cases above gates behind
+          # an explicit FIX_CONFLICT_STRATEGY=rebase ||
+          # HUMAN_REBASE_REQUESTED check. Without an equivalent gate here,
+          # a confused or compromised sandboxed agent could actually
+          # rebase onto the target instead of merging, falsely report
+          # merged_target: true, and still satisfy this fallback via the
+          # patch-id path — reaching SKIP_REMOTE_REBASE=true (and the
+          # force-with-lease push path) under the default merge strategy
+          # with no rebase authorization. Require explicit rebase
+          # authorization whenever HISTORY_REWRITE_PATCH_ID_ONLY_MATCH
+          # (set by the helper) shows the patch-id fallback — not the
+          # tree fallback, which is what a genuine reconstruction/merge
+          # actually produces — was needed to preserve a remote commit.
+          elif [ "${AGENT_MERGED_TARGET}" = "true" ] \
+            && [ "${FULLSEND_FORGE}" = "gitlab" ] \
+            && [ "${FIX_CONFLICT_STRATEGY}" = "merge" ] \
+            && [ -n "${PRE_AGENT_HEAD:-}" ] \
+            && [ "$(git rev-parse "origin/${BRANCH}" 2>/dev/null)" = "${PRE_AGENT_HEAD}" ] \
+            && ! git merge-base --is-ancestor "${TRUSTED_TARGET_SHA}" "origin/${BRANCH}" 2>/dev/null \
+            && history_rewrite_preserves_remote_human_commits \
+            && { [ "${HISTORY_REWRITE_PATCH_ID_ONLY_MATCH}" = "false" ] || [ "${HUMAN_REBASE_REQUESTED}" = "true" ]; }; then
+            SKIP_REMOTE_REBASE=true
+            echo "origin/${BRANCH} has not advanced past PRE_AGENT_HEAD (GitLab reconstruction detected) and HEAD preserves origin/${BRANCH}'s content — skipping rebase onto origin/${BRANCH} to preserve the forge-conflict merge"
+          fi
+        fi
+      fi
     fi
     # Squash/redo (issue #1332): the agent rewrote the contiguous fix-agent
     # suffix, so origin/BRANCH is no longer an ancestor of HEAD. Replaying

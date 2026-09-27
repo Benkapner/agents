@@ -18,6 +18,9 @@
 #   ITERATION_CAP      — max bot-triggered iterations (default: 5)
 #   ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
 #   HUMAN_INSTRUCTION  — instruction text (only for human-triggered runs)
+#   FIX_CONFLICT_UPDATE_STRATEGY
+#                      — merge (default) or rebase; how to publish a
+#                        forge-reported merge conflict the agent reconciled
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,6 +86,42 @@ forge_get_pr_head_ref() {
   local pr_number="$1"
   GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
     --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null
+}
+
+# forge_get_pr_base_branch PR_NUMBER — PR base branch (not the repo default).
+# Empty on API failure; callers fall back to TARGET_BRANCH / main.
+forge_get_pr_base_branch() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json baseRefName --jq '.baseRefName // empty' 2>/dev/null
+}
+
+# forge_get_pr_merge_state PR_NUMBER — GitHub GraphQL MergeableState
+# (MERGEABLE | CONFLICTING | UNKNOWN). Prints "unknown" on API failure or
+# empty response so callers never treat a missing signal as a conflict.
+forge_get_pr_merge_state() {
+  local pr_number="$1"
+  local mergeable
+  mergeable="$(GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json mergeable --jq '.mergeable // empty' 2>/dev/null)" || {
+    echo "unknown"
+    return 0
+  }
+  if [ -z "${mergeable}" ]; then
+    echo "unknown"
+    return 0
+  fi
+  echo "${mergeable}"
+}
+
+# forge_pr_has_merge_conflict PR_NUMBER — return 0 only when GitHub reports
+# mergeable=CONFLICTING. BLOCKED / BEHIND / UNSTABLE / UNKNOWN / MERGEABLE
+# and API failures are not conflicts (issue #1518).
+forge_pr_has_merge_conflict() {
+  local pr_number="$1"
+  local mergeable
+  mergeable="$(forge_get_pr_merge_state "${pr_number}")" || return 1
+  [ "${mergeable}" = "CONFLICTING" ]
 }
 
 # --- Push operations ---
@@ -274,6 +313,63 @@ forge_get_pr_head_ref() {
   ) | jq -r '.source_branch // empty'
 }
 
+# forge_get_pr_base_branch PR_NUMBER — MR target_branch (not the repo default).
+# Empty on API failure; callers fall back to TARGET_BRANCH / main.
+forge_get_pr_base_branch() {
+  local pr_number="$1"
+  (
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  ) | jq -r '.target_branch // empty'
+}
+
+# forge_get_pr_merge_state PR_NUMBER — GitLab detailed_merge_status, or
+# "unknown" when the field is absent / the API fails. Callers must not treat
+# not_approved, ci_must_pass, need_rebase, checking, or unknown as a conflict.
+forge_get_pr_merge_state() {
+  local pr_number="$1"
+  local json status
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || {
+    echo "unknown"
+    return 0
+  }
+  status="$(echo "${json}" | jq -r '.detailed_merge_status // empty')"
+  if [ -z "${status}" ]; then
+    echo "unknown"
+    return 0
+  fi
+  echo "${status}"
+}
+
+# forge_pr_has_merge_conflict PR_NUMBER — return 0 only when GitLab reports
+# a real merge conflict. Prefer detailed_merge_status=conflict. Fall back to
+# has_conflicts=true only when detailed_merge_status is absent and the older
+# merge_status is cannot_be_merged (not checking / unchecked).
+forge_pr_has_merge_conflict() {
+  local pr_number="$1"
+  local json status has_conflicts merge_status
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || return 1
+  status="$(echo "${json}" | jq -r '.detailed_merge_status // empty')"
+  if [ "${status}" = "conflict" ]; then
+    return 0
+  fi
+  if [ -n "${status}" ]; then
+    return 1
+  fi
+  has_conflicts="$(echo "${json}" | jq -r '.has_conflicts // false')"
+  merge_status="$(echo "${json}" | jq -r '.merge_status // empty')"
+  [ "${has_conflicts}" = "true" ] && [ "${merge_status}" = "cannot_be_merged" ]
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
@@ -419,6 +515,29 @@ is_human_reset_request() {
 is_human_history_rewrite_request() {
   is_human_squash_request "${1:-}" || is_human_reset_request "${1:-}"
 }
+
+# fix_conflict_update_strategy — prints merge or rebase.
+# FIX_CONFLICT_UPDATE_STRATEGY is the harness-configured reconciliation
+# strategy used when the forge reports a real merge conflict (issue #1518).
+# Empty/unset and unrecognized values fall back to merge, which preserves
+# existing PR/MR commit history. rebase rewrites the branch onto the target.
+fix_conflict_update_strategy() {
+  local raw
+  raw="$(printf '%s' "${FIX_CONFLICT_UPDATE_STRATEGY:-merge}" | tr '[:upper:]' '[:lower:]')"
+  case "${raw}" in
+    rebase) printf '%s\n' "rebase" ;;
+    *) printf '%s\n' "merge" ;;
+  esac
+}
+
+# fix_conflict_update_strategy_raw_is_known — true when the configured
+# value is empty (default) or a supported enum member. Used to warn on typos
+# without failing the run.
+fix_conflict_update_strategy_raw_is_known() {
+  local raw
+  raw="$(printf '%s' "${FIX_CONFLICT_UPDATE_STRATEGY:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -z "${raw}" ] || [ "${raw}" = "merge" ] || [ "${raw}" = "rebase" ]
+}
 # END bundled: lib/fix-ops.lib.sh
 
 errors=0
@@ -538,6 +657,145 @@ fi
 # available on the runner for the authoritative post-script check.
 WORKSPACE_DIR="$(forge_get_workspace_dir)"
 TARGET_REPO="${REPO_DIR:-${WORKSPACE_DIR:-.}/target-repo}"
+
+# _prefix_redact_literal_token <text> <token> — redact every literal
+# occurrence of <token> in <text>, printed to stdout. Used where a runner
+# credential could reach a log line and GHA's own ::add-mask:: masking
+# (forge_mask_token) does not apply (GitLab CI). Plain bash
+# ${text//${token}/repl} is not safe here: parameter-expansion replacement
+# treats the pattern as a glob, so a token containing *, ?, or [ would over-
+# or under-match instead of being matched literally.
+_prefix_redact_literal_token() {
+  local text="$1" token="$2"
+  if [ -z "${token}" ]; then
+    printf '%s' "${text}"
+    return 0
+  fi
+  REDACT_LITERAL_TOKEN="${token}" awk '
+    BEGIN { token = ENVIRON["REDACT_LITERAL_TOKEN"]; repl = "[REDACTED]" }
+    {
+      s = $0
+      while ((i = index(s, token)) > 0) {
+        s = substr(s, 1, i - 1) repl substr(s, i + length(token))
+      }
+      print s
+    }
+  ' <<< "${text}"
+}
+
+# ---------------------------------------------------------------------------
+# Forge merge-conflict detection (issue #1518)
+#
+# Query the PR/MR's native mergeability. Only a positive conflict signal
+# (GitHub mergeable=CONFLICTING, GitLab detailed_merge_status=conflict)
+# causes us to fetch the latest target branch into the checkout the sandbox
+# will see. Approval/check gating, a merely stale branch, unknown, and API
+# failures are not conflicts and must not trigger a fetch/merge/rebase.
+# ---------------------------------------------------------------------------
+if [ "${FULLSEND_FORGE:-}" = "gitlab" ] && [ -n "${PR_URL:-}" ]; then
+  # GITLAB_HOST / REPO_ENCODED are required by gitlab-fix-ops API helpers.
+  # Validation above already confirmed PR_URL matches REPO_FULL_NAME / PR_NUMBER.
+  forge_parse_pr_url "${PR_URL}"
+fi
+
+if ! fix_conflict_update_strategy_raw_is_known; then
+  gha_echo warning "Unknown FIX_CONFLICT_UPDATE_STRATEGY='${FIX_CONFLICT_UPDATE_STRATEGY}' — defaulting to merge"
+fi
+FIX_CONFLICT_STRATEGY="$(fix_conflict_update_strategy)"
+
+FORGE_PR_BASE_BRANCH="$(forge_get_pr_base_branch "${PR_NUMBER}" 2>/dev/null || true)"
+if [ -z "${FORGE_PR_BASE_BRANCH}" ]; then
+  FORGE_PR_BASE_BRANCH="${TARGET_BRANCH:-main}"
+  echo "Could not read PR/MR base branch from forge — using ${FORGE_PR_BASE_BRANCH}"
+fi
+
+FORGE_PR_MERGE_STATE="$(forge_get_pr_merge_state "${PR_NUMBER}" 2>/dev/null || echo unknown)"
+FORGE_PR_HAS_CONFLICT=false
+if forge_pr_has_merge_conflict "${PR_NUMBER}"; then
+  FORGE_PR_HAS_CONFLICT=true
+fi
+
+echo "Forge mergeability:"
+echo "  base_branch=${FORGE_PR_BASE_BRANCH}"
+echo "  merge_state=${FORGE_PR_MERGE_STATE}"
+echo "  conflict=${FORGE_PR_HAS_CONFLICT}"
+echo "  strategy=${FIX_CONFLICT_STRATEGY}"
+
+if [ "${FORGE_PR_HAS_CONFLICT}" = "true" ]; then
+  # Assign directly into TARGET_BRANCH (mirroring post-fix.src.sh) so the
+  # pre-commit tool base-branch resolution below (which reads TARGET_BRANCH)
+  # uses the resolved PR/MR base instead of falling back to origin/HEAD.
+  # Scoped to the conflict-reconciliation path only, matching
+  # post-fix.src.sh's own scope-creep fix — TARGET_BRANCH must keep coming
+  # from harness config on ordinary (non-conflict) runs.
+  TARGET_BRANCH="${FORGE_PR_BASE_BRANCH}"
+
+  if [ -d "${TARGET_REPO}/.git" ] || [ -f "${TARGET_REPO}/.git" ]; then
+    echo "Fetching latest target branch ${FORGE_PR_BASE_BRANCH} for conflict reconciliation..."
+    # TARGET_REPO is the checkout the runner mounts into the sandbox
+    # (docs/fix.md) — PUSH_TOKEN must never persist there (post-fix.src.sh's
+    # "Token isolation: PUSH_TOKEN never enters the sandbox" contract). Save
+    # the pre-existing origin URL and restore it right after the fetch,
+    # regardless of whether the fetch succeeds, instead of leaving the
+    # credentialed URL in .git/config.
+    _restore_origin_url=""
+    if [ -n "${PUSH_TOKEN:-}" ]; then
+      # Mask before the credentialed URL can ever reach a log line — matches
+      # post-fix.src.sh, which masks PUSH_TOKEN before its own credentialed
+      # fetch. Without this, a git error that prints the remote URL below
+      # would not be redacted in GHA logs.
+      forge_mask_token "${PUSH_TOKEN}"
+      _restore_origin_url="$(git -C "${TARGET_REPO}" remote get-url origin 2>/dev/null || true)"
+      if ! (cd "${TARGET_REPO}" && forge_set_push_remote "${PUSH_TOKEN}"); then
+        gha_echo warning "Could not set authenticated origin URL before fetching ${FORGE_PR_BASE_BRANCH}"
+        _restore_origin_url=""
+      fi
+    fi
+    # Capture stdout/stderr instead of letting the fetch write straight to
+    # the job log: forge_mask_token's ::add-mask:: above only redacts on
+    # GitHub Actions (GITHUB_ACTIONS=true) — gitlab-fix-ops.lib.sh's
+    # forge_mask_token is a documented no-op otherwise — so on GitLab a git
+    # error that echoes the credentialed remote URL would reach the job log
+    # verbatim. Redact the literal PUSH_TOKEN value (including any
+    # URL-embedded form) ourselves before printing, matching
+    # post-fix.src.sh's print_sanitized_gha_log discipline around its own
+    # target-branch fetch.
+    if _conflict_fetch_output="$(git -C "${TARGET_REPO}" fetch origin "+refs/heads/${FORGE_PR_BASE_BRANCH}:refs/remotes/origin/${FORGE_PR_BASE_BRANCH}" 2>&1)"; then
+      _conflict_fetch_rc=0
+    else
+      _conflict_fetch_rc=$?
+    fi
+    if [ -n "${_conflict_fetch_output}" ]; then
+      if [ -n "${PUSH_TOKEN:-}" ]; then
+        # Not `${_conflict_fetch_output//${PUSH_TOKEN}/[REDACTED]}`: bash
+        # parameter-expansion replacement treats the pattern as a glob, so a
+        # token containing *, ?, or [ would over- or under-match instead of
+        # being matched literally.
+        _conflict_fetch_output="$(_prefix_redact_literal_token "${_conflict_fetch_output}" "${PUSH_TOKEN}")"
+      fi
+      echo "${_conflict_fetch_output}"
+    fi
+    if [ "${_conflict_fetch_rc}" -eq 0 ]; then
+      _conflict_target_sha="$(git -C "${TARGET_REPO}" rev-parse "refs/remotes/origin/${FORGE_PR_BASE_BRANCH}" 2>/dev/null || true)"
+      echo "Fetched origin/${FORGE_PR_BASE_BRANCH} (${_conflict_target_sha}) before fix validation"
+    else
+      gha_echo warning "Could not fetch target branch ${FORGE_PR_BASE_BRANCH} — sandbox may not have the latest tip"
+    fi
+    if [ -n "${_restore_origin_url}" ]; then
+      # Fatal, not warn-and-continue: TARGET_REPO is mounted into the sandbox,
+      # so a failed restore would leave the credentialed origin URL in a
+      # checkout the sandbox can read, contradicting the token-isolation
+      # contract above.
+      if ! git -C "${TARGET_REPO}" remote set-url origin "${_restore_origin_url}"; then
+        gha_echo error "Could not restore original origin URL for ${TARGET_REPO} after fetch — refusing to continue with a credentialed origin URL mounted into the sandbox"
+        exit 1
+      fi
+    fi
+  else
+    gha_echo warning "Target repo not found at ${TARGET_REPO} — skipping target-branch fetch"
+  fi
+fi
+
 RESOLVE_SCRIPT="${SCRIPT_DIR}/resolve-precommit-tools.py"
 INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
 
