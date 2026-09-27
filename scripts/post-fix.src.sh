@@ -237,9 +237,36 @@ fetch_trusted_target_sha() {
   if [ -n "${TRUSTED_TARGET_SHA}" ]; then
     return 0
   fi
+  # Credential origin only for the duration of this fetch, then restore the
+  # unauthenticated URL immediately — mirroring pre-fix.src.sh's own
+  # conflict-branch fetch. This call can run as early as the merge-commit
+  # secret scan below (whenever a forge-conflict merge is in range), which
+  # is before section 2/3 (precommit_install_deps / precommit_run_gate) run
+  # repo-defined, PR-controlled pre-commit hooks and tool installers. Those
+  # must never see a credentialed origin remote (readable via
+  # `git remote get-url origin`). Restore failure is fatal, not
+  # warn-and-continue: leaving the credentialed URL in place would expose it
+  # to that untrusted code.
+  _trusted_target_restore_url="$(git remote get-url origin 2>/dev/null || true)"
   forge_set_push_remote "${PUSH_TOKEN}"
   echo "Fetching target branch ${TARGET_BRANCH}..."
-  if ! TARGET_FETCH_OUTPUT="$(git fetch origin "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}" 2>&1)"; then
+  if TARGET_FETCH_OUTPUT="$(git fetch origin "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}" 2>&1)"; then
+    TARGET_FETCH_RC=0
+  else
+    TARGET_FETCH_RC=$?
+  fi
+  if [ -n "${_trusted_target_restore_url}" ]; then
+    if ! git remote set-url origin "${_trusted_target_restore_url}"; then
+      gha_echo error "Could not restore original origin URL after fetching target branch '${TARGET_BRANCH}' — refusing to continue with a credentialed origin URL exposed to pre-commit hooks and tool installers"
+      exit 1
+    fi
+  fi
+  # Redact PUSH_TOKEN from the fetch output before it can reach a log line
+  # or a posted failure message: print_sanitized_gha_log only strips GHA
+  # workflow-command syntax, not credential values, and forge_mask_token's
+  # ::add-mask:: is a documented no-op on GitLab CI.
+  TARGET_FETCH_OUTPUT="$(_redact_literal_token "${TARGET_FETCH_OUTPUT}" "${PUSH_TOKEN}")"
+  if [ "${TARGET_FETCH_RC}" -ne 0 ]; then
     print_sanitized_gha_log "${TARGET_FETCH_OUTPUT}" stderr
     post_fail_to_pr setup-error \
       "Could not fetch target branch '${TARGET_BRANCH}': ${TARGET_FETCH_OUTPUT}"
@@ -388,6 +415,7 @@ if [ "${NO_PUSH}" = "false" ]; then
   if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
     fetch_trusted_target_sha
     MERGE_DIFF_TMP="$(mktemp)"
+    _any_merge_used_cc=false
     while IFS= read -r _merge_sha; do
       [ -z "${_merge_sha}" ] && continue
       MERGE_SHOW_ARGS=(-m --first-parent)
@@ -404,6 +432,7 @@ if [ "${NO_PUSH}" = "false" ]; then
       done
       if [ "${_merge_extra_parents_trusted}" = true ]; then
         MERGE_SHOW_ARGS=(--cc)
+        _any_merge_used_cc=true
       fi
       if ! git show "${MERGE_SHOW_ARGS[@]}" "${_merge_sha}" > "${MERGE_DIFF_TMP}" 2>&1; then
         MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
@@ -417,6 +446,29 @@ if [ "${NO_PUSH}" = "false" ]; then
         post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
       fi
     done <<< "${MERGE_COMMITS_IN_RANGE}"
+    # `--cc` omits any path whose merge-result blob matches *any* parent —
+    # including an older-but-still-trusted target commit whose tree already
+    # differs from the current TRUSTED_TARGET_SHA tip (e.g. a secret since
+    # deleted from the tip). The ancestor check above only proves each extra
+    # parent is *somewhere* in the target's history, not that its content
+    # matches the current tip, so a resurrected blob can hide behind `--cc`.
+    # Close that gap with a direct diff of the current tip against HEAD:
+    # anything HEAD carries that the tip does not (including a resurrected
+    # blob) shows up here regardless of which parent's content it matches.
+    if [ "${_any_merge_used_cc}" = true ]; then
+      echo "Combined-diff (--cc) used for at least one merge — additionally scanning content in HEAD not on the current target tip"
+      if ! git diff "${TRUSTED_TARGET_SHA}" HEAD > "${MERGE_DIFF_TMP}" 2>&1; then
+        MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
+        rm -f "${MERGE_DIFF_TMP}"
+        print_sanitized_gha_log "${MERGE_SHOW_OUTPUT}" stderr
+        post_fail_to_pr setup-error "Could not diff HEAD against the trusted target for the authoritative secret scan"
+      fi
+      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_DIFF_TMP}" 2>&1)"; then
+        rm -f "${MERGE_DIFF_TMP}"
+        print_sanitized_gha_log "${MERGE_GITLEAKS_OUTPUT}" stderr
+        post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
+      fi
+    fi
     rm -f "${MERGE_DIFF_TMP}"
   fi
   echo "Secret scan passed — no leaks in agent's commit(s)"
@@ -771,8 +823,52 @@ if [ "${NO_PUSH}" = "false" ]; then
     if [ "${SKIP_REMOTE_REBASE}" = "false" ] && [ "${FORGE_PR_HAS_CONFLICT}" = "true" ]; then
       if [ "${AGENT_MERGED_TARGET}" = "true" ] || [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ]; then
         fetch_trusted_target_sha
-        if [ -n "${TRUSTED_TARGET_SHA}" ] \
-          && git merge-base --is-ancestor "${TRUSTED_TARGET_SHA}" HEAD 2>/dev/null; then
+        if [ -n "${TRUSTED_TARGET_SHA}" ]; then
+          # Do not require TRUSTED_TARGET_SHA (the *current* target tip,
+          # force-fetched fresh above) to be an ancestor of HEAD. The agent
+          # merged/rebased onto whatever the target tip was when it ran
+          # (fetched by pre-fix.src.sh); if the target fast-forwarded again
+          # during the sandbox's run (up to timeout_minutes), this fetch
+          # observes a newer tip HEAD never saw. Requiring that newer tip in
+          # HEAD would bounce a legitimate merge/rebase into the default
+          # rebase below, which drops the merge commit / undoes the rebase.
+          # Each arm below instead verifies HEAD's own merge/rebase is still
+          # on the current target's line, which tolerates the target moving
+          # further ahead in the meantime.
+          #
+          # merged_target: some first-parent merge introduced since the real
+          # remote PR tip (origin/${BRANCH}, freshly fetched above — not
+          # MERGE_COMMITS_IN_RANGE from section 1, which is scoped to
+          # DIFF_BASE..HEAD and, when PRE_AGENT_HEAD is unset, falls back to
+          # HEAD~1 and can exclude the agent's own merge commit entirely) has
+          # a second parent that is an ancestor of the current
+          # TRUSTED_TARGET_SHA — the merged content is still on the target's
+          # line, even if the target has since advanced further.
+          MERGE_TARGET_ANCESTOR_OK=false
+          if [ "${AGENT_MERGED_TARGET}" = "true" ]; then
+            _merged_target_merges="$(git rev-list --first-parent --merges "origin/${BRANCH}..HEAD" 2>/dev/null || true)"
+            while IFS= read -r _pfm_sha; do
+              [ -z "${_pfm_sha}" ] && continue
+              _pfm_parent2="$(git rev-parse "${_pfm_sha}^2" 2>/dev/null)" || continue
+              [ -n "${_pfm_parent2}" ] || continue
+              if git merge-base --is-ancestor "${_pfm_parent2}" "${TRUSTED_TARGET_SHA}" 2>/dev/null; then
+                MERGE_TARGET_ANCESTOR_OK=true
+                break
+              fi
+            done <<< "${_merged_target_merges}"
+          fi
+          # rebased_onto_target: HEAD and the current target tip must share
+          # real history at all (fails closed only when the two histories
+          # are actually unrelated — a resolvable merge-base is always an
+          # ancestor of HEAD).
+          REBASE_TARGET_ANCESTOR_OK=false
+          if [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ]; then
+            _rebase_target_mb="$(git merge-base HEAD "${TRUSTED_TARGET_SHA}" 2>/dev/null)" || _rebase_target_mb=""
+            if [ -n "${_rebase_target_mb}" ] \
+              && git merge-base --is-ancestor "${_rebase_target_mb}" HEAD 2>/dev/null; then
+              REBASE_TARGET_ANCESTOR_OK=true
+            fi
+          fi
           # merged_target: also require the real remote PR tip
           # (origin/${BRANCH}, freshly fetched above) to be an ancestor of
           # HEAD. Containing the target SHA alone is not enough — a GitLab
@@ -780,6 +876,7 @@ if [ "${NO_PUSH}" = "false" ]; then
           # satisfy that check without ever containing the real remote
           # commits, which the force-push fallback would then drop.
           if [ "${AGENT_MERGED_TARGET}" = "true" ] \
+            && [ "${MERGE_TARGET_ANCESTOR_OK}" = "true" ] \
             && git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null; then
             SKIP_REMOTE_REBASE=true
             echo "Local HEAD already contains origin/${TARGET_BRANCH} via a forge-conflict merge — skipping rebase onto origin/${BRANCH} to preserve the merge commit"
@@ -791,6 +888,7 @@ if [ "${NO_PUSH}" = "false" ]; then
           # though the configured strategy is the conservative "merge"
           # default (see the auth-bypass class of finding on PR #1296).
           elif [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ] \
+            && [ "${REBASE_TARGET_ANCESTOR_OK}" = "true" ] \
             && { [ "${FIX_CONFLICT_STRATEGY}" = "rebase" ] || [ "${HUMAN_REBASE_REQUESTED}" = "true" ]; } \
             && ! git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null \
             && ! git merge-base --is-ancestor "${TRUSTED_TARGET_SHA}" "origin/${BRANCH}" 2>/dev/null; then

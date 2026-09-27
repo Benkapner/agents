@@ -4344,6 +4344,98 @@ run_push_preserves_forge_conflict_merge_test() {
   echo "PASS: ${test_name}"
 }
 
+# High-severity logic-error regression: the target branch fast-forwards
+# again between the point the agent merged it (T1) and post-fix.src.sh's own
+# fresh fetch of the target (T2, force-fetched by fetch_trusted_target_sha).
+# The replay-skip must not require the *current* T2 to be an ancestor of
+# HEAD — the agent only ever saw and merged T1. Requiring T2 in HEAD would
+# bounce this legitimate merge into the default rebase, dropping it.
+run_push_forge_conflict_merge_survives_target_advance_test() {
+  local test_name="push-forge-conflict-merge-survives-target-advance"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  # T1: the target tip the agent actually sees and merges.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead-1" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead 1"
+  git -C "${base}/seed" push -q origin main
+  local main_t1
+  main_t1="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  # T2: the target fast-forwards again *after* the agent's merge, during the
+  # window between pre-fix.src.sh's fetch and post-fix.src.sh's own fetch.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead-2" > "${base}/seed/other2.txt"
+  git -C "${base}/seed" add other2.txt
+  git -C "${base}/seed" commit -q -m "main ahead 2"
+  git -C "${base}/seed" push -q origin main
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "via a forge-conflict merge" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH even though the target (T2) advanced past what the agent merged (T1)"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_t1}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch does not contain T1, the target commit the agent actually merged"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local parents
+  parents="$(git --git-dir="${base}/remote.git" rev-list --max-count=20 --merges refs/heads/agent/99-test-fix)"
+  if [ -z "${parents}" ]; then
+    echo "FAIL: ${test_name} — merge commit was dropped by replay"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # The target's further advance (main ahead 2, pushed above) is deliberately
+  # not required on the pushed branch: the regression under test is that the
+  # replay-skip must not *demand* the current target tip in HEAD, not that
+  # the PR should contain it.
+  echo "PASS: ${test_name}"
+}
+
 run_push_preserves_forge_conflict_rebase_test() {
   local test_name="push-preserves-forge-conflict-rebase"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
@@ -5334,6 +5426,7 @@ run_push_blocked_mergeability_does_not_skip_test() {
 }
 
 run_push_preserves_forge_conflict_merge_test
+run_push_forge_conflict_merge_survives_target_advance_test
 run_push_preserves_forge_conflict_rebase_test
 run_push_forge_conflict_rebase_requires_strategy_test
 run_push_forge_conflict_merge_requires_branch_ancestry_test

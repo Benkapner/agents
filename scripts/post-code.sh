@@ -883,7 +883,20 @@ precommit_run_gate() {
     echo "Auto-fixed files:"
     git diff --name-only -- "${_pg_files[@]}" | sed 's/^/  /'
     git diff --name-only -z -- "${_pg_files[@]}" | xargs -0 -r git add --
-    git commit --amend --no-edit
+    # HEAD can be a forge-conflict resolution merge (issue #1518). Amending
+    # it would change the merge's tree, but the per-merge `--pipe` secret
+    # scan that covers merge-introduced content (post-fix.src.sh section 1)
+    # only runs once, before this gate — the `--log-opts` re-scan just below
+    # emits no patch at all for a "Merge:" commit, so an amended merge tree
+    # would never be scanned by anything. Create a new non-merge commit for
+    # the autofix instead: the merge commit's already-scanned tree stays
+    # untouched, and the new commit is an ordinary first-parent commit the
+    # `--log-opts` re-scan below can see.
+    if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
+      git commit -m "pre-commit: autofix forge-conflict resolution"
+    else
+      git commit --amend --no-edit
+    fi
 
     # Re-run secret scan on the amended commit.
     echo "Re-running secret scan on amended commit..."
