@@ -1746,6 +1746,7 @@ fi
 # ---------------------------------------------------------------------------
 TRUSTED_TARGET_SHA=""
 fetch_trusted_target_sha() {
+  local _trusted_target_restore_url TARGET_FETCH_OUTPUT TARGET_FETCH_RC
   if [ -n "${TRUSTED_TARGET_SHA}" ]; then
     return 0
   fi
@@ -1819,7 +1820,16 @@ fi
 
 CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..HEAD" 2>/dev/null || true)"
 
-if [ -z "${CHANGED_FILES}" ] && [ "${NO_PUSH}" = "false" ]; then
+# A forge-conflict merge commit is a real, publishable change even when this
+# two-dot name-only diff is empty: for a merge commit, DIFF_BASE (still an
+# ancestor of HEAD) makes this a final-tree comparison, and an "ours"-style
+# conflict resolution that keeps the PR's own content over every incoming
+# target change produces a merge tree identical to the first parent — an
+# empty diff despite a genuine, publishable merge. Only treat "no diff" as
+# "nothing to push" when no merge commit is present in the range (see the
+# medium-severity logic-error finding on PR #1520).
+if [ -z "${CHANGED_FILES}" ] && [ "${NO_PUSH}" = "false" ] \
+  && [ -z "$(git rev-list --merges "${DIFF_BASE}..HEAD" 2>/dev/null)" ]; then
   gha_echo warning "No changed files in agent's commit(s) — nothing to push"
   NO_PUSH=true
 fi
@@ -2399,11 +2409,27 @@ if [ "${NO_PUSH}" = "false" ]; then
           # could force-push over the remote PR tip via this flag even
           # though the configured strategy is the conservative "merge"
           # default (see the auth-bypass class of finding on PR #1296).
+          #
+          # REBASE_TARGET_ANCESTOR_OK alone is not sufficient: for related
+          # histories merge-base(HEAD, TRUSTED_TARGET_SHA) is always an
+          # ancestor of HEAD (it only fails for genuinely unrelated
+          # histories, per its own comment above), so it proves HEAD shares
+          # history with the target, not that HEAD still contains the PR's
+          # own commits from origin/${BRANCH}. A sandbox that reset HEAD onto
+          # the bare target tip plus a tree-changing follow-up commit would
+          # satisfy every check above (and the empty-CHANGED_FILES guard
+          # only blocks a bare reset with no follow-up commit) while
+          # dropping every PR commit. Require
+          # history_rewrite_preserves_remote_human_commits, fail closed, the
+          # same content-preservation guarantee the GitLab merged_target
+          # fallback and the squash/redo publish gate already require (see
+          # the high-severity auth-bypass finding on PR #1520).
           elif [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ] \
             && [ "${REBASE_TARGET_ANCESTOR_OK}" = "true" ] \
             && { [ "${FIX_CONFLICT_STRATEGY}" = "rebase" ] || [ "${HUMAN_REBASE_REQUESTED}" = "true" ]; } \
             && ! git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null \
-            && ! git merge-base --is-ancestor "${TRUSTED_TARGET_SHA}" "origin/${BRANCH}" 2>/dev/null; then
+            && ! git merge-base --is-ancestor "${TRUSTED_TARGET_SHA}" "origin/${BRANCH}" 2>/dev/null \
+            && history_rewrite_preserves_remote_human_commits; then
             SKIP_REMOTE_REBASE=true
             echo "Local HEAD is already based on origin/${TARGET_BRANCH} after a forge-conflict rebase — skipping rebase onto origin/${BRANCH} to preserve the agent rebase onto the target"
           # merged_target / GitLab reconstruction fallback: on GitLab the
@@ -2454,7 +2480,22 @@ if [ "${NO_PUSH}" = "false" ]; then
           # (set by the helper) shows the patch-id fallback — not the
           # tree fallback, which is what a genuine reconstruction/merge
           # actually produces — was needed to preserve a remote commit.
+          #
+          # history_rewrite_preserves_remote_human_commits only proves
+          # origin/${BRANCH}'s own pre-existing human commits survive in
+          # HEAD — it says nothing about whether TRUSTED_TARGET_SHA's
+          # content was ever actually merged in. A reconstruction that
+          # faithfully recreates the original PR branch without
+          # incorporating the target at all can satisfy every conjunct
+          # above (nobody pushed to the remote, the reconstruction's own
+          # commits are preserved) while leaving the conflict unresolved on
+          # the remote. Require MERGE_TARGET_ANCESTOR_OK (computed above,
+          # same as the merged_target ancestor-based arm two cases up) so a
+          # real merge commit whose second parent lands on the trusted
+          # target's line must be present — see the medium-severity
+          # logic-error finding on PR #1520.
           elif [ "${AGENT_MERGED_TARGET}" = "true" ] \
+            && [ "${MERGE_TARGET_ANCESTOR_OK}" = "true" ] \
             && [ "${FULLSEND_FORGE}" = "gitlab" ] \
             && [ "${FIX_CONFLICT_STRATEGY}" = "merge" ] \
             && [ -n "${PRE_AGENT_HEAD:-}" ] \

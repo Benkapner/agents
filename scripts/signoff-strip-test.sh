@@ -374,7 +374,7 @@ check "staged-index-names-the-cause" "1" \
   "$(printf '%s' "${err}" | grep -c 'staged changes')"
 
 # ---------------------------------------------------------------------------
-# 7b. A forge-conflict merge plus a later agent commit with a trailer:
+# 6d. A forge-conflict merge plus a later agent commit with a trailer:
 #     filter-branch's underlying rev-list must stay first-parent-only so the
 #     merge's second parent (target-branch history) is never regenerated.
 #     Regression test for the class of bug where a copy/bundle drops
