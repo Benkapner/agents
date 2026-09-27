@@ -166,7 +166,7 @@ EOF
   fi
 }
 
-GITHUB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); def binary_path: type == "string" and test("\\.(?i:png|jpe?g|gif|webp|bmp|ico|svgz|pdf|zip|gz|tgz|bz2|xz|7z|tar|mp3|mp4|mov|avi|webm|woff2?|ttf|otf|eot|wasm|exe|dll|so|dylib|jar|class|psd|ai|sketch)$"); def usable_patch: (.patch | type == "string" and length > 0); def content_free_rename: (.status == "renamed" and .additions == 0 and .deletions == 0 and (.previous_filename | safe_path)); type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (usable_patch or (.filename | binary_path) or content_free_rename))'
+GITHUB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); def binary_path: type == "string" and test("\\.(?i:png|jpe?g|gif|webp|bmp|ico|svgz|pdf|zip|gz|tgz|bz2|xz|7z|tar|mp3|mp4|mov|avi|webm|woff2?|ttf|otf|eot|wasm|exe|dll|so|dylib|jar|class|psd|ai|sketch)$"); def usable_patch: (.patch | type == "string" and length > 0); def content_free_rename: (.status == "renamed" and .additions == 0 and .deletions == 0 and (.previous_filename | safe_path)); type == "object" and (.status == "ahead" or .status == "identical") and (.behind_by == 0) and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (usable_patch or (.filename | binary_path) or content_free_rename))'
 GITLAB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path))'
 
 assert_contains "skill materializes incremental diff" "${SKILL}" \
@@ -232,7 +232,9 @@ assert_contains "Prior paths are rejected, never rewritten" "${SKILL}" \
 assert_contains "Missing-test counterpart is exact" "${SKILL}" \
   'safe `missing-test` `.go` → `_test.go`'
 assert_jq_result "GitHub accepts complete compare" "${GITHUB_COMPARE_COMPLETE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' true
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' true
+assert_jq_result "GitHub rejects diverged history" "${GITHUB_COMPARE_COMPLETE}" \
+  '{"status":"diverged","behind_by":1,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' false
 assert_jq_result "GitHub rejects API error JSON" "${GITHUB_COMPARE_COMPLETE}" \
   '{"message":"Not Found"}' false
 assert_jq_result "GitHub rejects missing commit count" "${GITHUB_COMPARE_COMPLETE}" \
@@ -242,9 +244,9 @@ assert_jq_result "GitHub rejects truncated compare" "${GITHUB_COMPARE_COMPLETE}"
 assert_jq_result "GitHub rejects commit overflow" "${GITHUB_COMPARE_COMPLETE}" \
   '{"total_commits":251,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' false
 assert_jq_result "GitHub accepts unanchored binary path" "${GITHUB_COMPARE_COMPLETE}" \
-  '{"total_commits":1,"files":[{"filename":"image.png","patch":null}]}' true
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"image.png","patch":null}]}' true
 assert_jq_result "GitHub accepts content-free rename without a patch" "${GITHUB_COMPARE_COMPLETE}" \
-  '{"total_commits":1,"files":[{"filename":"new.txt","previous_filename":"old.txt","status":"renamed","additions":0,"deletions":0,"patch":null}]}' true
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"new.txt","previous_filename":"old.txt","status":"renamed","additions":0,"deletions":0,"patch":null}]}' true
 assert_jq_result "GitHub rejects patchless rename without previous path" "${GITHUB_COMPARE_COMPLETE}" \
   '{"total_commits":1,"files":[{"filename":"new.txt","status":"renamed","additions":0,"deletions":0,"patch":null}]}' false
 assert_jq_result "GitHub rejects unpatched source path" "${GITHUB_COMPARE_COMPLETE}" \
@@ -278,10 +280,10 @@ assert_jq_result "GitLab rejects trailing slash" "${GITLAB_COMPARE_COMPLETE}" \
 assert_jq_result "GitLab rejects newline in old path" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt\nb.md","new_path":"a.txt","diff":"@@"}]}' false
 assert_compare_snippet "GitHub complete compare installs precise artifacts" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 false a.txt \
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 false a.txt \
   $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@'
 assert_compare_snippet "GitHub keeps unpatched paths unanchored" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"},{"filename":"image.png","patch":null}]}' \
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"},{"filename":"image.png","patch":null}]}' \
   0 false $'a.txt\nimage.png' \
   $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@'
 assert_compare_snippet "GitHub falls back for unpatched source paths" "${GITHUB_FORGE}" \
@@ -289,7 +291,7 @@ assert_compare_snippet "GitHub falls back for unpatched source paths" "${GITHUB_
   0 true all \
   "base diff fallback"
 assert_compare_snippet "GitHub rename qualifies old and current paths" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"previous_filename":"pkg/auth/token.go","filename":"pkg/util/helpers.go","patch":"@@ -1 +1 @@"}]}' \
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"previous_filename":"pkg/auth/token.go","filename":"pkg/util/helpers.go","patch":"@@ -1 +1 @@"}]}' \
   0 false $'pkg/auth/token.go\npkg/util/helpers.go' \
   $'diff --git a/pkg/auth/token.go b/pkg/util/helpers.go\n@@ -1 +1 @@'
 assert_compare_snippet "GitHub command failure preserves fail-closed state" "${GITHUB_FORGE}" \
@@ -298,6 +300,9 @@ assert_compare_snippet "GitHub unsafe path preserves fail-closed state" "${GITHU
   '{"total_commits":1,"files":[{"filename":"a.txt\nb.md","patch":"@@"}]}' 0 true all "base diff fallback"
 assert_compare_snippet "GitHub malformed payload preserves fail-closed state" "${GITHUB_FORGE}" \
   '{"message":"Not Found"}' 0 true all "base diff fallback"
+assert_compare_snippet "GitHub diverged history preserves fail-closed state" "${GITHUB_FORGE}" \
+  '{"status":"diverged","behind_by":1,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' \
+  0 true all "base diff fallback"
 assert_compare_snippet "GitHub artifact install failure preserves fail-closed state" "${GITHUB_FORGE}" \
   '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true all \
   "base diff fallback" true
@@ -305,7 +310,7 @@ assert_compare_snippet "GitHub conservative initialization failure aborts before
   '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true all \
   "base diff fallback" false true 1
 assert_compare_snippet "GitHub final marker failure cannot publish stale false" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true a.txt \
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true a.txt \
   $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@' false false 0 true
 assert_compare_snippet "GitLab complete compare installs precise artifacts" "${GITLAB_FORGE}" \
   '{"compare_timeout":false,"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@ -1 +1 @@"}]}' 0 false a.txt \
