@@ -64,17 +64,12 @@ echo "FIX_CONFLICT_UPDATE_STRATEGY=${FIX_CONFLICT_UPDATE_STRATEGY:-merge}"
 - `HUMAN_INSTRUCTION` — the human's instruction text (only when
   trigger type is `"human"`)
 - `FIX_ITERATION` — which iteration of the review→fix loop this is
-- `FIX_CONFLICT_UPDATE_STRATEGY` — `merge` (default) or `rebase`, used only
-  on a real forge-reported conflict (see agents/fix.md)
+- `FIX_CONFLICT_UPDATE_STRATEGY` — `merge` (default) or `rebase` (agents/fix.md)
 
 If `PR_NUMBER` is not set, stop.
 
-Fetch the PR metadata using the forge-specific commands from your forge skill
-(e.g., `gh pr view` on GitHub, `curl` on GitLab), including mergeability. On a
-**real** forge-reported conflict, reconcile with the target branch per
-agents/fix.md's "Reconcile forge-reported merge conflicts" before gathering
-review feedback (strategy: `FIX_CONFLICT_UPDATE_STRATEGY`; a human rebase
-request takes precedence).
+Fetch the PR metadata via your forge skill (e.g., `gh pr view` on GitHub,
+`curl` on GitLab). Reconcile a real conflict per agents/fix.md.
 
 If the PR is closed or merged, stop.
 
