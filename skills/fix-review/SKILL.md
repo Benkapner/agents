@@ -162,18 +162,22 @@ echo "::notice::STEP 7b: Pre-commit hooks"
 
 Same rules as the code agent (see step 9b of the code-implementation
 skill for the full text):
-- Max 2 pre-commit/hook runs per validation-loop iteration (not per
-  sandbox); an infrastructure failure before any hook executes doesn't
-  count — the fallback takes its place. A validation-loop retry starts a
-  fresh budget; 7c's own retries don't reopen 7b.
+- Maximum 2 pre-commit/hook-execution runs per validation-loop
+  iteration (not per sandbox). A `pre-commit run` that failed on
+  infrastructure before executing any hook does not count — the
+  direct-execution fallback takes its place. A validation-loop retry
+  is a new iteration with a fresh budget; 7c's own retries do not
+  reopen 7b.
 - Pre-format your code before running pre-commit.
-- If `pre-commit` can't run — typically it can't fetch remote hook repos —
-  don't skip verification unless the fallback floor below forbids it;
-  otherwise run the configured hooks directly, honoring each hook's
-  `entry`, `args`, `rev`, `stages`, `additional_dependencies`, and filters.
-- If the second run still fails, log the exact hook, file, and error in
-  the commit message and move on. Never claim hooks passed when they
-  did not.
+- If `pre-commit` itself cannot run — typically because it cannot
+  fetch remote hook repositories — do not skip verification, unless
+  the fallback floor below says you cannot afford it. Otherwise fall
+  back to running the configured hooks directly, honoring each hook's
+  `entry`, `args`, `rev`, `stages`, `additional_dependencies`, and
+  file filters.
+- If the second run still fails, log the exact hook, file, and error
+  in the commit message and move on. Never claim hooks passed when
+  they did not.
 
 ```bash
 test -f .pre-commit-config.yaml && pre-commit run --files <all-changed-files>
@@ -254,18 +258,19 @@ which gitlint &>/dev/null && gitlint --commit HEAD
     {"type": "fix", "finding": "Missing input validation", "path": "src/input.sh", "description": "Reject empty input before processing"},
     {"type": "disagree", "finding": "Rename the public command", "path": "src/cli.sh", "reason": "The existing name is part of the documented public interface"}
   ],
-  "decision_points": [{"description": "Preserve the public command name", "alternatives": ["Rename it", "Keep it"], "rationale": "Renaming breaks existing callers"}],
+  "decision_points": [{"description": "Preserve the public command name", "alternatives": ["Rename the command", "Keep the documented name"], "rationale": "Renaming would break existing callers"}],
   "summary": "Addressed both review findings",
   "strategy_change": null,
   "tests_passed": true,
   "files_changed": ["src/input.sh"],
   "ci_inspections": [
+    {"job": "lint", "status": "success", "classification": "passing", "diagnosis": "Lint passed."},
     {"job": "unit-tests", "status": "failure", "classification": "pr-related", "diagnosis": "Failing test matches this diff.", "remediation": "Fixed the test."}
   ]
 }
 ```
 
-**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8) and `ci_inspections` (jobs inspected per step 2 and `agents/fix.md`'s Project CI inspection section; each entry needs `job` and `classification`, `status`/`diagnosis`/`remediation` optional — see the forge-specific `fix-review` skill for the recipes). `trigger_source` is `"bot"`/`"human"`. Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1), `summary`, `tests_passed`, `files_changed`.
+**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8) and `ci_inspections` (project CI jobs inspected per step 2 and `agents/fix.md`'s Project CI inspection section; each entry requires `job` and `classification`, with `status`/`diagnosis`/`remediation` optional — see the forge-specific `fix-review` skill for the recipes that gather these). `trigger_source` is `"bot"`/`"human"`. Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1), `summary`, `tests_passed`, `files_changed`.
 
 Validate: `fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"`. If fails after 3 attempts, write best JSON and exit.
 
