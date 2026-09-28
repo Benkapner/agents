@@ -1,7 +1,7 @@
 forge: github
 seed_issues:
   - title: "Add the Foo command"
-    body: "Implement Foo."
+    body: "Implement Foo. Do not add or modify release notes or CHANGELOG.md."
 fixture:
   type: pull_request
   title: "feat: add Foo command"
