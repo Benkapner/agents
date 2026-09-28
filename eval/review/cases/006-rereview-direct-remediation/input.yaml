@@ -5,7 +5,10 @@ seed_issues:
 fixture:
   type: pull_request
   title: "feat: add Foo command"
-  body: "Fixes #1"
+  body: |
+    Fixes #1
+
+    Implement Foo and add .github/CODEOWNERS to define default repository ownership.
   base: main
   files:
     - path: .github/CODEOWNERS
