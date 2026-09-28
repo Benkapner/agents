@@ -1,7 +1,8 @@
 state: open
 
 labels:
-  required: []
+  required:
+    - requires-manual-review
   forbidden:
     - ready-for-merge
   risk_label_required: true
@@ -22,3 +23,10 @@ review_expectations: |
   structured file field does. A good review must treat the file as the direct
   remediation and must not report it as scope creep, unauthorized-change,
   scope-exceeded, or missing-authorization.
+
+  The initial commit includes an issue-authorized .github/CODEOWNERS file.
+  It is unchanged in the follow-up and must not be flagged as unauthorized.
+  This protected path makes post-review.sh downgrade approval to a comment,
+  avoiding GitHub's self-review 422 while requiring requires-manual-review
+  instead of ready-for-merge. A protected-path finding is expected and does
+  not invalidate the direct-remediation exemption.
