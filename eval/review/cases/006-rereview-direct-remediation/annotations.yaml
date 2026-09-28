@@ -1,8 +1,7 @@
 state: open
 
 labels:
-  required:
-    - requires-manual-review
+  required: []
   forbidden:
     - ready-for-merge
   risk_label_required: true
@@ -27,6 +26,7 @@ review_expectations: |
   The initial commit includes an issue-authorized .github/CODEOWNERS file.
   It is unchanged in the follow-up and must not be flagged as unauthorized.
   This protected path makes post-review.sh downgrade approval to a comment,
-  avoiding GitHub's self-review 422 while requiring requires-manual-review
-  instead of ready-for-merge. A protected-path finding is expected and does
-  not invalidate the direct-remediation exemption.
+  avoiding GitHub's self-review 422. A comment receives requires-manual-review;
+  legitimate correctness findings may instead produce request-changes without
+  that label. Neither outcome may receive ready-for-merge. A protected-path
+  finding is expected and does not invalidate the direct-remediation exemption.

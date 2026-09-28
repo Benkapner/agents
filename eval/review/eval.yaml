@@ -76,6 +76,10 @@ dataset:
       PR fixtures may include followup_files plus prior_review body/provenance
       to exercise re-review behavior.
     - annotations.yaml: Expected fixture state (labels, reviews, state).
+      findings.required requires every listed category; findings.required_any
+      requires at least one listed category when non-empty. findings.forbidden
+      rejects every listed category. review_expectations specifies which edits
+      those findings must concern for the review_quality judge.
     - repo/: Directory with the base repo contents (pushed to main before the PR).
 
 outputs:
@@ -170,12 +174,16 @@ judges:
       review_text = "\n".join(bodies).lower()
       expected = outputs.get("annotations", {}).get("findings", {})
       required = [finding.lower() for finding in expected.get("required", [])]
+      required_any = [finding.lower() for finding in expected.get("required_any", [])]
       forbidden = [finding.lower() for finding in expected.get("forbidden", [])]
       missing = [finding for finding in required if f"[{finding}]" not in review_text]
+      missing_any = bool(required_any) and not any(
+          f"[{finding}]" in review_text for finding in required_any
+      )
       present = [finding for finding in forbidden if f"[{finding}]" in review_text]
-      if missing or present:
-          return False, f"Finding mismatch: missing={missing}, forbidden_present={present}"
-      return True, f"Finding expectations met: required={required}, forbidden={forbidden}"
+      if missing or missing_any or present:
+          return False, f"Finding mismatch: missing={missing}, missing_any={required_any if missing_any else []}, forbidden_present={present}"
+      return True, f"Finding expectations met: required={required}, required_any={required_any}, forbidden={forbidden}"
 
   - name: risk_label_present
     description: When risk_label_required is set, at least one risk/* label must be present
