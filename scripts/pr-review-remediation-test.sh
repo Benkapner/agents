@@ -253,8 +253,8 @@ assert_contains "Prior identity is machine-readable" "${REREVIEW}" \
   'finding identity from review Markdown.'
 assert_contains "Prior paths are rejected, never rewritten" "${REREVIEW}" \
   "It rejects, never rewrites, invalid records"
-assert_contains "Missing-test counterpart is exact" "${REREVIEW}" \
-  'safe `missing-test` `.go` → `_test.go`'
+assert_contains "Missing-test counterpart wording tripwire" "${REREVIEW}" \
+  '`.go` suffix with `_test.go` (for example, `pkg/foo.go` → `pkg/foo_test.go`).'
 assert_jq_result "GitHub accepts complete compare" "${GITHUB_COMPARE_COMPLETE}" \
   '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' true
 assert_jq_result "GitHub rejects diverged history" "${GITHUB_COMPARE_COMPLETE}" \

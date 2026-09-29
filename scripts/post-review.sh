@@ -1069,7 +1069,8 @@ fi
 
 # Append a machine-readable projection only when every schema-validated finding
 # can be represented safely. A lossy projection could turn a failed sub-agent
-# into an apparently clean dimension on the next re-review.
+# into an apparently clean dimension on the next re-review. Low-severity
+# challenger failures are non-dimensional and retain the pre-challenger findings.
 PRIOR_FINDINGS_PROJECTION="$(jq -c '
   def allowed_category:
     IN(
@@ -1087,10 +1088,13 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c '
     type == "string" and IN(
       "protected-path", "provenance-warning", "scope-authorization-implicit"
     );
+  def non_dimensional_finding:
+    (.category | non_dimensional_category) or
+    (.category == "sub-agent-failure" and .severity == "low");
   def projectable:
     (.category | type == "string" and allowed_category) and (.file | safe_path);
   (.findings // []) as $findings
-  | ($findings | map(select((.category | non_dimensional_category) | not))) as $dimension_findings
+  | ($findings | map(select(non_dimensional_finding | not))) as $dimension_findings
   | if (.action | IN("approve", "request-changes", "comment", "reject"))
       and ($dimension_findings | all(.[]; projectable)) then
       {

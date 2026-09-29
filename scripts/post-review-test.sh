@@ -1338,6 +1338,8 @@ run_projection_test() {
   local json_content="$2"
   local expected_projection="$3"
 
+  local forge="${4:-github}"
+
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
@@ -1353,7 +1355,11 @@ run_projection_test() {
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_URL="https://github.com/test-org/test-repo/pull/99"
-    export FULLSEND_FORGE="github"
+    export FULLSEND_FORGE="${forge}"
+    if [[ "${forge}" == "gitlab" ]]; then
+      export PR_URL="https://gitlab.com/test-org/test-repo/-/merge_requests/99"
+      export CI_SERVER_HOST="gitlab.com"
+    fi
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1377,6 +1383,8 @@ run_no_projection_test() {
   local test_name="$1"
   local json_content="$2"
 
+  local forge="${3:-github}"
+
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
@@ -1392,7 +1400,11 @@ run_no_projection_test() {
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_URL="https://github.com/test-org/test-repo/pull/99"
-    export FULLSEND_FORGE="github"
+    export FULLSEND_FORGE="${forge}"
+    if [[ "${forge}" == "gitlab" ]]; then
+      export PR_URL="https://gitlab.com/test-org/test-repo/-/merge_requests/99"
+      export CI_SERVER_HOST="gitlab.com"
+    fi
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1485,6 +1497,19 @@ run_no_projection_test "projection-rejects-unsafe-records" \
 LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","description":"kept before this fix"},{"severity":"high","category":"sub-agent-failure","file":"N/A","description":"security failed"}]}'
 run_no_projection_test "projection-omits-mixed-sub-agent-failure" \
   "${LOSSY_FAILURE_PROJECTION_INPUT}"
+
+# A skipped/failed challenger retains the dimensional findings; a failed
+# safety-critical dimension must still suppress the entire projection.
+CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"challenger time budget", actionable:false}]' <<< "${PROJECTION_INPUT}")"
+for projection_forge in github gitlab; do
+  run_projection_test "projection-keeps-findings-with-challenger-failure-${projection_forge}" \
+    "${CHALLENGER_FAILURE_INPUT}" "${PROJECTION_EXPECTED}" "${projection_forge}"
+  for failure_severity in medium high critical; do
+    DIMENSION_FAILURE_INPUT="$(jq --arg severity "${failure_severity}" '.findings += [{severity:$severity, category:"sub-agent-failure", file:"N/A", description:"dimension failed", actionable:false}]' <<< "${CHALLENGER_FAILURE_INPUT}")"
+    run_no_projection_test "projection-blocks-${failure_severity}-failure-with-challenger-${projection_forge}" \
+      "${DIMENSION_FAILURE_INPUT}" "${projection_forge}"
+  done
+done
 
 META_AND_PROJECTABLE_PROJECTION_INPUT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"medium","category":"protected-path","file":"N/A","description":"human approval required"},{"severity":"low","category":"stale-doc","file":"docs/x.md","description":"update docs"}]}'
 META_AND_PROJECTABLE_PROJECTION_EXPECTED='{"version":1,"findings":[{"severity":"low","category":"stale-doc","file":"docs/x.md"}]}'
