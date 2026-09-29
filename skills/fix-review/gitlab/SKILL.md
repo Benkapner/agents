@@ -25,6 +25,15 @@ REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
 curl --silent --config - \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
   <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\""
+
+# Mergeability — only detailed_merge_status=conflict is a merge conflict.
+# not_approved, ci_must_pass, need_rebase, checking, unchecked, and unknown
+# are not. Fall back to has_conflicts=true only when detailed_merge_status
+# is absent and merge_status is cannot_be_merged.
+curl --silent --config - \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
+  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\"" \
+  | jq '{detailed_merge_status, has_conflicts, merge_status, target_branch}'
 ```
 
 ## MR Diff

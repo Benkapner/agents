@@ -140,6 +140,34 @@ else
   echo "PASS: bundled-script-requires-non-bot-trigger-for-rebase-skip"
 fi
 
+# Forge-reported conflict (issue #1518): skip replay of a merge commit so
+# a default git rebase cannot drop it, and skip replay of a conflict rebase
+# so the post-script does not re-hit the same conflict. Authorization is
+# the runner-side forge query, not TRIGGER_SOURCE.
+if ! grep -q 'via a forge-conflict merge' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-preserves-forge-conflict-merge"
+  echo "  ${POST_SCRIPT} missing skip of origin/BRANCH rebase after a forge-conflict merge"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-preserves-forge-conflict-merge"
+fi
+
+if ! grep -q 'after a forge-conflict rebase' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-preserves-forge-conflict-rebase"
+  echo "  ${POST_SCRIPT} missing skip of origin/BRANCH rebase after a forge-conflict rebase"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-preserves-forge-conflict-rebase"
+fi
+
+if ! grep -q 'forge_pr_has_merge_conflict' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-queries-forge-conflict"
+  echo "  ${POST_SCRIPT} does not query forge mergeability before the replay skip"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-queries-forge-conflict"
+fi
+
 # ---------------------------------------------------------------------------
 # Keyword detection for human squash / redo requests (issue #1332).
 # Sourced from fix-ops.lib.sh — the same functions the post-script uses.
@@ -200,6 +228,142 @@ run_history_rewrite_request_test "rewrite-request-empty" \
   "" "false" "false"
 run_history_rewrite_request_test "rewrite-request-merge-conflict-is-not-reset" \
   "fix merge conflicts" "false" "false"
+
+# ---------------------------------------------------------------------------
+# FIX_CONFLICT_UPDATE_STRATEGY defaulting (issue #1518)
+# ---------------------------------------------------------------------------
+run_conflict_strategy_test() {
+  local test_name="$1"
+  local raw="$2"
+  local expect="$3"
+  local actual
+  actual="$(FIX_CONFLICT_UPDATE_STRATEGY="${raw}" fix_conflict_update_strategy)"
+  if [ "${actual}" != "${expect}" ]; then
+    echo "FAIL: ${test_name} — actual='${actual}' expected='${expect}' (raw='${raw}')"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_conflict_strategy_test "conflict-strategy-default-empty" "" "merge"
+run_conflict_strategy_test "conflict-strategy-merge" "merge" "merge"
+run_conflict_strategy_test "conflict-strategy-rebase" "rebase" "rebase"
+run_conflict_strategy_test "conflict-strategy-rebase-case" "Rebase" "rebase"
+run_conflict_strategy_test "conflict-strategy-unknown-defaults-merge" "squash" "merge"
+
+# Fix harness: FIX_CONFLICT_UPDATE_STRATEGY default (issue #1518). Lives here
+# (rather than harness-jira-test.sh) alongside the rest of the fix-agent
+# harness/fix-ops coverage.
+FIX_HARNESS="${SCRIPT_DIR}/../harness/fix.yaml"
+if yq -e '.env.runner.FIX_CONFLICT_UPDATE_STRATEGY == "merge"' "${FIX_HARNESS}" >/dev/null \
+   && yq -e '.env.sandbox.FIX_CONFLICT_UPDATE_STRATEGY == "merge"' "${FIX_HARNESS}" >/dev/null; then
+  echo "PASS: fix-conflict-strategy-default-merge"
+else
+  echo "FAIL: fix-conflict-strategy-default-merge — FIX_CONFLICT_UPDATE_STRATEGY must default to merge in harness/fix.yaml runner and sandbox"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# GitHub mergeable classification. Anything other than CONFLICTING is not a
+# conflict — including UNKNOWN, MERGEABLE, and mergeStateStatus-like values.
+run_github_conflict_class_test() {
+  local test_name="$1"
+  local mergeable="$2"
+  local expect="$3"
+  local mock_bin actual=false saved_path
+  mock_bin="$(mktemp -d)"
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+if printf '%s' "$*" | grep -q 'mergeable'; then
+  printf '%s\n' "${GH_MOCK_MERGEABLE:-}"
+  exit 0
+fi
+echo 'main'
+exit 0
+MOCK
+  chmod +x "${mock_bin}/gh"
+  saved_path="${PATH}"
+  PATH="${mock_bin}:${saved_path}"
+  export REPO_FULL_NAME="o/r"
+  export GH_MOCK_MERGEABLE="${mergeable}"
+  if forge_pr_has_merge_conflict 99; then
+    actual=true
+  fi
+  PATH="${saved_path}"
+  unset GH_MOCK_MERGEABLE
+  rm -rf "${mock_bin}"
+  if [ "${actual}" != "${expect}" ]; then
+    echo "FAIL: ${test_name} — actual=${actual} expected=${expect} (mergeable=${mergeable})"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_github_conflict_class_test "github-conflict-conflicting" "CONFLICTING" "true"
+run_github_conflict_class_test "github-conflict-mergeable" "MERGEABLE" "false"
+run_github_conflict_class_test "github-conflict-unknown" "UNKNOWN" "false"
+run_github_conflict_class_test "github-conflict-empty" "" "false"
+run_github_conflict_class_test "github-conflict-blocked-is-not-conflict" "BLOCKED" "false"
+
+# GitLab detailed_merge_status classification. Only "conflict" is a conflict.
+# Isolated from the GitHub-sourced helpers by re-sourcing under gitlab.
+run_gitlab_conflict_class_test() {
+  local test_name="$1"
+  local json="$2"
+  local expect="$3"
+  local mock_bin actual=false saved_path saved_forge
+  mock_bin="$(mktemp -d)"
+  printf '%s\n' "${json}" > "${mock_bin}/mr.json"
+  cat > "${mock_bin}/curl" <<'MOCK'
+#!/usr/bin/env bash
+cat "${GL_MOCK_MR_JSON}"
+exit 0
+MOCK
+  chmod +x "${mock_bin}/curl"
+  saved_path="${PATH}"
+  saved_forge="${FULLSEND_FORGE}"
+  FULLSEND_FORGE=gitlab
+  # Reset include guards so sourcing reloads gitlab ops after github ops.
+  # shellcheck disable=SC1091
+  unset FIX_OPS_SH_LOADED GITHUB_FIX_OPS_SH_LOADED GITLAB_FIX_OPS_SH_LOADED GITLAB_HOST_VALIDATION_SH_LOADED
+  source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+  PATH="${mock_bin}:${saved_path}"
+  export CI_SERVER_HOST="gitlab.com"
+  export GITLAB_HOST="gitlab.com"
+  export GITLAB_TOKEN="fake"
+  export REPO_ENCODED="g%2Fp"
+  export GL_MOCK_MR_JSON="${mock_bin}/mr.json"
+  if forge_pr_has_merge_conflict 99; then
+    actual=true
+  fi
+  PATH="${saved_path}"
+  FULLSEND_FORGE="${saved_forge}"
+  unset FIX_OPS_SH_LOADED GITHUB_FIX_OPS_SH_LOADED GITLAB_FIX_OPS_SH_LOADED GITLAB_HOST_VALIDATION_SH_LOADED
+  source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+  rm -rf "${mock_bin}"
+  if [ "${actual}" != "${expect}" ]; then
+    echo "FAIL: ${test_name} — actual=${actual} expected=${expect}"
+    echo "  json: ${json}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_gitlab_conflict_class_test "gitlab-conflict-detailed-status" \
+  '{"detailed_merge_status":"conflict","has_conflicts":true}' "true"
+run_gitlab_conflict_class_test "gitlab-not-approved-is-not-conflict" \
+  '{"detailed_merge_status":"not_approved","has_conflicts":false}' "false"
+run_gitlab_conflict_class_test "gitlab-ci-must-pass-is-not-conflict" \
+  '{"detailed_merge_status":"ci_must_pass"}' "false"
+run_gitlab_conflict_class_test "gitlab-need-rebase-is-not-conflict" \
+  '{"detailed_merge_status":"need_rebase"}' "false"
+run_gitlab_conflict_class_test "gitlab-checking-is-not-conflict" \
+  '{"detailed_merge_status":"checking"}' "false"
+run_gitlab_conflict_class_test "gitlab-unknown-is-not-conflict" \
+  '{}' "false"
+run_gitlab_conflict_class_test "gitlab-legacy-cannot-be-merged-with-conflicts" \
+  '{"has_conflicts":true,"merge_status":"cannot_be_merged"}' "true"
+run_gitlab_conflict_class_test "gitlab-legacy-checking-with-conflicts-is-not-conflict" \
+  '{"has_conflicts":true,"merge_status":"checking"}' "false"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the push retry logic from post-fix.sh section 5.
@@ -719,8 +883,18 @@ cat > "${REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr view")
-    # gh --jq '.headRefName' outputs just the string value
-    echo 'agent/99-test-fix'
+    # Distinct --json fields are requested by different forge helpers.
+    # Default mergeable=MERGEABLE so these DIFF_BASE tests never look like
+    # a forge-reported conflict (issue #1518).
+    if printf '%s' "$*" | grep -q 'headRefName'; then
+      echo 'agent/99-test-fix'
+    elif printf '%s' "$*" | grep -q 'baseRefName'; then
+      echo 'main'
+    elif printf '%s' "$*" | grep -q 'mergeable'; then
+      echo 'MERGEABLE'
+    else
+      echo 'agent/99-test-fix'
+    fi
     exit 0
     ;;
   "pr comment"|"issue comment")
@@ -968,7 +1142,7 @@ if echo "$@" | grep -q "merge_requests/"; then
     # POST note — just succeed
     exit 0
   fi
-  echo '{"source_branch": "agent/99-test-fix", "iid": 99}'
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99, "target_branch": "main"}'
   exit 0
 fi
 # Respond to labels POST — succeed silently
@@ -1245,7 +1419,7 @@ if echo "$@" | grep -q "merge_requests/"; then
   if echo "$@" | grep -q "notes"; then
     exit 0
   fi
-  echo '{"source_branch": "agent/99-test-fix", "iid": 99}'
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99, "target_branch": "main"}'
   exit 0
 fi
 if echo "$@" | grep -q "/labels"; then
@@ -1361,6 +1535,274 @@ run_prefix_github_validation_test "prefix-github-dotdot" \
 rm -rf "${PRE_TMPDIR}"
 
 # ---------------------------------------------------------------------------
+# Pre-fix fetches the latest target branch when the forge reports a real
+# merge conflict (issue #1518). BLOCKED / UNKNOWN / MERGEABLE must not fetch.
+# ---------------------------------------------------------------------------
+PREFIX_CONFLICT_TMPDIR="$(mktemp -d)"
+PREFIX_CONFLICT_MOCK_BIN="${PREFIX_CONFLICT_TMPDIR}/bin"
+mkdir -p "${PREFIX_CONFLICT_MOCK_BIN}"
+
+run_prefix_conflict_fetch_test() {
+  local test_name="$1"
+  local mergeable="$2"
+  local expect_fetch="$3"
+  local base="${PREFIX_CONFLICT_TMPDIR}/${test_name}"
+  mkdir -p "${base}/bin" "${base}/workspace"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  git -C "${base}/seed" config user.email "test@example.com"
+  git -C "${base}/seed" config user.name "Test"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  git clone -q "${base}/remote.git" "${base}/workspace/target-repo"
+  git -C "${base}/workspace/target-repo" checkout -q agent/99-test-fix
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+  local main_ahead
+  main_ahead="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  cat > "${base}/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+if printf '%s' "$*" | grep -q 'headRefName'; then
+  echo 'agent/99-test-fix'
+elif printf '%s' "$*" | grep -q 'baseRefName'; then
+  echo 'main'
+elif printf '%s' "$*" | grep -q 'mergeable'; then
+  printf '%s\n' "${GH_MOCK_MERGEABLE}"
+else
+  echo 'agent/99-test-fix'
+fi
+exit 0
+MOCK
+  chmod +x "${base}/bin/gh"
+
+  local stdout_log="${PREFIX_CONFLICT_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export PATH="${base}/bin:${PATH}"
+    export FULLSEND_FORGE="github"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="fullsend-ai-review[bot]"
+    export FIX_ITERATION="1"
+    export GITHUB_WORKSPACE="${base}/workspace"
+    export REPO_DIR="${base}/workspace/target-repo"
+    export TARGET_BRANCH="main"
+    export GH_MOCK_MERGEABLE="${mergeable}"
+    bash "${PRE_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — pre-fix exited ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local fetched="false"
+  if git -C "${base}/workspace/target-repo" merge-base --is-ancestor \
+       "${main_ahead}" "refs/remotes/origin/main" 2>/dev/null; then
+    fetched="true"
+  fi
+  if [ "${expect_fetch}" = "true" ]; then
+    if [ "${fetched}" != "true" ]; then
+      echo "FAIL: ${test_name} — expected origin/main to be fetched to ${main_ahead}"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if ! grep -q "Fetched origin/main" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — missing fetch log line"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if [ "${fetched}" = "true" ]; then
+      echo "FAIL: ${test_name} — fetched origin/main without a forge conflict"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_prefix_conflict_fetch_test "prefix-fetches-target-on-github-conflict" "CONFLICTING" "true"
+run_prefix_conflict_fetch_test "prefix-skips-fetch-on-mergeable" "MERGEABLE" "false"
+run_prefix_conflict_fetch_test "prefix-skips-fetch-on-unknown" "UNKNOWN" "false"
+run_prefix_conflict_fetch_test "prefix-skips-fetch-on-blocked" "BLOCKED" "false"
+
+# ---------------------------------------------------------------------------
+# Scope-creep regression: TARGET_BRANCH must only be reassigned from
+# FORGE_PR_BASE_BRANCH inside the FORGE_PR_HAS_CONFLICT branch (matching
+# post-fix.src.sh's own fix for the same issue), not unconditionally on
+# every pre-fix run.
+# ---------------------------------------------------------------------------
+conflict_if_line="$(grep -n 'if \[ "\${FORGE_PR_HAS_CONFLICT}" = "true" \]' "${PRE_SCRIPT}" | head -1 | cut -d: -f1)"
+target_branch_assign_line="$(grep -n 'TARGET_BRANCH="\${FORGE_PR_BASE_BRANCH}"' "${PRE_SCRIPT}" | head -1 | cut -d: -f1)"
+if [ -z "${conflict_if_line}" ] || [ -z "${target_branch_assign_line}" ]; then
+  echo "FAIL: prefix-target-branch-scoped-to-conflict — could not locate the conflict guard or the TARGET_BRANCH reassignment in ${PRE_SCRIPT}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${target_branch_assign_line}" -le "${conflict_if_line}" ]; then
+  echo "FAIL: prefix-target-branch-scoped-to-conflict — TARGET_BRANCH is reassigned at line ${target_branch_assign_line}, before (or at) the FORGE_PR_HAS_CONFLICT guard at line ${conflict_if_line}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: prefix-target-branch-scoped-to-conflict"
+fi
+
+# ---------------------------------------------------------------------------
+# Secret-exposure regression: forge_mask_token must run before the PUSH_TOKEN
+# fetch (matching post-fix.src.sh, which masks before its own credentialed
+# fetch), so a git error that echoes the remote URL can't leak the token.
+# ---------------------------------------------------------------------------
+mask_token_line="$(grep -n 'forge_mask_token "\${PUSH_TOKEN}"' "${PRE_SCRIPT}" | head -1 | cut -d: -f1)"
+set_push_remote_line="$(grep -n 'forge_set_push_remote "\${PUSH_TOKEN}"' "${PRE_SCRIPT}" | head -1 | cut -d: -f1)"
+if [ -z "${mask_token_line}" ] || [ -z "${set_push_remote_line}" ]; then
+  echo "FAIL: prefix-masks-token-before-credentialed-fetch — could not locate forge_mask_token or forge_set_push_remote in ${PRE_SCRIPT}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${mask_token_line}" -ge "${set_push_remote_line}" ]; then
+  echo "FAIL: prefix-masks-token-before-credentialed-fetch — forge_mask_token (line ${mask_token_line}) does not precede forge_set_push_remote (line ${set_push_remote_line})"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: prefix-masks-token-before-credentialed-fetch"
+fi
+
+# ---------------------------------------------------------------------------
+# Secret-exposure regression: a failed restore of the pre-existing origin URL
+# after the conflict fetch must be fatal, not warn-and-continue — TARGET_REPO
+# is mounted into the sandbox, so a credentialed URL left behind there would
+# violate the "PUSH_TOKEN never enters the sandbox" contract.
+# ---------------------------------------------------------------------------
+run_prefix_restore_failure_fatal_test() {
+  local test_name="prefix-restore-failure-is-fatal"
+  local base="${PREFIX_CONFLICT_TMPDIR2}/${test_name}"
+  mkdir -p "${base}/bin" "${base}/workspace"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  git -C "${base}/seed" config user.email "test@example.com"
+  git -C "${base}/seed" config user.name "Test"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  git clone -q "${base}/remote.git" "${base}/workspace/target-repo"
+  git -C "${base}/workspace/target-repo" checkout -q agent/99-test-fix
+
+  cat > "${base}/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+if printf '%s' "$*" | grep -q 'headRefName'; then
+  echo 'agent/99-test-fix'
+elif printf '%s' "$*" | grep -q 'baseRefName'; then
+  echo 'main'
+elif printf '%s' "$*" | grep -q 'mergeable'; then
+  echo 'CONFLICTING'
+else
+  echo 'agent/99-test-fix'
+fi
+exit 0
+MOCK
+  chmod +x "${base}/bin/gh"
+
+  # Allow the credentialed set-url (forge_set_push_remote, called as a plain
+  # `git remote set-url origin <url>` after cd'ing into TARGET_REPO) through
+  # to real git, but fail the restore — invoked as
+  # `git -C TARGET_REPO remote set-url origin <url>`, so "remote"/"set-url"
+  # aren't fixed at $1/$2 — to simulate a failure right after the fetch.
+  cat > "${base}/bin/git" <<EOF
+#!/usr/bin/env bash
+args=("\$@")
+last_index=\$(( \${#args[@]} - 1 ))
+last_arg=""
+if [ "\${last_index}" -ge 0 ]; then
+  last_arg="\${args[\${last_index}]}"
+fi
+if printf '%s\n' "\$*" | grep -q 'remote set-url origin'; then
+  case "\${last_arg}" in
+    *x-access-token*) exec ${PREFIX_REAL_GIT} "\$@" ;;
+    *)
+      echo "simulated restore failure" >&2
+      exit 1
+      ;;
+  esac
+fi
+# The credentialed origin URL (set above) points at a real github.com URL —
+# redirect the fetch to the local bare remote instead of making a real
+# network call; only the URL needs to look real for this test.
+if printf '%s\n' "\$*" | grep -q ' fetch origin '; then
+  new_args=()
+  for a in "\${args[@]}"; do
+    if [ "\${a}" = "origin" ]; then
+      new_args+=("${base}/remote.git")
+    else
+      new_args+=("\${a}")
+    fi
+  done
+  exec ${PREFIX_REAL_GIT} "\${new_args[@]}"
+fi
+exec ${PREFIX_REAL_GIT} "\$@"
+EOF
+  chmod +x "${base}/bin/git"
+
+  local stdout_log="${PREFIX_CONFLICT_TMPDIR2}/stdout-${test_name}.log"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export PATH="${base}/bin:${PATH}"
+    export FULLSEND_FORGE="github"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="fullsend-ai-review[bot]"
+    export FIX_ITERATION="1"
+    export GITHUB_WORKSPACE="${base}/workspace"
+    export REPO_DIR="${base}/workspace/target-repo"
+    export TARGET_BRANCH="main"
+    export PUSH_TOKEN="fake-push-token"
+    bash "${PRE_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected a non-zero exit when the origin URL restore fails"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Could not restore original origin URL" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing the restore-failure diagnostic"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+PREFIX_CONFLICT_TMPDIR2="$(mktemp -d)"
+PREFIX_REAL_GIT="$(command -v git)"
+run_prefix_restore_failure_fatal_test
+rm -rf "${PREFIX_CONFLICT_TMPDIR2}"
+
+rm -rf "${PREFIX_CONFLICT_TMPDIR}"
+
+# ---------------------------------------------------------------------------
 # Fetch + rebase before push (issue #1228).
 #
 # On GitLab the sandbox reconstructs the MR source branch from API content,
@@ -1390,7 +1832,18 @@ cat > "${PUSH_REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr view")
-    echo 'agent/99-test-fix'
+    # Distinct --json fields are requested by different forge helpers.
+    # Default mergeable=MERGEABLE so existing tests never look like a
+    # forge-reported conflict (issue #1518).
+    if printf '%s' "$*" | grep -q 'headRefName'; then
+      echo 'agent/99-test-fix'
+    elif printf '%s' "$*" | grep -q 'baseRefName'; then
+      echo 'main'
+    elif printf '%s' "$*" | grep -q 'mergeable'; then
+      echo 'MERGEABLE'
+    else
+      echo 'agent/99-test-fix'
+    fi
     exit 0
     ;;
   "pr comment"|"issue comment")
@@ -1428,6 +1881,7 @@ run_push_rebase_postfix() {
   local mock_bin="${3:-${PUSH_REBASE_MOCK_BIN}}"
   local trigger_source="${4:-test-user}"
   local human_instruction="${5:-}"
+  local conflict_strategy="${6:-}"
   local exit_code=0
   # shellcheck disable=SC2030,SC2031
   (
@@ -1438,8 +1892,23 @@ run_push_rebase_postfix() {
     export PR_NUMBER="99"
     export TRIGGER_SOURCE="${trigger_source}"
     export HUMAN_INSTRUCTION="${human_instruction}"
+    export FIX_CONFLICT_UPDATE_STRATEGY="${conflict_strategy}"
     export REPO_DIR="repo"
-    export FULLSEND_FORGE="github"
+    # Defaults to github but honors a caller-exported override (e.g.
+    # FULLSEND_FORGE=gitlab run_push_rebase_postfix_with_mergeable ...) the
+    # same way GIT_BOT_EMAIL below does, so GitLab-specific gating can be
+    # exercised without a second copy of this harness.
+    export FULLSEND_FORGE="${FULLSEND_FORGE:-github}"
+    if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+      # Only needed on the gitlab path (setup() validates PR_URL against
+      # REPO_FULL_NAME/PR_NUMBER and derives GITLAB_HOST from it); harmless
+      # defaults so callers only have to override FULLSEND_FORGE itself.
+      export CI_SERVER_HOST="${CI_SERVER_HOST:-gitlab.com}"
+      export PR_URL="${PR_URL:-https://${CI_SERVER_HOST}/${REPO_FULL_NAME}/-/merge_requests/${PR_NUMBER}}"
+      export GITLAB_TOKEN="${GITLAB_TOKEN:-fake-gitlab-token}"
+      export GITLAB_HOST="${GITLAB_HOST:-${CI_SERVER_HOST}}"
+      export REPO_ENCODED="${REPO_ENCODED:-$(printf '%s' "${REPO_FULL_NAME}" | tr '/' '%2F')}"
+    fi
     export TARGET_BRANCH="main"
     # Needed only when a test fixture provides an iteration-N/output/agent-result.json
     # (process-fix-result.py requires it once jsonschema is importable); harmless
@@ -3679,6 +4148,1696 @@ run_push_history_rewrite_indistinguishable_from_reconstruction_test
 run_push_history_rewrite_preserves_reconstructed_human_commit_test
 run_push_history_rewrite_bot_trigger_ignores_marker_test
 run_push_history_rewrite_non_rewrite_instruction_ignores_marker_test
+
+# ---------------------------------------------------------------------------
+# Forge-reported conflict: post-fix skip of origin/BRANCH replay (issue #1518).
+# ---------------------------------------------------------------------------
+run_push_rebase_postfix_with_mergeable() {
+  local mergeable="$1"
+  shift
+  local run_dir="$1"
+  local stdout_log="$2"
+  local mock_bin="${3:-${PUSH_REBASE_MOCK_BIN}}"
+  local trigger_source="${4:-fullsend-ai-review[bot]}"
+  local human_instruction="${5:-}"
+  local conflict_strategy="${6:-}"
+  local conflict_mock="${PUSH_REBASE_TMPDIR}/bin-conflict-${mergeable}"
+  mkdir -p "${conflict_mock}"
+  cp "${mock_bin}/sleep" "${conflict_mock}/sleep"
+  cp "${mock_bin}/gitleaks" "${conflict_mock}/gitleaks"
+  cp "${mock_bin}/git" "${conflict_mock}/git"
+  cat > "${conflict_mock}/gh" <<EOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr view")
+    if printf '%s' "\$*" | grep -q 'headRefName'; then
+      echo 'agent/99-test-fix'
+    elif printf '%s' "\$*" | grep -q 'baseRefName'; then
+      echo 'main'
+    elif printf '%s' "\$*" | grep -q 'mergeable'; then
+      echo '${mergeable}'
+    else
+      echo 'agent/99-test-fix'
+    fi
+    exit 0
+    ;;
+  "pr comment"|"issue comment")
+    while [ \$# -gt 0 ]; do
+      case "\$1" in
+        --body) echo "\$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "${conflict_mock}/gh"
+  run_push_rebase_postfix "${run_dir}" "${stdout_log}" "${conflict_mock}" \
+    "${trigger_source}" "${human_instruction}" "${conflict_strategy}"
+}
+
+# GitLab counterpart of run_push_rebase_postfix_with_mergeable: mergeability
+# comes from curl-based MR queries (detailed_merge_status), not `gh pr view`.
+# Used for FULLSEND_FORGE=gitlab-only gating (e.g. the merged_target
+# GitLab-reconstruction fallback), where flipping FULLSEND_FORGE alone is not
+# enough — the gitlab code path also validates PR_URL and queries the MR via
+# curl instead of gh.
+run_push_rebase_postfix_gitlab_with_mergeable() {
+  local merge_status="$1"
+  shift
+  local run_dir="$1"
+  local stdout_log="$2"
+  local mock_bin="${3:-${PUSH_REBASE_MOCK_BIN}}"
+  # Bot suffix convention differs by forge (is_bot_user in fix-ops.lib.sh):
+  # gitlab checks a trailing "_bot", not "[bot]".
+  local trigger_source="${4:-fullsend-ai-review_bot}"
+  local human_instruction="${5:-}"
+  local conflict_strategy="${6:-}"
+  local conflict_mock="${PUSH_REBASE_TMPDIR}/bin-gitlab-conflict-${merge_status}"
+  mkdir -p "${conflict_mock}"
+  cp "${mock_bin}/sleep" "${conflict_mock}/sleep"
+  cp "${mock_bin}/gitleaks" "${conflict_mock}/gitleaks"
+  cp "${mock_bin}/git" "${conflict_mock}/git"
+  cat > "${conflict_mock}/curl" <<EOF
+#!/usr/bin/env bash
+if printf '%s' "\$*" | grep -q "merge_requests/"; then
+  if printf '%s' "\$*" | grep -q "notes"; then
+    exit 0
+  fi
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99, "target_branch": "main", "detailed_merge_status": "${merge_status}"}'
+  exit 0
+fi
+if printf '%s' "\$*" | grep -q "/labels"; then
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "${conflict_mock}/curl"
+  # gh must never be called on the gitlab path.
+  cat > "${conflict_mock}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "ERROR: gh should not be called in GitLab mode" >&2
+exit 1
+EOF
+  chmod +x "${conflict_mock}/gh"
+  FULLSEND_FORGE="gitlab" \
+    run_push_rebase_postfix "${run_dir}" "${stdout_log}" "${conflict_mock}" \
+    "${trigger_source}" "${human_instruction}" "${conflict_strategy}"
+}
+
+write_merged_target_result() {
+  local dir="$1"
+  mkdir -p "${dir}"
+  cat > "${dir}/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "bot",
+  "actions": [
+    {"type": "fix", "finding": "forge merge conflict", "description": "Merged origin/main into the PR branch."}
+  ],
+  "summary": "Merged target to resolve forge-reported conflict.",
+  "tests_passed": true,
+  "files_changed": ["file.txt"],
+  "merged_target": true,
+  "conflict_update": {
+    "forge_state": "CONFLICTING",
+    "target_branch": "main",
+    "strategy": "merge",
+    "outcome": "merged"
+  }
+}
+JSONEOF
+}
+
+run_push_preserves_forge_conflict_merge_test() {
+  local test_name="push-preserves-forge-conflict-merge"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+  local main_ahead
+  main_ahead="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "via a forge-conflict merge" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_ahead}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch does not contain the new main tip"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local parents
+  parents="$(git --git-dir="${base}/remote.git" rev-list --max-count=20 --merges refs/heads/agent/99-test-fix)"
+  if [ -z "${parents}" ]; then
+    echo "FAIL: ${test_name} — merge commit was dropped by replay"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Medium-severity logic-error finding: for a merge commit, PRE_AGENT_HEAD
+# stays an ancestor of HEAD, so DIFF_BASE is unchanged and the two-dot
+# `git diff DIFF_BASE..HEAD` compares final trees directly (not scoped to
+# first-parent). An "ours"-resolved forge conflict — a valid resolution that
+# keeps the PR's own content over every incoming target change — produces a
+# merge tree identical to the first parent, so this diff is empty even
+# though the merge commit itself is a real, publishable resolution. Without
+# accounting for a merge commit being present, NO_PUSH is forced true and
+# the resolution is never pushed, leaving the PR/MR CONFLICTING on the
+# remote despite the agent having resolved it. This fixture has no
+# follow-up commit after the merge (unlike the other forge-conflict-merge
+# tests here), which is exactly what exercises the bug.
+run_push_forge_conflict_merge_ours_resolution_no_diff_test() {
+  local test_name="push-forge-conflict-merge-ours-resolution-no-diff"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local pr_a_sha
+  pr_a_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "main-ahead" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "main ahead (conflicting)"
+  git -C "${base}/seed" push -q origin main
+
+  # The agent resolves the forge-reported conflict by keeping its own
+  # content over every incoming target change ("ours"), producing a merge
+  # commit whose tree is identical to its first parent — and adds no
+  # follow-up commit at all.
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit -s ours origin/main
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "No changed files in agent's commit(s)" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — an ours-resolved merge with no follow-up commit was incorrectly treated as nothing to push"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local merges
+  merges="$(git --git-dir="${base}/remote.git" rev-list --max-count=20 --merges refs/heads/agent/99-test-fix 2>/dev/null)"
+  if [ -z "${merges}" ]; then
+    echo "FAIL: ${test_name} — the ours-resolved merge commit was never pushed"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix 2>/dev/null
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# High-severity logic-error regression: the target branch fast-forwards
+# again between the point the agent merged it (T1) and post-fix.src.sh's own
+# fresh fetch of the target (T2, force-fetched by fetch_trusted_target_sha).
+# The replay-skip must not require the *current* T2 to be an ancestor of
+# HEAD — the agent only ever saw and merged T1. Requiring T2 in HEAD would
+# bounce this legitimate merge into the default rebase, dropping it.
+run_push_forge_conflict_merge_survives_target_advance_test() {
+  local test_name="push-forge-conflict-merge-survives-target-advance"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  # T1: the target tip the agent actually sees and merges.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead-1" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead 1"
+  git -C "${base}/seed" push -q origin main
+  local main_t1
+  main_t1="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  # T2: the target fast-forwards again *after* the agent's merge, during the
+  # window between pre-fix.src.sh's fetch and post-fix.src.sh's own fetch.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead-2" > "${base}/seed/other2.txt"
+  git -C "${base}/seed" add other2.txt
+  git -C "${base}/seed" commit -q -m "main ahead 2"
+  git -C "${base}/seed" push -q origin main
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "via a forge-conflict merge" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH even though the target (T2) advanced past what the agent merged (T1)"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_t1}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch does not contain T1, the target commit the agent actually merged"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local parents
+  parents="$(git --git-dir="${base}/remote.git" rev-list --max-count=20 --merges refs/heads/agent/99-test-fix)"
+  if [ -z "${parents}" ]; then
+    echo "FAIL: ${test_name} — merge commit was dropped by replay"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # The target's further advance (main ahead 2, pushed above) is deliberately
+  # not required on the pushed branch: the regression under test is that the
+  # replay-skip must not *demand* the current target tip in HEAD, not that
+  # the PR should contain it.
+  echo "PASS: ${test_name}"
+}
+
+run_push_preserves_forge_conflict_rebase_test() {
+  local test_name="push-preserves-forge-conflict-rebase"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+  local main_ahead
+  main_ahead="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" rebase -q origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  mkdir -p "${base}/iteration-1/output"
+  cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "bot",
+  "actions": [
+    {"type": "fix", "finding": "forge merge conflict", "description": "Rebased onto origin/main."}
+  ],
+  "summary": "Rebased onto main to resolve forge-reported conflict.",
+  "tests_passed": true,
+  "files_changed": ["file.txt"],
+  "rebased_onto_target": true,
+  "conflict_update": {
+    "forge_state": "CONFLICTING",
+    "target_branch": "main",
+    "strategy": "rebase",
+    "outcome": "rebased"
+  }
+}
+JSONEOF
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # The rebased_onto_target arm now also requires
+  # history_rewrite_preserves_remote_human_commits, which fails closed when
+  # no bot git identity is available. Set GIT_BOT_EMAIL explicitly (matching
+  # the squash/redo and merged_target-fallback tests' convention) so "pr A"
+  # is recognized as a non-agent commit needing (and passing, via the
+  # patch-id fallback) a preservation check, rather than depending on
+  # whatever GIT_COMMITTER_EMAIL happens to be ambient in the calling shell.
+  local bot_email="bot@example.com"
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" "" "rebase" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "after a forge-conflict rebase" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_ahead}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch is not based on the new main tip"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# High-severity finding: the rebase-skip must not fire on the sandbox-written
+# rebased_onto_target flag alone when the runner-computed strategy is the
+# conservative default "merge" and no human explicitly asked for a rebase.
+# Same fixture as run_push_preserves_forge_conflict_rebase_test, but without
+# a "rebase" strategy override — the skip must not fire, so the replay onto
+# the stale remote PR tip (origin/BRANCH) proceeds and the new main tip is
+# NOT what the pushed branch ends up based on.
+run_push_forge_conflict_rebase_requires_strategy_test() {
+  local test_name="push-forge-conflict-rebase-requires-strategy"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local remote_pr_tip
+  remote_pr_tip="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+  local main_ahead
+  main_ahead="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" rebase -q origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  mkdir -p "${base}/iteration-1/output"
+  cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "bot",
+  "actions": [
+    {"type": "fix", "finding": "forge merge conflict", "description": "Rebased onto origin/main."}
+  ],
+  "summary": "Rebased onto main to resolve forge-reported conflict.",
+  "tests_passed": true,
+  "files_changed": ["file.txt"],
+  "rebased_onto_target": true,
+  "conflict_update": {
+    "forge_state": "CONFLICTING",
+    "target_branch": "main",
+    "strategy": "rebase",
+    "outcome": "rebased"
+  }
+}
+JSONEOF
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # No conflict_strategy override — FIX_CONFLICT_UPDATE_STRATEGY stays unset,
+  # so the runner computes the default "merge" strategy despite the sandbox
+  # having recorded rebased_onto_target:true.
+  run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "after a forge-conflict rebase" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — strategy=merge must not authorize the rebase-skip"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_ahead}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch should not be based on the new main tip without strategy=rebase"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${remote_pr_tip}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch does not replay onto the stale remote PR tip"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# High-severity auth-bypass finding: REBASE_TARGET_ANCESTOR_OK
+# (merge-base(HEAD, TRUSTED_TARGET_SHA) is an ancestor of HEAD) is
+# near-tautological for related histories — by its own comment it only fails
+# for genuinely unrelated histories — so it does not prove HEAD still
+# contains the PR's own commits. Simulate a sandbox that resets HEAD onto the
+# bare target tip (dropping "real A" entirely, unlike a genuine rebase which
+# would preserve its patch-id) and then adds a tree-changing follow-up
+# commit, while still claiming rebased_onto_target:true with strategy=rebase.
+# Without requiring history_rewrite_preserves_remote_human_commits, every
+# other conjunct in the rebased_onto_target arm is satisfied and the run
+# would force-with-lease push local HEAD, permanently dropping "real A" from
+# the remote. With the fix, the preservation check fails (no ancestor,
+# tree, or patch-id match for "real A" in target..HEAD), so the skip must
+# not fire — the run falls through to the safe fetch+rebase replay onto
+# origin/${BRANCH}, which still preserves "real A" because it becomes the
+# new base.
+run_push_forge_conflict_rebased_onto_target_requires_preservation_test() {
+  local test_name="push-forge-conflict-rebased-onto-target-requires-preservation"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+
+  # A confused or compromised sandbox resets onto the bare target tip
+  # (dropping "real A") instead of genuinely rebasing onto it, then adds a
+  # follow-up commit that touches a different file so the safe fallthrough
+  # rebase replay (asserted below) applies cleanly with no conflict.
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" reset -q --hard origin/main
+  echo "fixed" > "${base}/repo/followup.txt"
+  git -C "${base}/repo" add followup.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  mkdir -p "${base}/iteration-1/output"
+  cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "bot",
+  "actions": [
+    {"type": "fix", "finding": "forge merge conflict", "description": "Rebased onto origin/main."}
+  ],
+  "summary": "Rebased onto main to resolve forge-reported conflict.",
+  "tests_passed": true,
+  "files_changed": ["followup.txt"],
+  "rebased_onto_target": true,
+  "conflict_update": {
+    "forge_state": "CONFLICTING",
+    "target_branch": "main",
+    "strategy": "rebase",
+    "outcome": "rebased"
+  }
+}
+JSONEOF
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # GIT_BOT_EMAIL set explicitly, matching the other preservation tests, so
+  # "real A" (author "Test") is recognized as a non-agent commit needing a
+  # preservation check rather than depending on ambient shell state.
+  local bot_email="bot@example.com"
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" "" "rebase" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "after a forge-conflict rebase" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — rebase-skip fired without proving real A's commit was preserved"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_a}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch is missing the PR's own commit (real A) — it was dropped"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Low-severity missing-test finding: rebase-side counterpart of
+# run_push_forge_conflict_merge_survives_target_advance_test above.
+# REBASE_TARGET_ANCESTOR_OK only requires merge-base(HEAD, TRUSTED_TARGET_SHA)
+# to be an ancestor of HEAD, which tolerates the target having advanced
+# further (to T2) after the agent actually rebased onto T1. The skip must
+# still fire and publish the rebase rather than bouncing into the default
+# `git rebase origin/${BRANCH}`, which would replay the agent's rebased
+# commits onto the stale remote PR tip and undo the conflict resolution.
+run_push_forge_conflict_rebase_survives_target_advance_test() {
+  local test_name="push-forge-conflict-rebase-survives-target-advance"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  # T1: the target tip the agent actually sees and rebases onto.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead-1" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead 1"
+  git -C "${base}/seed" push -q origin main
+  local main_t1
+  main_t1="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" rebase -q origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  # T2: the target fast-forwards again *after* the agent's rebase, during the
+  # window between pre-fix.src.sh's fetch and post-fix.src.sh's own fetch.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead-2" > "${base}/seed/other2.txt"
+  git -C "${base}/seed" add other2.txt
+  git -C "${base}/seed" commit -q -m "main ahead 2"
+  git -C "${base}/seed" push -q origin main
+
+  mkdir -p "${base}/iteration-1/output"
+  cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "bot",
+  "actions": [
+    {"type": "fix", "finding": "forge merge conflict", "description": "Rebased onto origin/main."}
+  ],
+  "summary": "Rebased onto main to resolve forge-reported conflict.",
+  "tests_passed": true,
+  "files_changed": ["file.txt"],
+  "rebased_onto_target": true,
+  "conflict_update": {
+    "forge_state": "CONFLICTING",
+    "target_branch": "main",
+    "strategy": "rebase",
+    "outcome": "rebased"
+  }
+}
+JSONEOF
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # GIT_BOT_EMAIL set explicitly (see the sibling preservation test above) so
+  # "pr A" (author "Test") passes history_rewrite_preserves_remote_human_commits
+  # via the patch-id fallback, a genuine rebase having reapplied its patch.
+  local bot_email="bot@example.com"
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" "" "rebase" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "after a forge-conflict rebase" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH even though the target (T2) advanced past what the agent rebased onto (T1)"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_t1}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch does not contain T1, the target commit the agent actually rebased onto"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # The target's further advance (main ahead 2, pushed above) is deliberately
+  # not required on the pushed branch: the regression under test is that the
+  # replay-skip must not *demand* the current target tip in HEAD, not that
+  # the PR should contain it.
+  echo "PASS: ${test_name}"
+}
+
+# High-severity finding: merged_target must not skip replay on target-SHA
+# ancestry alone. A GitLab-reconstruction-style local history (built fresh
+# from origin/main, never derived from the real remote agent branch) can
+# trivially satisfy "target SHA is an ancestor of HEAD" without ever
+# containing the real remote PR tip's commits. Requiring origin/${BRANCH}
+# to also be an ancestor of HEAD before skipping must catch this — instead
+# the run falls through to the ordinary fetch+rebase path, which preserves
+# the real remote commit.
+run_push_forge_conflict_merge_requires_branch_ancestry_test() {
+  local test_name="push-forge-conflict-merge-requires-branch-ancestry"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  # Reconstructed from origin/main directly — never derived from the real
+  # remote agent/99-test-fix branch, so origin/${BRANCH} is not an ancestor.
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix_with_mergeable "CONFLICTING" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "via a forge-conflict merge" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — merged_target skip fired without origin/BRANCH ancestry"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_a}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — real remote commit was dropped by the push"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Medium-severity finding: the origin/${BRANCH}-ancestor requirement above
+# (needed to stop merged_target from authorizing a force-push over real
+# remote commits — see the test above) can never be satisfied by a genuine
+# GitLab reconstruction: the sandbox rebuilds BRANCH from API content with
+# new SHAs, so even a real forge-conflict merge with equivalent content
+# never descends from origin/${BRANCH}'s real SHAs. PRE_AGENT_HEAD is set by
+# the runner before the sandbox ever ran, so it is not sandbox-influenceable;
+# when the freshly-fetched origin/${BRANCH} is unchanged since then, nobody
+# pushed anything new to the remote branch during the run and the merge
+# commit is safe to preserve as-is. This asserts the fallback fires and the
+# pushed tip is still a real merge commit, not flattened by a default rebase.
+run_push_forge_conflict_merge_reconstruction_preserves_merge_test() {
+  local test_name="push-forge-conflict-merge-reconstruction-preserves-merge"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  local base_sha
+  base_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/agenta.txt"
+  git -C "${base}/seed" add agenta.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/otherfile.txt"
+  git -C "${base}/seed" add otherfile.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+
+  # Reconstructed from the PR's fork point (base_sha), not from the real
+  # remote agent branch — the GitLab sandbox cannot fetch that branch, so it
+  # rebuilds it via API-applied diffs, producing a content-equivalent commit
+  # with a brand new SHA. origin/${BRANCH} (real_a) is therefore never an
+  # ancestor of the reconstruction. The sandbox then genuinely merges
+  # origin/main (now ahead — the forge-conflict resolution) and adds a fix
+  # commit, matching what a real GitLab conflict-reconciliation run produces.
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix "${base_sha}"
+  echo "pr-a" > "${base}/repo/agenta.txt"
+  git -C "${base}/repo" add agenta.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  git -C "${base}/repo" merge -q --no-edit origin/main
+  echo "fixed" > "${base}/repo/fixfile.txt"
+  git -C "${base}/repo" add fixfile.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # PRE_AGENT_HEAD is the real remote branch tip as of pre-fix time — since
+  # origin/agent/99-test-fix (real_a) has not moved since, the fallback
+  # should treat this as safe to preserve. The fallback's content-preservation
+  # guard (history_rewrite_preserves_remote_human_commits) fails closed when
+  # no bot git identity is available, so — unlike run_push_rebase_postfix's
+  # own default of forwarding whatever GIT_BOT_EMAIL happens to be ambient —
+  # set one explicitly here, matching the squash/redo tests' convention, so
+  # this test doesn't depend on the calling shell's environment.
+  local bot_email="bot@example.com"
+  PRE_AGENT_HEAD="${real_a}" \
+    GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix_gitlab_with_mergeable "conflict" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review_bot" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "GitLab reconstruction detected" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — reconstruction fallback did not fire"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local pushed_tip merge_count
+  pushed_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  merge_count="$(git --git-dir="${base}/remote.git" rev-list --min-parents=2 --count "${pushed_tip}")"
+  if [ "${merge_count}" = "0" ]; then
+    echo "FAIL: ${test_name} — pushed history has no merge commit; the forge-conflict resolution was dropped"
+    git --git-dir="${base}/remote.git" log --oneline --graph refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" cat-file -e "${pushed_tip}:otherfile.txt" 2>/dev/null; then
+    echo "FAIL: ${test_name} — target content brought in by the merge (otherfile.txt) is missing from the pushed tree"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Negative counterpart to the reconstruction test above: if a human pushes a
+# new real commit to the remote branch after PRE_AGENT_HEAD was captured but
+# before this post-script runs, origin/${BRANCH} no longer matches
+# PRE_AGENT_HEAD. The fallback must not fire in that case — falling through
+# to the ordinary fetch+rebase path is what preserves the new human commit.
+run_push_forge_conflict_merge_reconstruction_requires_unchanged_branch_test() {
+  local test_name="push-forge-conflict-merge-reconstruction-requires-unchanged-branch"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  local base_sha
+  base_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/agenta.txt"
+  git -C "${base}/seed" add agenta.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/otherfile.txt"
+  git -C "${base}/seed" add otherfile.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+
+  # A human pushes a further real commit to the PR branch after PRE_AGENT_HEAD
+  # (real_a) was captured — origin/${BRANCH} has now advanced past it.
+  git -C "${base}/seed" checkout -q agent/99-test-fix
+  echo "human-follow-up" > "${base}/seed/humanfile.txt"
+  git -C "${base}/seed" add humanfile.txt
+  git -C "${base}/seed" commit -q -m "human follow-up"
+  git -C "${base}/seed" push -q origin agent/99-test-fix
+  local real_b
+  real_b="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  # Sandbox reconstruction still only knows about the fork point + real A (it
+  # started before the human follow-up commit existed) and separately merges
+  # in the (reconstructed) target branch.
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix "${base_sha}"
+  echo "pr-a" > "${base}/repo/agenta.txt"
+  git -C "${base}/repo" add agenta.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  git -C "${base}/repo" merge -q --no-edit origin/main
+  echo "fixed" > "${base}/repo/fixfile.txt"
+  git -C "${base}/repo" add fixfile.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${real_a}" \
+    run_push_rebase_postfix_gitlab_with_mergeable "conflict" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review_bot" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "GitLab reconstruction detected" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — reconstruction fallback fired despite origin/BRANCH advancing past PRE_AGENT_HEAD"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_b}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — the human follow-up commit was dropped by the push"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Medium-severity (auth-bypass) finding: the merged_target / GitLab-
+# reconstruction fallback trusts history_rewrite_preserves_remote_human_commits,
+# but that helper also tolerates a genuine rebase via its same-author +
+# same-patch-id fallback — the exact operation the sibling rebased_onto_target
+# arm requires FIX_CONFLICT_STRATEGY=rebase or a human rebase request for. A
+# confused or compromised bot-triggered agent could actually rebase onto the
+# target instead of merging, falsely report merged_target:true, and still
+# satisfy the fallback via patch-id alone. Simulate that: the agent's own
+# branch is genuinely rebased onto the (now-ahead) target, changing its
+# commit's SHA and tree but preserving its patch-id, then a fix commit is
+# added. origin/${BRANCH} (the real, unchanged remote PR tip) is therefore no
+# longer an ancestor of HEAD (a rebase discards the original commit object),
+# so only the patch-id fallback can recognize it — HISTORY_REWRITE_PATCH_ID_ONLY_MATCH
+# must come back true, and with no human rebase request the fallback must not
+# fire. The safe fallthrough (fetch+rebase replay onto origin/${BRANCH}) still
+# preserves every commit's content without needing --force-with-lease, so
+# nothing is lost — this only proves the *fallback itself* did not
+# authorize an unreviewed history rewrite.
+run_push_forge_conflict_merged_target_requires_rebase_authorization_test() {
+  local test_name="push-forge-conflict-merged-target-requires-rebase-authorization"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+
+  # The agent secretly rebases (not merges) onto the now-ahead target, then
+  # adds its fix commit. This is real history (not a GitLab-reconstruction
+  # SHA change), but the effect on ancestry/patch-id is the same: real_a's
+  # commit object is gone, replaced by one with the same patch-id but a
+  # different tree (it now sits on top of "main ahead").
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" rebase -q origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # gitlab forge (so the fallback's forge gate does not itself account for
+  # the whole test), bot trigger, no human instruction, default (merge)
+  # strategy, PRE_AGENT_HEAD unchanged — every other condition of the
+  # fallback is satisfied; only the patch-id-only authorization gap is
+  # under test here. GIT_BOT_EMAIL is set explicitly (see the
+  # reconstruction-preserves-merge test's comment above) so
+  # history_rewrite_preserves_remote_human_commits treats "real A" as a
+  # non-agent commit needing a preservation check, regardless of whatever
+  # GIT_COMMITTER_EMAIL happens to be ambient in the calling shell.
+  local bot_email="bot@example.com"
+  PRE_AGENT_HEAD="${real_a}" \
+    GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix_gitlab_with_mergeable "conflict" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review_bot" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "GitLab reconstruction detected" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — merged_target fallback fired on a disguised rebase with no human rebase authorization"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_a}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch is not a descendant of the real remote PR tip"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # The safe fallthrough replays onto origin/${BRANCH} via a fresh
+  # `git rebase`, which re-creates "main ahead" with a new SHA (it's being
+  # cherry-picked, not fast-forwarded) — so its *content* survives even
+  # though the original main_ahead commit object does not. Check the file
+  # it introduced rather than the original SHA's ancestry.
+  if ! git --git-dir="${base}/remote.git" cat-file -e \
+       "refs/heads/agent/99-test-fix:other.txt" 2>/dev/null; then
+    echo "FAIL: ${test_name} — pushed branch is missing the target content brought in by the (disguised) rebase"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Medium-severity logic-error finding: history_rewrite_preserves_remote_human_commits
+# only proves origin/${BRANCH}'s own commits survive in HEAD — it says nothing
+# about whether the target's content was ever actually incorporated. Simulate
+# a GitLab reconstruction that faithfully recreates the original PR branch
+# (so the preservation check passes) but never merges the target at all — no
+# merge commit exists anywhere in the resulting history, so the forge
+# conflict is never actually resolved. Without requiring MERGE_TARGET_ANCESTOR_OK,
+# every other conjunct of the reconstruction fallback is satisfied and it
+# would fire, force-pushing a branch that is still CONFLICTING against the
+# target on the remote. With the fix, the fallback must not fire; the run
+# falls through to the safe fetch+rebase replay, which still preserves
+# "real A" (nothing is lost, the conflict is simply left unresolved for the
+# ordinary flow to handle on a later run).
+run_push_forge_conflict_merged_target_reconstruction_requires_actual_merge_test() {
+  local test_name="push-forge-conflict-merged-target-reconstruction-requires-actual-merge"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  local base_sha
+  base_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/agenta.txt"
+  git -C "${base}/seed" add agenta.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/otherfile.txt"
+  git -C "${base}/seed" add otherfile.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+
+  # Reconstruction faithfully recreates the original PR branch content from
+  # the fork point (so history_rewrite_preserves_remote_human_commits would
+  # pass), but never merges origin/main — no merge commit anywhere in the
+  # resulting history.
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix "${base_sha}"
+  echo "pr-a" > "${base}/repo/agenta.txt"
+  git -C "${base}/repo" add agenta.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/fixfile.txt"
+  git -C "${base}/repo" add fixfile.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  local bot_email="bot@example.com"
+  PRE_AGENT_HEAD="${real_a}" \
+    GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix_gitlab_with_mergeable "conflict" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review_bot" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "GitLab reconstruction detected" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — reconstruction fallback fired despite no merge commit ever incorporating the target"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_a}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch is missing the PR's own commit (real A) — it was dropped"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Medium-severity finding: a forge-conflict merge's second parent (historical
+# target-branch commits) must stay out of scope for the pre-commit gate's
+# autofix re-scan, not just the initial authoritative gitleaks scan. Section 1
+# already scopes GITLEAKS_LOG_OPTS to --first-parent when a merge is in range;
+# this test drives the gate into its autofix retry (a mock pre-commit hook
+# that "reformats" a file and fails once) and verifies the re-scan inside
+# precommit_run_gate also uses that first-parent-scoped range instead of the
+# raw two-dot SCAN_RANGE, by planting a "secret" commit that only exists on
+# the merge's second parent (main) and asserting it is never seen.
+run_push_forge_conflict_precommit_gate_first_parent_test() {
+  local test_name="push-forge-conflict-precommit-gate-first-parent"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  echo "repos: []" > "${base}/seed/.pre-commit-config.yaml"
+  git -C "${base}/seed" add file.txt .pre-commit-config.yaml
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local pr_a_sha
+  pr_a_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  # A commit that only ever lands on main (the merge's second parent) —
+  # stands in for a gitleaks-detectable secret in historical target-branch
+  # history that this PR never touched.
+  git -C "${base}/seed" checkout -q main
+  echo "sekrit" > "${base}/seed/secret.txt"
+  git -C "${base}/seed" add secret.txt
+  git -C "${base}/seed" commit -q -m "main: historical secret"
+  git -C "${base}/seed" push -q origin main
+  local main_secret_sha
+  main_secret_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-precommit-gate"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+
+  # Fails secret-detection if the given --log-opts range still reaches the
+  # historical main-only commit (the caller forgot to scope the range to
+  # --first-parent), or if a --pipe follow-up scan is fed the planted
+  # target-branch secret's own content ("sekrit", from secret.txt above) —
+  # i.e. the per-merge scan used a pairwise `-m --first-parent` diff instead
+  # of the combined/resolution-only diff, dumping the whole incoming-target
+  # tree delta rather than just the conflict resolution.
+  cat > "${gate_mock}/gitleaks" <<EOF
+#!/usr/bin/env bash
+log_opts=""
+pipe_mode=false
+for arg in "\$@"; do
+  case "\${arg}" in
+    --log-opts=*) log_opts="\${arg#--log-opts=}" ;;
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if [ -n "\${log_opts}" ] \\
+   && git log \${log_opts} --format=%H 2>/dev/null | grep -qx "${main_secret_sha}"; then
+  echo "leaks found: historical target-branch commit ${main_secret_sha} in scan range" >&2
+  exit 1
+fi
+if \${pipe_mode}; then
+  pipe_input="\$(cat)"
+  if printf '%s' "\${pipe_input}" | grep -q "sekrit"; then
+    echo "leaks found: historical target-branch secret content in --pipe merge diff" >&2
+    exit 1
+  fi
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  # Simulates an auto-fixing hook: fails and rewrites a tracked file on its
+  # first run (driving precommit_run_gate into its autofix-amend-rescan
+  # path), then reports clean on the retry.
+  cat > "${gate_mock}/pre-commit" <<EOF
+#!/usr/bin/env bash
+marker="${base}/.precommit-ran-marker"
+if [ ! -f "\${marker}" ]; then
+  touch "\${marker}"
+  echo "autofixed" > file.txt
+  echo "hook modified files"
+  exit 1
+fi
+echo "all hooks passed"
+exit 0
+EOF
+  chmod +x "${gate_mock}/pre-commit"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "leaks found" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — autofix re-scan walked the merge's second parent"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "hook modified files" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — mock pre-commit never drove the autofix retry path"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Branch agent/99-test-fix pushed successfully" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — push did not report success"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_secret_sha}" "${pr_a_sha}" 2>/dev/null; then
+    echo "FAIL: ${test_name} — test fixture invalid: secret commit is an ancestor of pr A"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_push_forge_conflict_untrusted_merge_secret_test() {
+  local test_name="push-forge-conflict-untrusted-merge-secret"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local pr_a_sha
+  pr_a_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+
+  # Simulate a compromised agent session creating a *different*, untrusted
+  # merge during the same run: a throwaway branch off main that cleanly adds
+  # a new file (no conflict with file.txt) containing a gitleaks-detectable
+  # string. Its tip is never pushed to origin/main, so it is not part of
+  # trusted target-branch history — the authoritative scan must not trust a
+  # combined (--cc) diff for this merge, since --cc omits any path whose
+  # merge-result blob matches either parent (secret.txt matches parent 2
+  # exactly and never conflicts with file.txt).
+  git -C "${base}/repo" checkout -q -b evil-throwaway origin/main
+  echo "sekrit" > "${base}/repo/secret.txt"
+  git -C "${base}/repo" add secret.txt
+  git -C "${base}/repo" commit -q -m "evil: planted secret"
+
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit evil-throwaway
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-untrusted-merge-secret"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+
+  # Only fails a --pipe scan whose content contains the planted secret. A
+  # combined (--cc) diff of this merge would omit secret.txt entirely, so
+  # this mock only catches a regression if the per-merge scan falls back to
+  # the full pairwise first-parent diff for a merge whose second parent is
+  # not confirmed trusted-target history.
+  cat > "${gate_mock}/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+pipe_mode=false
+for arg in "$@"; do
+  case "${arg}" in
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if ${pipe_mode}; then
+  pipe_input="$(cat)"
+  if printf '%s' "${pipe_input}" | grep -q "sekrit"; then
+    echo "leaks found: planted secret in untrusted merge diff" >&2
+    exit 1
+  fi
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — push succeeded; planted secret in the untrusted merge was not detected"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "leaks found" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — failed for a reason other than the planted secret"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# High-severity finding: the second-parent-only trust check is incomplete for
+# a merge with more than two parents (an octopus merge). Combined (--cc) diff
+# omits any path whose merge-result blob matches ANY parent, not just the one
+# checked — a three-parent merge whose second parent is the trusted target
+# and whose THIRD parent cleanly adds a secret file (no conflict) would pass
+# the old parent-2-only check, select --cc, and never surface the
+# third-parent-only file, since its blob matches parent 3 exactly and is
+# therefore "uninteresting" to the combined diff. Every non-first parent must
+# be confirmed trusted before --cc is used.
+run_push_forge_conflict_untrusted_octopus_merge_secret_test() {
+  local test_name="push-forge-conflict-untrusted-octopus-merge-secret"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  local base_sha
+  base_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local pr_a_sha
+  pr_a_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  # main must actually advance past the agent branch's fork point — otherwise
+  # merging origin/main into the agent branch is a no-op fast-forward (it's
+  # already an ancestor) and `git merge` collapses to a plain 2-parent merge
+  # of just the throwaway branch, not the 3-parent octopus this test needs.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+
+  # Untrusted third parent: a throwaway branch off the ORIGINAL base commit
+  # (not origin/main) that cleanly adds a new file (no conflict with anything
+  # else being merged) containing a gitleaks-detectable string. Branching off
+  # origin/main instead would make origin/main an ancestor of this branch, and
+  # git's octopus merge silently drops any merge head that is already an
+  # ancestor of another one — collapsing this back to a 2-parent merge. Never
+  # pushed to origin/main, so this branch is not trusted target-branch history.
+  git -C "${base}/repo" checkout -q -b evil-throwaway "${base_sha}"
+  echo "sekrit" > "${base}/repo/secret.txt"
+  git -C "${base}/repo" add secret.txt
+  git -C "${base}/repo" commit -q -m "evil: planted secret"
+
+  # Octopus merge: parent 2 (origin/main) IS trusted target history — the old
+  # code only checked this parent and would trust --cc — but parent 3
+  # (evil-throwaway) is not. `git merge` accepts multiple branches at once
+  # and creates a single multi-parent commit when none of them conflict.
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit origin/main evil-throwaway
+  local merge_parent_count
+  merge_parent_count="$(git -C "${base}/repo" log -1 --format='%P' HEAD | wc -w | tr -d ' ')"
+  if [ "${merge_parent_count}" != "3" ]; then
+    echo "FAIL: ${test_name} — fixture setup did not produce a 3-parent merge (got ${merge_parent_count} parents)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-untrusted-octopus-merge-secret"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+
+  # Only fails a --pipe scan whose content contains the planted secret. A
+  # combined (--cc) diff of this merge would omit secret.txt entirely (it
+  # matches parent 3 exactly), so this mock only catches a regression if the
+  # per-merge scan falls back to the full pairwise first-parent diff for a
+  # merge with an unconfirmed extra parent.
+  cat > "${gate_mock}/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+pipe_mode=false
+for arg in "$@"; do
+  case "${arg}" in
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if ${pipe_mode}; then
+  pipe_input="$(cat)"
+  if printf '%s' "${pipe_input}" | grep -q "sekrit"; then
+    echo "leaks found: planted secret in untrusted octopus merge diff" >&2
+    exit 1
+  fi
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — push succeeded; planted secret on the untrusted third parent was not detected"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "leaks found" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — failed for a reason other than the planted secret"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_push_blocked_mergeability_does_not_skip_test() {
+  local test_name="push-blocked-mergeability-does-not-skip"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  write_merged_target_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix_with_mergeable "UNKNOWN" "${base}" "${stdout_log}" \
+    "${PUSH_REBASE_MOCK_BIN}" "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "via a forge-conflict merge" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — UNKNOWN mergeability triggered a conflict skip"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_a}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — remote tip is not a fast-forward of real A"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_push_preserves_forge_conflict_merge_test
+run_push_forge_conflict_merge_ours_resolution_no_diff_test
+run_push_forge_conflict_merge_survives_target_advance_test
+run_push_preserves_forge_conflict_rebase_test
+run_push_forge_conflict_rebase_requires_strategy_test
+run_push_forge_conflict_rebased_onto_target_requires_preservation_test
+run_push_forge_conflict_rebase_survives_target_advance_test
+run_push_forge_conflict_merge_requires_branch_ancestry_test
+run_push_forge_conflict_merge_reconstruction_preserves_merge_test
+run_push_forge_conflict_merge_reconstruction_requires_unchanged_branch_test
+run_push_forge_conflict_merged_target_requires_rebase_authorization_test
+run_push_forge_conflict_merged_target_reconstruction_requires_actual_merge_test
+run_push_forge_conflict_precommit_gate_first_parent_test
+run_push_forge_conflict_untrusted_merge_secret_test
+run_push_forge_conflict_untrusted_octopus_merge_secret_test
+run_push_blocked_mergeability_does_not_skip_test
 
 rm -rf "${PUSH_REBASE_TMPDIR}"
 

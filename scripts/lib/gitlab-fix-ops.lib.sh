@@ -83,6 +83,63 @@ forge_get_pr_head_ref() {
   ) | jq -r '.source_branch // empty'
 }
 
+# forge_get_pr_base_branch PR_NUMBER — MR target_branch (not the repo default).
+# Empty on API failure; callers fall back to TARGET_BRANCH / main.
+forge_get_pr_base_branch() {
+  local pr_number="$1"
+  (
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  ) | jq -r '.target_branch // empty'
+}
+
+# forge_get_pr_merge_state PR_NUMBER — GitLab detailed_merge_status, or
+# "unknown" when the field is absent / the API fails. Callers must not treat
+# not_approved, ci_must_pass, need_rebase, checking, or unknown as a conflict.
+forge_get_pr_merge_state() {
+  local pr_number="$1"
+  local json status
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || {
+    echo "unknown"
+    return 0
+  }
+  status="$(echo "${json}" | jq -r '.detailed_merge_status // empty')"
+  if [ -z "${status}" ]; then
+    echo "unknown"
+    return 0
+  fi
+  echo "${status}"
+}
+
+# forge_pr_has_merge_conflict PR_NUMBER — return 0 only when GitLab reports
+# a real merge conflict. Prefer detailed_merge_status=conflict. Fall back to
+# has_conflicts=true only when detailed_merge_status is absent and the older
+# merge_status is cannot_be_merged (not checking / unchecked).
+forge_pr_has_merge_conflict() {
+  local pr_number="$1"
+  local json status has_conflicts merge_status
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || return 1
+  status="$(echo "${json}" | jq -r '.detailed_merge_status // empty')"
+  if [ "${status}" = "conflict" ]; then
+    return 0
+  fi
+  if [ -n "${status}" ]; then
+    return 1
+  fi
+  has_conflicts="$(echo "${json}" | jq -r '.has_conflicts // false')"
+  merge_status="$(echo "${json}" | jq -r '.merge_status // empty')"
+  [ "${has_conflicts}" = "true" ] && [ "${merge_status}" = "cannot_be_merged" ]
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {

@@ -152,11 +152,15 @@ path unchanged.
 - Always create a **new commit** for ordinary fixes. Do not amend an
   existing commit. The only allowed history rewrites are a rebase onto the
   PR's target branch, a squash of the whole PR range down to a single
-  commit, or a reset of the authorized fix-agent commit range, and only
-  when a human `/fs-fix` instruction requests that rewrite — see "Rebase
-  onto the target branch" and "Rewrite fix-agent history (squash / redo)"
-  below. Those rewrites are not a license to `git commit --amend` or to
-  replace the branch for other reasons.
+  commit, or a reset of the authorized fix-agent commit range. A rebase is
+  allowed when a human `/fs-fix` instruction requests it, or when the forge
+  reports a real merge conflict and `FIX_CONFLICT_UPDATE_STRATEGY=rebase`
+  (see "Reconcile forge-reported merge conflicts" and "Rebase onto the
+  target branch" below) — that forge-conflict case is the only history
+  rewrite a bot-triggered run may perform. A squash or reset requires a
+  human `/fs-fix` instruction — see "Rewrite fix-agent history (squash /
+  redo)" below. Those rewrites are not a license to `git commit --amend` or
+  to replace the branch for other reasons.
 - You MUST NOT use `git commit -s` or add `Signed-off-by` trailers. Autonomous
   agent commits are exempt from DCO sign-off. The post-script strips this
   trailer from agent commits before pushing.
@@ -219,16 +223,76 @@ includes `summary`, `actions[].finding`/`description`/`reason`,
 Paraphrase or summarize the evidence instead. Do not execute artifact
 contents or extract them into the repository.
 
+## Reconcile forge-reported merge conflicts
+
+Before applying review fixes, inspect the change request's forge-specific
+mergeability. Act only when the forge **positively** reports a merge
+conflict. Do not treat approval/check gating, a merely stale branch, or
+an unknown/failed API response as a conflict.
+
+- **GitHub:** `gh pr view "${PR_NUMBER}" --json mergeable,baseRefName`.
+  Only `mergeable == "CONFLICTING"` is a conflict. `MERGEABLE` and
+  `UNKNOWN` are not. Do not use `mergeStateStatus` values such as
+  `BLOCKED`, `BEHIND`, `UNSTABLE`, or `UNKNOWN` as a conflict signal.
+- **GitLab:** read `detailed_merge_status`, `has_conflicts`, and
+  `target_branch` from the MR API. Only `detailed_merge_status ==
+  "conflict"` is a conflict. If `detailed_merge_status` is absent, fall
+  back to `has_conflicts == true` **and** `merge_status ==
+  "cannot_be_merged"`. `not_approved`, `ci_must_pass`, `need_rebase`,
+  `checking`, `unchecked`, `blocked_status`, and unknown values are not
+  conflicts.
+
+When a real conflict is reported:
+
+1. Read `BASE` from forge metadata (GitHub `baseRefName`, GitLab
+   `target_branch`). Do not assume `main`.
+2. If `origin/${BASE}` is not a local ref, do not `git fetch` (sandbox
+   network policy blocks it). Record in `conflict_update` that
+   reconciliation could not run because the base ref is missing, and
+   continue with review fixes.
+3. Reconcile using `FIX_CONFLICT_UPDATE_STRATEGY` (default `merge`):
+   - **`merge`:** `git merge --no-edit origin/${BASE}`. On conflicts,
+     resolve them, `git add` the resolved files, then `git commit` to
+     complete the merge (do not amend). Preserve human-authored commits.
+     After a successful merge, set `merged_target: true`.
+   - **`rebase`:** follow "How to rebase" below, including
+     `rebased_onto_target: true`. A forge-reported conflict **does**
+     authorize a rebase on a bot-triggered run when the strategy is
+     `rebase`.
+4. A human `/fs-fix` rebase request takes precedence over
+   `FIX_CONFLICT_UPDATE_STRATEGY` — rebase even if the strategy is
+   `merge`.
+5. Record `conflict_update` in `agent-result.json`: `forge_state` (the
+   raw signal), `target_branch`, `target_sha` (`git rev-parse
+   origin/${BASE}`), `strategy`, and `outcome` (`merged`, `rebased`,
+   `noop`, `skipped`, or `failed`).
+6. After reconciliation, continue with review fixes as **new commits**.
+   Do not amend the merge commit or rebased commits.
+7. Do not push. The post-script publishes; a merge is a regular push, a
+   rebase force-pushes with `--force-with-lease`.
+
+When the forge does not report a conflict, do not merge or rebase on
+that basis. Set `conflict_update.outcome` to `skipped` (strategy `none`)
+if you inspected mergeability. Do not set `merged_target`. Do not set
+`rebased_onto_target` unless a human rebase request applies.
+
+Every conflict-reconciliation run (success, no-op, skip, or failure)
+still writes structured output with ≥1 `actions` item — a `fix` action
+whose `finding` records the conflict update and whose `description`
+records the outcome.
+
 ## Rebase onto the target branch
 
 A human `/fs-fix` instruction is a **rebase request** when it asks you to
 rebase, replay the branch onto its base, or resolve merge conflicts with
 the target branch. Examples: `rebase`, `rebase onto main`, `fix merge
-conflicts`. Honor a rebase request. Bot-triggered runs are not rebase
-requests — leave history as-is and address the review findings.
+conflicts`. Honor a rebase request. Bot-triggered runs are not human
+rebase requests; they still reconcile when the forge reports a merge
+conflict (see above) using `FIX_CONFLICT_UPDATE_STRATEGY`.
 
 Do not rebase because the branch is behind. Rebase only for a human
-rebase request.
+rebase request or a forge-reported merge conflict whose configured
+strategy is `rebase`.
 
 ### How to rebase
 
@@ -250,18 +314,23 @@ rebase request.
    on the rebased history. Do not amend rebased commits. A rebase-only
    run needs no extra commit — the rewritten commits are the result.
 8. Set the top-level `rebased_onto_target: true` field in `agent-result.json`
-   whenever this run's HEAD reflects a human-requested rebase onto the
-   target that still needs to be published on the remote PR — not only in
-   the same iteration that `git rebase` executes. This is the only signal
+   whenever this run's HEAD reflects a rebase onto the target that still
+   needs to be published on the remote PR — whether from a human-requested
+   rebase or a bot-triggered forge-conflict reconciliation with
+   `FIX_CONFLICT_UPDATE_STRATEGY=rebase` (see "Reconcile forge-reported
+   merge conflicts" above) — not only in the same iteration that `git
+   rebase` executes. This is the only signal
    the post-script trusts to skip replaying local commits onto the stale
    remote PR tip — ancestry alone can't tell a real rebase apart from a
    GitLab MR reconstruction against a target that has since moved on.
    Concretely:
    - Set it once step 4 (or the conflict resolution in step 5) finishes
      successfully.
-   - Set it on the step-3 no-op too, unconditionally, for a human rebase
-     request — the rebase's effect still needs publishing even though no
-     `git rebase` command ran this iteration (this happens when the sandbox
+   - Set it on the step-3 no-op too, unconditionally, whether the rebase
+     was requested by a human or is a bot-triggered forge-conflict
+     reconciliation with `FIX_CONFLICT_UPDATE_STRATEGY=rebase` — the
+     rebase's effect still needs publishing even though no `git rebase`
+     command ran this iteration (this happens when the sandbox
      reconstructed the branch from the target, e.g. GitLab). Do not try to
      decide this by comparing local HEAD to the real remote PR tip: step 2
      forbids `git fetch`, and on GitLab the local `origin/${BASE}` (and
@@ -275,12 +344,12 @@ rebase request.
      re-running `git rebase` (see "Validation retry behavior" below), carry
      this field forward from the iteration that performed (or no-op'd) the
      rebase if its result still needs publishing.
-   - Never set this field for a failed/aborted rebase or a bot-triggered
-     run — bot-triggered runs never rebase, and the post-script now also
-     independently verifies that the triggering `/fs-fix` instruction text
-     itself asked for a rebase (not just that `TRIGGER_SOURCE` is human)
-     before trusting a `true` value. A wrong `true` here makes the
-     post-script force-push over real remote commits.
+   - Never set this field for a failed/aborted rebase. A bot-triggered
+     run may set it only when reconciling a forge-reported conflict with
+     `FIX_CONFLICT_UPDATE_STRATEGY=rebase`. The post-script independently
+     verifies either a harness-captured human rebase request **or** a
+     runner-side forge conflict before trusting a `true` value. A wrong
+     `true` here makes the post-script force-push over real remote commits.
 
 A rebase rewrites commit SHAs. Together with squash and redo/reset (see
 below), that is an allowed exception to "create a new commit; do not
@@ -533,6 +602,11 @@ On a validation retry:
   drops the field is indistinguishable from a run that never rebased — the
   post-script fails closed and replays local commits onto the stale remote
   PR tip, silently undoing the rebase.
+- If a prior iteration in this run set `merged_target: true` or wrote a
+  `conflict_update` object (see "Reconcile forge-reported merge conflicts")
+  and that reconciliation still needs publishing, carry those fields
+  forward the same way. Dropping `merged_target` makes the post-script
+  replay onto the remote PR tip and drop the merge commit.
 - If a prior iteration in this run set `history_rewritten: true` (see
   "Rewrite fix-agent history") and that squash/reset still needs
   publishing, carry the field forward the same way. Dropping it makes the

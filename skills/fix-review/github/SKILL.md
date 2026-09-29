@@ -15,10 +15,16 @@ provides `GH_TOKEN` for authentication.
 
 ```bash
 # View PR with full details
-gh pr view "${PR_NUMBER}" --json number,title,body,headRefName,baseRefName,state,files,labels
+gh pr view "${PR_NUMBER}" --json number,title,body,headRefName,baseRefName,state,files,labels,mergeable
 
 # View PR state only
 gh pr view "${PR_NUMBER}" --json state --jq '.state'
+
+# Mergeability — only mergeable=CONFLICTING is a merge conflict.
+# MERGEABLE and UNKNOWN are not. Do not treat mergeStateStatus BLOCKED,
+# BEHIND, UNSTABLE, or UNKNOWN as a conflict.
+gh pr view "${PR_NUMBER}" --json mergeable,baseRefName \
+  --jq '{mergeable, base: .baseRefName}'
 ```
 
 ## PR Diff

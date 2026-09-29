@@ -449,6 +449,18 @@ run_test_custom_filename "fix-history-rewritten-valid" \
   "${FIX_SCHEMA}" \
   "true"
 
+run_test_custom_filename "fix-merged-target-valid" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"forge conflict","description":"Merged origin/main"}],"files_changed":["f.go"],"merged_target":true,"conflict_update":{"forge_state":"CONFLICTING","target_branch":"main","strategy":"merge","outcome":"merged"}}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "fix-conflict-update-invalid-strategy" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"forge conflict","description":"Merged origin/main"}],"files_changed":["f.go"],"conflict_update":{"strategy":"squash","outcome":"merged"}}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "false"
+
 run_test_custom_filename "fix-ci-inspections-valid" \
   '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"job":"lint","status":"success","classification":"passing","diagnosis":"Lint passed."},{"job":"unit-tests","status":"failure","classification":"pr-related","diagnosis":"Failing test matches the diff.","remediation":"Fixed the test."}]}' \
   "fix-result.json" \

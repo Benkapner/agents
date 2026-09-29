@@ -118,7 +118,43 @@
     },
     "rebased_onto_target": {
       "type": "boolean",
-      "description": "Set to true whenever this run's HEAD reflects an authorized human rebase onto the PR's target that still needs to be published on the remote PR (see 'How to rebase' step 8 in agents/fix.md) — a completed `git rebase origin/<target>`, a step-3 no-op whose result still needs publishing (e.g. a GitLab MR reconstructed against the target), or a validation-loop retry carrying the field forward from the iteration that performed or no-op'd the rebase. Never set for a failed/aborted rebase or a bot-triggered run. The post-script requires this field together with a harness-verified human rebase request (TRIGGER_SOURCE plus the literal /fs-fix instruction text) before skipping the replay onto the remote PR tip — ancestry alone cannot distinguish an authorized rebase from a GitLab MR reconstruction against a target that has since moved on."
+      "description": "Set to true whenever this run's HEAD reflects an authorized rebase onto the PR's target that still needs to be published on the remote PR (see 'How to rebase' step 8 in agents/fix.md) — a completed `git rebase origin/<target>`, a step-3 no-op whose result still needs publishing (e.g. a GitLab MR reconstructed against the target), or a validation-loop retry carrying the field forward from the iteration that performed or no-op'd the rebase. Authorization is either a harness-verified human `/fs-fix` rebase request, or a runner-verified forge merge conflict with FIX_CONFLICT_UPDATE_STRATEGY=rebase (issue #1518). Never set for a failed/aborted rebase. The post-script requires this field together with one of those runner-side signals before skipping the replay onto the remote PR tip — ancestry alone cannot distinguish an authorized rebase from a GitLab MR reconstruction against a target that has since moved on."
+    },
+    "merged_target": {
+      "type": "boolean",
+      "description": "Set to true whenever this run's HEAD is a merge of the PR branch with its target, performed because the forge reported a merge conflict (FIX_CONFLICT_UPDATE_STRATEGY=merge, the default) or a validation-loop retry carrying the field forward. Never set for a failed/aborted merge. The post-script requires this field together with a runner-verified forge conflict before skipping replay onto the remote PR tip — a default `git rebase` drops merge commits and would otherwise undo the resolution."
+    },
+    "conflict_update": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Record of the forge mergeability inspection and any reconciliation performed this run (issue #1518). Include whenever mergeability was inspected.",
+      "properties": {
+        "forge_state": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Raw forge mergeability signal (GitHub mergeable enum, GitLab detailed_merge_status, or unknown)."
+        },
+        "target_branch": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "PR/MR base branch that was used as the reconciliation target."
+        },
+        "target_sha": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Commit SHA of origin/<target_branch> as observed in the sandbox."
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["merge", "rebase", "none"],
+          "description": "Strategy selected for this run. none when no conflict was reported."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["merged", "rebased", "noop", "skipped", "failed"],
+          "description": "merged/rebased on success, noop when already up to date, skipped when the forge did not report a conflict, failed when reconciliation could not complete."
+        }
+      }
     },
     "history_rewritten": {
       "type": "boolean",
