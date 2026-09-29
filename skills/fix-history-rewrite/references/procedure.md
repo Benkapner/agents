@@ -4,7 +4,7 @@ Numbered git steps for rebase, squash, and redo/reset. Activation rules
 are in `SKILL.md`. Follow these steps in order when a rewrite is
 authorized.
 
-### How to rebase
+## How to rebase
 
 1. Read the PR/MR base branch from forge metadata (GitHub: `baseRefName`,
    GitLab: `target_branch`). Call it `BASE`.
@@ -71,7 +71,7 @@ Every rebase run (success, no-op, or failure) still writes structured output
 with ≥1 `actions` item — a `fix` action whose `finding` records the rebase
 and whose `description` records the outcome.
 
-### How to squash
+## How to squash
 
 A squash's range is the whole PR, computed fresh each time — it is not
 limited to commits authored by this fix agent, and it is not the same
@@ -148,7 +148,7 @@ output with ≥1 `actions` item — a `fix` action whose `finding` records
 the squash and whose `description` records the outcome, including the
 rewrite base and how many commits were combined (or why it did not run).
 
-### Authorized rewrite range (redo / reset)
+## Authorized rewrite range (redo / reset)
 
 Redo/reset's range is narrower than squash's: the only commits it may
 rewrite are the contiguous suffix of commits at HEAD authored by this fix
@@ -177,7 +177,7 @@ authored by the code agent (`fullsend-code` or any name other than
 `$GIT_AUTHOR_NAME`). Unrelated branch changes stay intact. When ownership
 is ambiguous, fail closed and explain the blocker in structured output.
 
-### How to redo / reset
+## How to redo / reset
 
 1. Identify the authorized range (above). Let `REWRITE_BASE` be the
    rewrite base.
