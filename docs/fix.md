@@ -76,6 +76,10 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 The fix agent uses the `fix-review` skill for its procedure, including project-CI inspection. Forge-specific recipes live in `skills/fix-review/github` and `skills/fix-review/gitlab`.
 
+### Skill: `fix-history-rewrite`
+
+The fix agent uses the `fix-history-rewrite` skill for human-requested rebase, squash, and redo/reset, and for a forge-conflict rebase when `FIX_CONFLICT_UPDATE_STRATEGY=rebase`.
+
 To cover a CI system other than GitHub Actions or GitLab CI, add a skill in `.agents/skills/` whose description names that system (or log inspection) and include it in your harness `skills:` array via `base:` composition. During CI inspection the agent only uses skills already injected for the run through that harness `skills:`/`base:` composition — it does not scan or load `SKILL.md` files from the PR's own working-tree checkout.
 
 ## How the agent works

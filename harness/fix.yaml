@@ -61,6 +61,7 @@ host_files:
 
 skills:
   - skills/fix-review
+  - skills/fix-history-rewrite
 
 env:
   runner:
