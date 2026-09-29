@@ -78,6 +78,10 @@ The fix agent uses the `fix-review` skill for its procedure, including project-C
 
 To cover a CI system other than GitHub Actions or GitLab CI, add a skill in `.agents/skills/` whose description names that system (or log inspection) and include it in your harness `skills:` array via `base:` composition. During CI inspection the agent only uses skills already injected for the run through that harness `skills:`/`base:` composition — it does not scan or load `SKILL.md` files from the PR's own working-tree checkout.
 
+### Skill: `fix-history-rewrite`
+
+The fix agent uses the `fix-history-rewrite` skill for human-requested rebase, squash, and redo/reset, and for a forge-conflict rebase when `FIX_CONFLICT_UPDATE_STRATEGY=rebase`.
+
 ## How the agent works
 
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
