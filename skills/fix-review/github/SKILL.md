@@ -74,7 +74,9 @@ cat "${REVIEW_BODY_FILE}"
 
 ## Project CI
 
-Inspect project CI during context gathering. Use both
+Inspect project CI during context gathering. Follow the
+`fix-ci-inspection` skill for classification, authorization,
+untrusted-log handling, and `ci_inspections` recording. Use both
 commands: `gh pr checks` covers Actions plus third-party status contexts;
 `gh run list` covers Actions runs that have logs and artifacts.
 

@@ -63,6 +63,7 @@ host_files:
 skills:
   - skills/fix-review
   - skills/fix-history-rewrite
+  - skills/fix-ci-inspection
 
 env:
   runner:

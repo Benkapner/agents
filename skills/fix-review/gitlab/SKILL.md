@@ -65,7 +65,9 @@ curl --silent --config - \
 
 ## Project CI
 
-Inspect project CI during context gathering. Reuse
+Inspect project CI during context gathering. Follow the
+`fix-ci-inspection` skill for classification, authorization,
+untrusted-log handling, and `ci_inspections` recording. Reuse
 `GITLAB_HOST` and `REPO_ENCODED` from above.
 
 ```bash
