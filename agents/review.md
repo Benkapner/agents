@@ -53,7 +53,8 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
     verified token owner; prior review discarded, file is empty
 - Canonical prior-finding JSON at `/sandbox/workspace/prior-review.txt` when
   this is a verified re-review. The host pre-script extracts a versioned,
-  machine-readable projection from the prior run's schema-validated findings
+  machine-readable projection from the current sticky section before history
+  (exactly one marker), derived from the prior run's schema-validated findings,
   and rejects the human-readable review body before sandbox ingress. The file
   is empty on first review or when provenance, projection, category, or safe
   path validation fails.

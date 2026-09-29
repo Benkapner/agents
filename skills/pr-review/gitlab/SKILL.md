@@ -113,9 +113,14 @@ curl --fail --silent --show-error \
 
 ## Prior review comparison
 
+Accept an incremental diff only when the merge base is the prior reviewed SHA.
+A rewritten history, failed ancestry lookup, or malformed response retains the
+full MR diff and incomplete state. GitLab still uses full first-review dispatch.
+
 ```bash
 # Compare commits between prior review and current HEAD
 COMPARE_FILE=/sandbox/workspace/pr-compare.json
+MERGE_BASE_FILE=/sandbox/workspace/pr-merge-base.json
 INCREMENTAL_DIFF=/sandbox/workspace/pr-incremental-diff.txt
 CHANGED_FILES_FILE=/sandbox/workspace/pr-changed-files.txt
 COMPARE_INCOMPLETE_FILE=/sandbox/workspace/pr-compare-incomplete
@@ -129,9 +134,18 @@ if ! { printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
   exit 1
 fi
 
-if ! curl --fail --silent --show-error \
+if ! curl --fail --silent --show-error --get \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}" \
+  --data-urlencode "refs[]=${PRIOR_REVIEW_SHA}" \
+  --data-urlencode "refs[]=${HEAD_SHA}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/merge_base" \
+  > "$MERGE_BASE_FILE" \
+  || ! jq -e --arg prior "$PRIOR_REVIEW_SHA" \
+    'type == "object" and (.id == $prior)' "$MERGE_BASE_FILE" >/dev/null; then
+  echo "prior-review ancestry unproven; using full MR diff" >&2
+elif ! curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}&straight=true" \
   > "$COMPARE_FILE"; then
   echo "prior-review compare failed; using full MR diff" >&2
 elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \

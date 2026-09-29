@@ -89,9 +89,9 @@
       "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
       "file_path": "skills/pr-review/SKILL.md",
-      "message": "Estimated 17,913 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 16,784 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 17913,
+      "value": 16784,
       "baseline_mode": "ceiling"
     }
   ]

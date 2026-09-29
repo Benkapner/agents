@@ -322,6 +322,28 @@ ${OLD_MARKER}" \
   "app-verified" \
   'EMPTY'
 
+# Sticky history must never supply or invalidate the current projection.
+for history_forge in github gitlab; do
+  history_provenance=app-verified
+  [[ "${history_forge}" == gitlab ]] && history_provenance=bot-verified
+  run_prior_projection_test "${history_forge}-current-marker-with-history" \
+    "${VALID_MARKER}
+<details>
+<summary>Previous run</summary>
+<!-- sticky:history-start -->
+${OLD_MARKER}
+<!-- sticky:history-end -->
+</details>" "${history_provenance}" "${VALID_PROJECTION}" "${history_forge}"
+  run_prior_projection_test "${history_forge}-history-only-marker-rejected" \
+    "Current review without a projection
+<details>
+<summary>Previous run</summary>
+<!-- sticky:history-start -->
+${OLD_MARKER}
+<!-- sticky:history-end -->
+</details>" "${history_provenance}" EMPTY "${history_forge}"
+done
+
 for fixture in "${REREVIEW_FIXTURES[@]}"; do
   run_prior_projection_test "fixture-$(basename "$(dirname "${fixture}")")-projection" \
     "$(yq -r '.prior_review.body' "${fixture}")" \

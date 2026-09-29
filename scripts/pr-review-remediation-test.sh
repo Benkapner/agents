@@ -9,6 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SKILL="${REPO_ROOT}/skills/pr-review/SKILL.md"
+REREVIEW="${REPO_ROOT}/skills/pr-review/references/re-review.md"
 INTENT="${REPO_ROOT}/skills/pr-review/sub-agents/intent-coherence.md"
 REVIEW_AGENT="${REPO_ROOT}/agents/review.md"
 GITHUB_FORGE="${REPO_ROOT}/skills/pr-review/github/SKILL.md"
@@ -81,6 +82,8 @@ assert_compare_snippet() {
   local expected_incomplete="$5" expected_files="$6" expected_incremental="$7"
   local fail_mv="${8:-false}" omit_full_diff="${9:-false}"
   local expected_exit="${10:-0}" fail_final_marker="${11:-false}"
+  local merge_base_payload='{"id":"base"}' merge_base_exit="${13:-0}"
+  [[ $# -ge 12 ]] && merge_base_payload="${12}"
   local case_dir snippet snippet_exit actual_incomplete actual_files
   local actual_incremental precall_state
   case_dir=$(mktemp -d)
@@ -107,7 +110,23 @@ fi
 cat "${COMPARE_PAYLOAD}"
 exit "${COMPARE_COMMAND_EXIT}"
 EOF
-  cp "${case_dir}/bin/gh" "${case_dir}/bin/curl"
+  cat > "${case_dir}/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$(cat "${COMPARE_MARKER}")" == true ]]; then
+  printf '%s\n' safe > "${PRECALL_STATE}"
+else
+  printf '%s\n' unsafe > "${PRECALL_STATE}"
+fi
+if [[ "$*" == *repository/merge_base* ]]; then
+  if [[ "$*" != *'refs[]=base'* || "$*" != *'refs[]=head'* ]]; then
+    exit 2
+  fi
+  printf '%s\n' "${MERGE_BASE_PAYLOAD}"
+  exit "${MERGE_BASE_EXIT}"
+fi
+cat "${COMPARE_PAYLOAD}"
+exit "${COMPARE_COMMAND_EXIT}"
+EOF
   cat > "${case_dir}/bin/mv" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${COMPARE_FAIL_MV}" == true && "$1" == *pr-incremental-diff.txt.tmp ]]; then
@@ -126,6 +145,7 @@ EOF
     COMPARE_PAYLOAD="${case_dir}/payload.json" \
     COMPARE_COMMAND_EXIT="${command_exit}" \
     COMPARE_FAIL_MV="${fail_mv}" \
+    MERGE_BASE_PAYLOAD="${merge_base_payload}" MERGE_BASE_EXIT="${merge_base_exit}" \
     REPO_FULL_NAME=example/repo PRIOR_REVIEW_SHA=base HEAD_SHA=head \
     GITLAB_TOKEN=test GITLAB_HOST=gitlab.example.com REPO_ENCODED=example%2Frepo \
     bash -u -o pipefail -c "${snippet}" 2> "${case_dir}/snippet.stderr"; then
@@ -169,21 +189,25 @@ EOF
 GITHUB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); def binary_path: type == "string" and test("\\.(?i:png|jpe?g|gif|webp|bmp|ico|svgz|pdf|zip|gz|tgz|bz2|xz|7z|tar|mp3|mp4|mov|avi|webm|woff2?|ttf|otf|eot|wasm|exe|dll|so|dylib|jar|class|psd|ai|sketch)$"); def usable_patch: (.patch | type == "string" and length > 0); def content_free_rename: (.status == "renamed" and .additions == 0 and .deletions == 0 and (.previous_filename | safe_path)); type == "object" and (.status == "ahead" or .status == "identical") and (.behind_by == 0) and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (usable_patch or (.filename | binary_path) or content_free_rename))'
 GITLAB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path))'
 
+assert_contains "orchestrator requires re-review reference before dispatch" "${SKILL}" \
+  "Before interpreting prior-review inputs or selecting sub-agents, **read and follow"
+assert_contains "orchestrator links re-review reference" "${SKILL}" \
+  "[the re-review procedure](references/re-review.md)"
 assert_contains "skill materializes incremental diff" "${SKILL}" \
   "/sandbox/workspace/pr-incremental-diff.txt"
 assert_contains "GitHub comparison writes incremental diff" "${GITHUB_FORGE}" \
   "pr-incremental-diff.txt"
 assert_contains "GitLab comparison writes incremental diff" "${GITLAB_FORGE}" \
   "pr-incremental-diff.txt"
-assert_contains "candidate matching uses structured file fields" "${SKILL}" \
+assert_contains "candidate matching uses structured file fields" "${REREVIEW}" \
   'prior structured `file`'
-assert_not_contains "candidate matching rejects free-text targets" "${SKILL}" \
+assert_not_contains "candidate matching rejects free-text targets" "${REREVIEW}" \
   "explicit remediation target named by the finding"
-assert_contains "GitHub provenance authorizes remediation" "${SKILL}" \
+assert_contains "GitHub provenance authorizes remediation" "${REREVIEW}" \
   'Only `app-verified` may authorize remediation exemptions'
-assert_contains "GitLab provenance only anchors severity" "${SKILL}" \
+assert_contains "GitLab provenance only anchors severity" "${REREVIEW}" \
   '`bot-verified` may anchor'
-assert_contains "skill rejects untrusted provenance" "${SKILL}" \
+assert_contains "skill rejects untrusted provenance" "${REREVIEW}" \
   "unknown values cannot authorize remediation"
 assert_contains "skill provides provenance to sub-agent" "${SKILL}" \
   "Prior review provenance"
@@ -197,9 +221,9 @@ assert_not_contains "prior finding context does not claim an id field" "${SKILL}
   "severity, category, file, line, and id records"
 assert_contains "prior review data is fenced as untrusted" "${SKILL}" \
   "UNTRUSTED PRIOR-REVIEW DATA"
-assert_contains "unsafe structured metadata is rejected" "${SKILL}" \
+assert_contains "unsafe structured metadata is rejected" "${REREVIEW}" \
   "It rejects, never rewrites, invalid records"
-assert_contains "optional prior finding fields remain optional" "${SKILL}" \
+assert_contains "optional prior finding fields remain optional" "${REREVIEW}" \
   "optional positive"
 assert_contains "prior findings use a structured projection" "${SKILL}" \
   "structured projection"
@@ -225,11 +249,11 @@ assert_contains "GitLab comparison persists completeness" "${GITLAB_FORGE}" \
   'pr-compare-incomplete'
 assert_contains "GitLab comparison persists changed files" "${GITLAB_FORGE}" \
   'pr-changed-files.txt'
-assert_contains "Prior identity is machine-readable" "${SKILL}" \
+assert_contains "Prior identity is machine-readable" "${REREVIEW}" \
   'finding identity from review Markdown.'
-assert_contains "Prior paths are rejected, never rewritten" "${SKILL}" \
+assert_contains "Prior paths are rejected, never rewritten" "${REREVIEW}" \
   "It rejects, never rewrites, invalid records"
-assert_contains "Missing-test counterpart is exact" "${SKILL}" \
+assert_contains "Missing-test counterpart is exact" "${REREVIEW}" \
   'safe `missing-test` `.go` → `_test.go`'
 assert_jq_result "GitHub accepts complete compare" "${GITHUB_COMPARE_COMPLETE}" \
   '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' true
@@ -312,6 +336,14 @@ assert_compare_snippet "GitHub conservative initialization failure aborts before
 assert_compare_snippet "GitHub final marker failure cannot publish stale false" "${GITHUB_FORGE}" \
   '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true a.txt \
   $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@' false false 0 true
+for ancestry_payload in '{"id":"other"}' '{}' 'null' 'invalid JSON'; do
+  assert_compare_snippet "GitLab rejects unproven ancestry: ${ancestry_payload}" "${GITLAB_FORGE}" \
+    '{"diffs":[{"old_path":"a.go","new_path":"a.go","diff":"+new"}]}' 0 \
+    true all 'base diff fallback' false false 0 false "${ancestry_payload}"
+done
+assert_compare_snippet "GitLab ancestry API failure stays conservative" "${GITLAB_FORGE}" \
+  '{"diffs":[]}' 0 true all 'base diff fallback' false false 0 false '{"id":"base"}' 1
+
 assert_compare_snippet "GitLab complete compare installs precise artifacts" "${GITLAB_FORGE}" \
   '{"compare_timeout":false,"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@ -1 +1 @@"}]}' 0 false a.txt \
   $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@'
@@ -329,7 +361,17 @@ assert_compare_snippet "GitLab timeout preserves fail-closed state" "${GITLAB_FO
 assert_compare_snippet "GitLab unsafe path preserves fail-closed state" "${GITLAB_FORGE}" \
   '{"diffs":[{"old_path":"../a.txt","new_path":"a.txt","diff":"@@"}]}' 0 true all \
   "base diff fallback"
-assert_contains "skill keeps incomplete patch bodies unanchored" "${SKILL}" \
+# Complete delta must include direct remediation and unrelated same-file/file edits.
+ADVERSARIAL_DIFF=$'diff --git a/docs/foo.md b/docs/foo.md\n+Foo documentation\n+Unrelated deployment\ndiff --git a/CHANGELOG.md b/CHANGELOG.md\n+Unrelated release\ndiff --git a/internal/foo.go b/internal/foo.go\n+func Unrelated() {}'
+ADVERSARIAL_PATHS=$'CHANGELOG.md\ndocs/foo.md\ninternal/foo.go'
+assert_compare_snippet "GitHub preserves complete adversarial delta" "${GITHUB_FORGE}" \
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"docs/foo.md","patch":"+Foo documentation\n+Unrelated deployment"},{"filename":"CHANGELOG.md","patch":"+Unrelated release"},{"filename":"internal/foo.go","patch":"+func Unrelated() {}"}]}' \
+  0 false "${ADVERSARIAL_PATHS}" "${ADVERSARIAL_DIFF}"
+assert_compare_snippet "GitLab preserves complete adversarial delta" "${GITLAB_FORGE}" \
+  '{"diffs":[{"old_path":"docs/foo.md","new_path":"docs/foo.md","diff":"+Foo documentation\n+Unrelated deployment"},{"old_path":"CHANGELOG.md","new_path":"CHANGELOG.md","diff":"+Unrelated release"},{"old_path":"internal/foo.go","new_path":"internal/foo.go","diff":"+func Unrelated() {}"}]}' \
+  0 false "${ADVERSARIAL_PATHS}" "${ADVERSARIAL_DIFF}"
+
+assert_contains "skill keeps incomplete patch bodies unanchored" "${REREVIEW}" \
   "without a usable patch"
 assert_order "remediation candidates precede budget allocation" "${SKILL}" \
   "#### 3a-1. Prior-finding remediation candidates" \
