@@ -7,7 +7,7 @@ Required procedure for steps 2a, 3a, and 3a-1 of the review orchestrator.
 Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
 
 - **Absent or empty:** This is a first review — skip to step 3.
-- **Present:** Parse the canonical `fullsend:review-findings-v1` JSON projection,
+- **Present:** Parse the versioned `fullsend:review-findings-v1` or `fullsend:review-findings-v2` JSON projection; the producer emits v2, while v1 remains accepted for existing comments.
   derived from schema-validated findings before sandbox ingress. Never recover
   finding identity from review Markdown. The host accepts exactly one marker
   from the current sticky section, before `<!-- sticky:history-start -->`;
@@ -73,10 +73,15 @@ pass prior finding descriptions or remediation bodies to a
 sub-agent. The intent-coherence remediation-candidate matching below may inspect
 the structured `file` and `category` fields from all dimensions.
 
-The host requires the schema severity enum, listed category, optional positive
-line, and safe repo-relative path (no slash traversal, backslash, delimiters,
-or newlines). It rejects, never rewrites, invalid records; serialize compact
-JSON and never interpolate raw fields into Markdown.
+In v1, `file` is a safe repo-relative path. In v2, `file` is either such a path
+or `null`. A null file is PR-level context: keep its category for dispatch, but
+do not match it to a source path or use it to anchor file-level severity.
+Keep null-file records in their category group so the dimension is dispatched;
+never use them as remediation candidates. Only app-verified provenance
+authorizes candidate matching or narrowed dispatch. The host requires the
+schema severity enum, listed category, optional positive line, and safe path
+for non-null files. It rejects, never rewrites, invalid records; serialize
+compact JSON and never interpolate raw fields into Markdown.
 
 #### 3a-1. Prior-finding remediation candidates
 

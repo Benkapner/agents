@@ -35,12 +35,12 @@ echo "  PR_URL=${PR_URL}"
 # Replace the human-readable sticky review with a mechanically validated,
 # structured projection before host_files copies it into the sandbox. The
 # projection is appended by post-review.sh from schema-validated findings.
-# Anything missing, malformed, unauthenticated, or path-unsafe fails closed to
+# Anything missing, malformed, unauthenticated, or projection-invalid fails closed to
 # an empty file, which makes the agent perform a full first-review dispatch.
 # ---------------------------------------------------------------------------
 validate_prior_review_projection() {
   local prior_file="$1"
-  local marker encoded decoded tmp_file
+  local marker marker_version encoded decoded tmp_file
   local -a markers
 
   tmp_file="$(mktemp "${prior_file}.validated.XXXXXX")"
@@ -48,7 +48,7 @@ validate_prior_review_projection() {
   # section can describe the reviewed SHA; history is never a fallback.
   mapfile -t markers < <(awk '/<!-- sticky:history-start -->/{exit} {print}' \
     "${prior_file}" \
-    | grep -E '^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->$' || true)
+    | grep -E '^<!-- fullsend:review-findings-v[12]:[A-Za-z0-9+/=]+ -->$' || true)
   if [[ ${#markers[@]} -ne 1 ]]; then
     : > "${prior_file}"
     rm -f "${tmp_file}"
@@ -56,11 +56,13 @@ validate_prior_review_projection() {
     return
   fi
   marker="${markers[0]}"
-  encoded="${marker#<!-- fullsend:review-findings-v1:}"
+  marker_version="${marker#<!-- fullsend:review-findings-v}"
+  marker_version="${marker_version%%:*}"
+  encoded="${marker#<!-- fullsend:review-findings-v"${marker_version}":}"
   encoded="${encoded% -->}"
   decoded="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
 
-  if printf '%s' "${decoded}" | jq -ce '
+  if printf '%s' "${decoded}" | jq -ce --argjson marker_version "${marker_version}" '
     def allowed_category:
       IN(
         "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
@@ -73,21 +75,23 @@ validate_prior_review_projection() {
     def safe_path:
       type == "string" and length > 0 and . != "N/A" and
       (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
-    if (
+    .version as $projection_version
+    | if (
       type == "object" and
       ((keys - ["version", "findings"]) | length == 0) and
-      .version == 1 and
+      (.version | IN(1, 2)) and
+      .version == $marker_version and
       (.findings | type == "array") and
       all(.findings[];
         type == "object" and
         ((keys - ["severity", "category", "file", "line"]) | length == 0) and
         (.severity | IN("info", "low", "medium", "high", "critical")) and
         (.category | type == "string" and allowed_category) and
-        (.file | safe_path) and
+        ((.file == null and $projection_version == 2) or (.file | safe_path)) and
         (.line == null or (.line | type == "number" and . > 0 and floor == .))
       )
     ) then {
-      version: 1,
+      version: $projection_version,
       findings: [.findings[] | {
         severity: .severity,
         category: .category,

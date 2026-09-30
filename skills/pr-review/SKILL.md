@@ -630,8 +630,9 @@ For each selected sub-agent, assemble a context package containing:
   in sub-agent findings
 - `changed_files`: list of relative file paths modified
 - `prior_findings`: structured projection (`severity`, `category`, `file`, and
-  optional `line`) for this dimension only (from 3a);
-  never description or remediation text
+  optional `line`) for this dimension only (from 3a); v2 may use a null `file`
+  for PR-level context, which is never path-matched or severity-anchored; never
+  include description or remediation text
 - `remediation_candidates`: structured candidate records from all dimensions
   (3a-1; intent-coherence only); never free-text finding bodies
 - `prior_review_sha`: the SHA of the prior review (from 2a)

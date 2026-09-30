@@ -520,16 +520,17 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c '
     (.category | non_dimensional_category) or
     (.category == "sub-agent-failure" and .severity == "low");
   def projectable:
-    (.category | type == "string" and allowed_category) and (.file | safe_path);
+    (.category | type == "string" and allowed_category) and (.file == "N/A" or (.file | safe_path));
   (.findings // []) as $findings
   | ($findings | map(select(non_dimensional_finding | not))) as $dimension_findings
   | if (.action | IN("approve", "request-changes", "comment", "reject"))
       and ($dimension_findings | all(.[]; projectable)) then
       {
-        version: 1,
+        version: 2,
         findings: [
           $dimension_findings[]
-          | {severity, category, file} + (if (.line | type) == "number" then {line} else {} end)
+          | {severity, category, file: (if .file == "N/A" then null else .file end)}
+            + (if (.line | type) == "number" then {line} else {} end)
         ]
       }
     else empty
@@ -538,7 +539,7 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c '
 PROJECTION_MARKER=""
 if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
   PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
-  PROJECTION_MARKER="<!-- fullsend:review-findings-v1:${PRIOR_FINDINGS_ENCODED} -->"
+  PROJECTION_MARKER="<!-- fullsend:review-findings-v2:${PRIOR_FINDINGS_ENCODED} -->"
 fi
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
@@ -546,7 +547,7 @@ jq --arg marker "${PROJECTION_MARKER}" '
   .body = (
     if (.body | type) == "string" then .body else "" end
     |
-    gsub("(?m)^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->\\r?$"; "")
+    gsub("(?m)^<!-- fullsend:review-findings-v[12]:[A-Za-z0-9+/=]+ -->\\r?$"; "")
     | gsub("(?m)^<summary>Previous run( \\([0-9]+\\))?</summary>\\r?$"; "")
   )
   | if $marker == "" then . else .body = (.body + "\n\n" + $marker) end

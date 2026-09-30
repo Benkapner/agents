@@ -270,19 +270,9 @@ findings normally.
 
 #### Finding matching procedure
 
-To match a current finding against a prior finding:
-
-1. **Category match:** same review dimension (correctness, security, etc.)
-2. **File match:** same relative file path
-3. **Code location match:** verify the function or class containing the
-   finding still exists in the unchanged file. Use function/class names
-   as anchors — if line numbers shifted due to insertions or deletions
-   elsewhere in the file, the function name is the stable identifier.
-4. **Description match:** the finding's description applies to the same
-   logical issue (not just the same line number)
-
-If all four criteria match, apply the anchoring rule. If any criterion
-fails, treat the finding as new.
+Prior fields are severity/category/file/line only; descriptions are absent. Match
+by same category, non-null path, and unchanged function/class. Line may
+disambiguate. Never infer descriptions; null files do not anchor. Ambiguous matches are new.
 
 Then determine the overall outcome:
 

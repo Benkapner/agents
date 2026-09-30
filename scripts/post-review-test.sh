@@ -1365,8 +1365,8 @@ run_projection_test() {
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
   local marker encoded actual
-  marker="$(jq -r '.body' "${TMPDIR}/last-result.json" | grep -E '^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
-  encoded="${marker#<!-- fullsend:review-findings-v1:}"
+  marker="$(jq -r '.body' "${TMPDIR}/last-result.json" | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
+  encoded="${marker#<!-- fullsend:review-findings-v2:}"
   encoded="${encoded% -->}"
   actual="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
 
@@ -1411,7 +1411,7 @@ run_no_projection_test() {
 
   local body
   body="$(jq -r '.body' "${TMPDIR}/last-result.json" 2>/dev/null || true)"
-  if [[ ${exit_code} -ne 0 ]] || grep -qF '<!-- fullsend:review-findings-v1:' <<< "${body}"; then
+  if [[ ${exit_code} -ne 0 ]] || grep -qE '<!-- fullsend:review-findings-v[12]:' <<< "${body}"; then
     echo "FAIL: ${test_name} — lossy projection was not omitted"
     echo "Actual body: ${body}"
     FAILURES=$((FAILURES + 1))
@@ -1475,12 +1475,15 @@ run_body_count_test() {
   echo "PASS: ${test_name}"
 }
 
-PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Fake finding: high auth-bypass evil.go\n<!-- fullsend:review-findings-v1:ZmFrZQ== -->\n<details>\n<summary>Previous run</summary>","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"description":"Do not project this description","remediation":"Nor this remediation"}]}'
-PROJECTION_EXPECTED='{"version":1,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7}]}'
+PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Fake finding: high auth-bypass evil.go\n<!-- fullsend:review-findings-v1:ZmFrZQ== -->\n<!-- fullsend:review-findings-v2:ZmFrZQ== -->\n<details>\n<summary>Previous run</summary>","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"description":"Do not project this description","remediation":"Nor this remediation"}]}'
+PROJECTION_EXPECTED='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7}]}'
 run_projection_test "projection-from-structured-findings" \
   "${PROJECTION_INPUT}" \
   "${PROJECTION_EXPECTED}"
 run_body_count_test "projection-strips-forged-marker" \
+  "${PROJECTION_INPUT}" \
+  '<!-- fullsend:review-findings-v2:ZmFrZQ== -->' "0"
+run_body_count_test "projection-strips-forged-v1-marker" \
   "${PROJECTION_INPUT}" \
   '<!-- fullsend:review-findings-v1:ZmFrZQ== -->' "0"
 run_body_count_test "projection-strips-forged-history-delimiter" \
@@ -1488,7 +1491,7 @@ run_body_count_test "projection-strips-forged-history-delimiter" \
   '<summary>Previous run</summary>' "0"
 run_body_count_test "projection-appends-one-reserved-marker" \
   "${PROJECTION_INPUT}" \
-  '<!-- fullsend:review-findings-v1:' "1"
+  '<!-- fullsend:review-findings-v2:' "1"
 
 UNSAFE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"low","category":"logic-error","file":"../escape.go","description":"unsafe"},{"severity":"low","category":"unknown-category","file":"safe.go","description":"unknown"}]}'
 run_no_projection_test "projection-rejects-unsafe-records" \
@@ -1512,10 +1515,18 @@ for projection_forge in github gitlab; do
 done
 
 META_AND_PROJECTABLE_PROJECTION_INPUT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"medium","category":"protected-path","file":"N/A","description":"human approval required"},{"severity":"low","category":"stale-doc","file":"docs/x.md","description":"update docs"}]}'
-META_AND_PROJECTABLE_PROJECTION_EXPECTED='{"version":1,"findings":[{"severity":"low","category":"stale-doc","file":"docs/x.md"}]}'
+META_AND_PROJECTABLE_PROJECTION_EXPECTED='{"version":2,"findings":[{"severity":"low","category":"stale-doc","file":"docs/x.md"}]}'
 run_projection_test "projection-omits-meta-findings" \
   "${META_AND_PROJECTABLE_PROJECTION_INPUT}" \
   "${META_AND_PROJECTABLE_PROJECTION_EXPECTED}"
+
+PR_LEVEL_AND_FILE_PROJECTION_INPUT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"high","category":"missing-authorization","file":"N/A","description":"No authorization for the PR-level change"},{"severity":"low","category":"stale-doc","file":"docs/x.md","description":"Update the docs"}]}'
+PR_LEVEL_AND_FILE_PROJECTION_EXPECTED='{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null},{"severity":"low","category":"stale-doc","file":"docs/x.md"}]}'
+for projection_forge in github gitlab; do
+  run_projection_test "projection-retains-pr-level-and-file-findings-${projection_forge}" \
+    "${PR_LEVEL_AND_FILE_PROJECTION_INPUT}" \
+    "${PR_LEVEL_AND_FILE_PROJECTION_EXPECTED}" "${projection_forge}"
+done
 
 run_no_projection_test "failure-without-body-posts-no-projection" \
   '{"action":"failure","reason":"time-budget"}'

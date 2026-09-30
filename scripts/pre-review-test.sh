@@ -297,7 +297,9 @@ projection_marker() {
   local projection="$1"
   local encoded
   encoded="$(printf '%s' "${projection}" | base64 | tr -d '\n')"
-  printf '<!-- fullsend:review-findings-v1:%s -->' "${encoded}"
+  local version
+  version="$(jq -r '.version' <<< "${projection}")"
+  printf '<!-- fullsend:review-findings-v%s:%s -->' "${version}" "${encoded}"
 }
 
 # --- Test cases ---
@@ -312,6 +314,34 @@ run_prior_projection_test "valid-single-projection" \
   "${VALID_MARKER}" \
   "app-verified" \
   "${VALID_PROJECTION}"
+
+V2_PR_LEVEL_PROJECTION='{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"line":null},{"severity":"low","category":"logic-error","file":"internal/foo.go","line":null}]}'
+for projection_forge in github gitlab; do
+  projection_provenance=app-verified
+  [[ "${projection_forge}" == gitlab ]] && projection_provenance=bot-verified
+  run_prior_projection_test "v2-null-file-retained-with-path-finding-${projection_forge}" \
+    "$(projection_marker "${V2_PR_LEVEL_PROJECTION}")" \
+    "${projection_provenance}" \
+    "${V2_PR_LEVEL_PROJECTION}" "${projection_forge}"
+done
+
+V1_NULL_FILE_PROJECTION='{"version":1,"findings":[{"severity":"high","category":"missing-authorization","file":null}]}'
+run_prior_projection_test "v1-null-file-rejected" \
+  "$(projection_marker "${V1_NULL_FILE_PROJECTION}")" \
+  "app-verified" \
+  'EMPTY'
+
+MISMATCHED_PROJECTION_MARKER="${VALID_MARKER/fullsend:review-findings-v1:/fullsend:review-findings-v2:}"
+run_prior_projection_test "marker-payload-version-mismatch-rejected" \
+  "${MISMATCHED_PROJECTION_MARKER}" \
+  "app-verified" \
+  'EMPTY'
+
+UNKNOWN_PROJECTION_VERSION='{"version":3,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go"}]}'
+run_prior_projection_test "unknown-projection-version-rejected" \
+  "$(projection_marker "${UNKNOWN_PROJECTION_VERSION}")" \
+  "app-verified" \
+  'EMPTY'
 
 run_prior_projection_test "multiple-projections-fail-closed" \
   "Review narrative
