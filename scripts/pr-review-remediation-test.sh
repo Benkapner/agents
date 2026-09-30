@@ -19,6 +19,7 @@ EVAL_SETUP="${REPO_ROOT}/eval/scripts/setup-fixture.sh"
 EVAL_RUNNER="${REPO_ROOT}/eval/scripts/run-fullsend.sh"
 EVAL_UNMATCHED="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/input.yaml"
 EVAL_UNMATCHED_EXPECTATIONS="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/annotations.yaml"
+EVAL009_EXPECTATIONS="${REPO_ROOT}/eval/review/cases/009-rereview-severity-anchor/annotations.yaml"
 FAILURES=0
 
 assert_contains() {
@@ -244,6 +245,10 @@ assert_contains "GitLab compare records unanchored missing diffs" "${GITLAB_FORG
   'select((.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false))'
 assert_contains "patchless paths re-qualify intent review" "${SKILL}" \
   "file without an incremental patch, or when a non-empty delta"
+assert_not_contains "commit-list cap is not a changed-files fallback" "${SKILL}" \
+  ">250 commits"
+assert_contains "GitHub file-list cap remains a changed-files fallback" "${SKILL}" \
+  "the step 2a fallback for a failed compare or ≥300 files"
 assert_contains "GitHub compare requires proven completeness" "${GITHUB_FORGE}" \
   "${GITHUB_COMPARE_COMPLETE}"
 assert_not_contains "GitHub compare ignores undocumented truncation heuristic" "${GITHUB_FORGE}" \
@@ -448,6 +453,8 @@ assert_contains "isolated unmatched-file eval requires scope creep" "${EVAL_UNMA
   "- scope-creep"
 assert_contains "isolated unmatched-file eval documents its isolation" "${EVAL_UNMATCHED_EXPECTATIONS}" \
   "only follow-up file is CHANGELOG.md"
+assert_contains "severity-anchor eval matches projection line" "${EVAL009_EXPECTATIONS}" \
+  "line 2; it has no prior description"
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

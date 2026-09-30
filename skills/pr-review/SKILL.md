@@ -319,8 +319,8 @@ complex PR that triggers all conditions legitimately needs all 6.
      surface for `cross-repo-contracts`).
 
    If the incremental delta cannot be enumerated — `changed_since_prior`
-   is `"all"` (the step 2a fallback for a failed compare, >250 commits,
-   or ≥300 files) or was never computed (empty `PRIOR_REVIEW_SHA`) — do
+   is `"all"` (the step 2a fallback for a failed compare or ≥300 files),
+   or was never computed (empty `PRIOR_REVIEW_SHA`) — do
    NOT skip; re-qualify each dimension per its base step 3b criteria
    instead.
 3. **Fixed-scope sub-agent assignments WITHOUT prior findings**
