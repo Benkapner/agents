@@ -308,7 +308,8 @@ complex PR that triggers all conditions legitimately needs all 6.
      the complete patch-bearing incremental diff, including unmatched files and
      extra edits within candidate files; files without usable patch bodies remain
      unanchored. When this is its only qualification, assign a
-     `trivial` scope constraint (≤5 tool calls) under step 3e.
+     custom `trivial` scope constraint (≤5 tool calls) from step 3e's
+     re-review override.
    - `docs-currency` — re-qualifies only if `changed_since_prior`
      includes documentation files (not merely because the repository
      contains docs).
@@ -330,8 +331,9 @@ complex PR that triggers all conditions legitimately needs all 6.
    under-scoped correctness review is worse than no review at all.
    `style-conventions` dispatches with a `trivial` scope constraint (≤5 tool
    calls) regardless of change size. `intent-coherence`, when it re-qualifies
-   only through the remediation-candidate or unmatched-delta rule, also uses
-   that `trivial` constraint. These assignments override the
+   only through the remediation-candidate or unmatched-delta rule, uses the
+   intent-specific `trivial` constraint defined in the re-review override below.
+   These assignments override the
    classification-based constraint from step 3e.
 4. **Challenger** — no re-review special case: step 6d dispatches it
    only when the **current** review's steps 6a–6c produce findings;
@@ -668,6 +670,14 @@ classification-based assignment above. This holds even for
 standard/large changes (`style-conventions`) and even when the change
 classifies as mechanical/trivial (`correctness`, which must never be
 down-scoped on re-review).
+
+When step 3c narrows `intent-coherence` to re-review remediation or unmatched
+delta, replace the classification-based constraint with this intent-specific
+constraint:
+
+> trivial: ≤5 tool calls. Read ONLY `/sandbox/workspace/pr-incremental-diff.txt`,
+> supplied remediation candidates, and the linked issue. Do NOT read project
+> docs, surrounding files, git history, or directory listings.
 
 Include `scope_constraint` in each sub-agent's context package. When
 it is not `"none"`, prepend it to the sub-agent prompt as:

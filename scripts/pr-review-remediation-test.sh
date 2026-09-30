@@ -237,6 +237,12 @@ assert_contains "ambiguous severity matches remain unanchored" "${CODE_REVIEW}" 
   "Ambiguous matches are new."
 assert_contains "null file retains context without anchoring" "${REREVIEW}" \
   "A null file is PR-level context: keep its category for dispatch,"
+assert_contains "prior-review input is already validated JSON" "${REREVIEW}" \
+  '`/sandbox/workspace/prior-review.txt` is already validated JSON'
+assert_not_contains "agent does not parse prior-review markers" "${REREVIEW}" \
+  "Parse the versioned"
+assert_contains "host marker extraction is background context" "${REREVIEW}" \
+  "Host validation background"
 assert_not_contains "raw prior finding JSON is not prompted" "${SKILL}" \
   '<prior findings JSON or "none — first review">'
 assert_contains "GitHub compare records unanchored missing patches" "${GITHUB_FORGE}" \
@@ -245,6 +251,12 @@ assert_contains "GitLab compare records unanchored missing diffs" "${GITLAB_FORG
   'select((.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false))'
 assert_contains "patchless paths re-qualify intent review" "${SKILL}" \
   "file without an incremental patch, or when a non-empty delta"
+assert_contains "intent re-review has a dedicated scope constraint" "${SKILL}" \
+  'intent-specific `trivial` constraint defined in the re-review override below'
+assert_contains "intent re-review scope explicitly permits incremental diff" "${SKILL}" \
+  'Read ONLY `/sandbox/workspace/pr-incremental-diff.txt`'
+assert_contains "intent re-review scope includes supplied candidates" "${SKILL}" \
+  'supplied remediation candidates, and the linked issue'
 assert_not_contains "commit-list cap is not a changed-files fallback" "${SKILL}" \
   ">250 commits"
 assert_contains "GitHub file-list cap remains a changed-files fallback" "${SKILL}" \

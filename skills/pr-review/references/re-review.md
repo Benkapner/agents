@@ -7,11 +7,16 @@ Required procedure for steps 2a, 3a, and 3a-1 of the review orchestrator.
 Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
 
 - **Absent or empty:** This is a first review — skip to step 3.
-- **Present:** Parse the versioned `fullsend:review-findings-v1` or `fullsend:review-findings-v2` JSON projection; the producer emits v2, while v1 remains accepted for existing comments.
-  derived from schema-validated findings before sandbox ingress. Never recover
-  finding identity from review Markdown. The host accepts exactly one marker
-  from the current sticky section, before `<!-- sticky:history-start -->`;
-  historical markers never supply or invalidate the current projection.
+- **Present:** `/sandbox/workspace/prior-review.txt` is already validated JSON.
+  Read it directly; do not search it for marker comments or sticky-history
+  delimiters, and never recover finding identity from review Markdown. The
+  producer emits v2, while v1 remains accepted for existing comments.
+
+**Host validation background:** Before rewriting this file, the host derives
+the JSON from schema-validated findings and accepts exactly one versioned
+marker from the current sticky section, before
+`<!-- sticky:history-start -->`. Historical markers never supply or invalidate
+the current projection.
 
 The `<!-- sticky:history-start -->` / `<!-- sticky:history-end -->` delimiters
 are owned by the external `fullsend post-review` CLI in
