@@ -118,6 +118,32 @@ class TestBuildSummaryBody(unittest.TestCase):
         self.assertIn("Strategy change:", body)
         self.assertIn("extract-method approach", body)
 
+    def test_conflict_update_rendered(self):
+        data = {
+            "summary": "Merged target to resolve conflict.",
+            "tests_passed": True,
+            "actions": [
+                {
+                    "type": "fix",
+                    "finding": "forge merge conflict",
+                    "description": "Merged origin/main",
+                }
+            ],
+            "conflict_update": {
+                "forge_state": "CONFLICTING",
+                "target_branch": "main",
+                "target_sha": "abc123",
+                "strategy": "merge",
+                "outcome": "merged",
+            },
+        }
+        body = build_summary_body(data)
+        self.assertIn("**Conflict update:**", body)
+        self.assertIn("merged", body)
+        self.assertIn("strategy `merge`", body)
+        self.assertIn("forge `CONFLICTING`", body)
+        self.assertIn("`main@abc123`", body)
+
     def test_strategy_change_omitted_when_empty(self):
         data = {"summary": "Done.", "tests_passed": True, "actions": []}
         body = build_summary_body(data)

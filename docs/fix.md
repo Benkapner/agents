@@ -70,6 +70,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
+| `FIX_CONFLICT_UPDATE_STRATEGY` | `merge` | How the fix agent updates a PR/MR when the forge reports a **real** merge conflict: `merge` (default; creates a merge commit and preserves history) or `rebase` (replays the PR onto the target; the post-script force-pushes with `--force-with-lease`). Blocked/behind/unknown mergeability is never treated as a conflict. Override via `base:` composition. |
 
 ### Skill: `fix-review`
 
@@ -77,12 +78,16 @@ The fix agent uses the `fix-review` skill for its procedure, including project-C
 
 To cover a CI system other than GitHub Actions or GitLab CI, add a skill in `.agents/skills/` whose description names that system (or log inspection) and include it in your harness `skills:` array via `base:` composition. During CI inspection the agent only uses skills already injected for the run through that harness `skills:`/`base:` composition — it does not scan or load `SKILL.md` files from the PR's own working-tree checkout.
 
+### Skill: `fix-history-rewrite`
+
+The fix agent uses the `fix-history-rewrite` skill for human-requested rebase, squash, and redo/reset, and for a forge-conflict rebase when `FIX_CONFLICT_UPDATE_STRATEGY=rebase`.
+
 ## How the agent works
 
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
-1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
-2. **Sandbox** — the agent reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
+1. **Pre-script** validates inputs, checks the iteration cap (preventing infinite fix loops), and — when the forge reports a real merge conflict — fetches the latest target branch into the sandbox checkout.
+2. **Sandbox** — the agent inspects forge mergeability, reconciles a reported conflict, reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
 
@@ -112,12 +117,44 @@ When a PR falls behind its target branch, comment `/fs-fix rebase` (or
 rebases the PR branch onto the target; the post-script force-pushes with
 `--force-with-lease`.
 
-The agent rebases only when a human `/fs-fix` instruction asks for a rebase
-or for resolving merge conflicts with the target. Automatic review-triggered
-fixes do not rebase. An already-up-to-date branch is a no-op.
+The agent rebases on an explicit human `/fs-fix` rebase request, or when
+the forge reports a real merge conflict and `FIX_CONFLICT_UPDATE_STRATEGY`
+is `rebase`. Automatic review-triggered fixes do not rebase merely because
+the branch is behind. An already-up-to-date branch is a no-op.
 
 The agent does not push. History rewrite is local; the post-script is what
 updates the remote PR branch.
+
+### Forge-reported merge conflicts
+
+When the GitHub or GitLab API reports a **real** merge conflict (GitHub
+`mergeable: CONFLICTING`, GitLab `detailed_merge_status: conflict`), the
+fix agent reconciles the PR/MR with its actual base branch before applying
+review fixes. A blocked PR (missing approvals or failing checks), a branch
+that is merely behind, or an unknown API response does **not** trigger this
+path.
+
+`FIX_CONFLICT_UPDATE_STRATEGY` selects how to reconcile:
+
+| Value | Effect | History |
+|-------|--------|---------|
+| `merge` (default) | Merge the target into the PR/MR branch, keeping a merge commit. The post-script fast-forwards the remote branch. | Preserves existing commits. |
+| `rebase` | Rebase the PR/MR commits onto the target. The post-script force-pushes with `--force-with-lease`. | Rewrites commit SHAs. |
+
+Override the default in a derived harness:
+
+```yaml
+base: <upstream fix harness>
+env:
+  runner:
+    FIX_CONFLICT_UPDATE_STRATEGY: "rebase"
+  sandbox:
+    FIX_CONFLICT_UPDATE_STRATEGY: "rebase"
+```
+
+A human `/fs-fix rebase` request still rebases even when the strategy is
+`merge`. The pre-script fetches the latest target branch into the sandbox
+checkout so the agent can merge or rebase without `git fetch`.
 
 ### Squashing or redoing fix-agent commits
 

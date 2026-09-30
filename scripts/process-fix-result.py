@@ -108,6 +108,26 @@ def build_summary_body(data):
             f"\n**CI inspections ({len(ci_inspections)}):**\n" + "\n".join(items)
         )
 
+    conflict_update = data.get("conflict_update") or {}
+    if conflict_update:
+        parts = []
+        outcome = conflict_update.get("outcome", "")
+        strategy = conflict_update.get("strategy", "")
+        forge_state = conflict_update.get("forge_state", "")
+        target_branch = conflict_update.get("target_branch", "")
+        target_sha = conflict_update.get("target_sha", "")
+        if outcome:
+            parts.append(outcome)
+        if strategy:
+            parts.append(f"strategy `{strategy}`")
+        if forge_state:
+            parts.append(f"forge `{forge_state}`")
+        if target_branch:
+            sha_bit = f"@{target_sha}" if target_sha else ""
+            parts.append(f"target `{target_branch}{sha_bit}`")
+        if parts:
+            sections.append("\n**Conflict update:** " + "; ".join(parts))
+
     strategy_change = data.get("strategy_change", "")
     if strategy_change:
         sections.append(f"\n> **Strategy change:** {strategy_change}")

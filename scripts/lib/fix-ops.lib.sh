@@ -74,3 +74,26 @@ is_human_reset_request() {
 is_human_history_rewrite_request() {
   is_human_squash_request "${1:-}" || is_human_reset_request "${1:-}"
 }
+
+# fix_conflict_update_strategy — prints merge or rebase.
+# FIX_CONFLICT_UPDATE_STRATEGY is the harness-configured reconciliation
+# strategy used when the forge reports a real merge conflict (issue #1518).
+# Empty/unset and unrecognized values fall back to merge, which preserves
+# existing PR/MR commit history. rebase rewrites the branch onto the target.
+fix_conflict_update_strategy() {
+  local raw
+  raw="$(printf '%s' "${FIX_CONFLICT_UPDATE_STRATEGY:-merge}" | tr '[:upper:]' '[:lower:]')"
+  case "${raw}" in
+    rebase) printf '%s\n' "rebase" ;;
+    *) printf '%s\n' "merge" ;;
+  esac
+}
+
+# fix_conflict_update_strategy_raw_is_known — true when the configured
+# value is empty (default) or a supported enum member. Used to warn on typos
+# without failing the run.
+fix_conflict_update_strategy_raw_is_known() {
+  local raw
+  raw="$(printf '%s' "${FIX_CONFLICT_UPDATE_STRATEGY:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -z "${raw}" ] || [ "${raw}" = "merge" ] || [ "${raw}" = "rebase" ]
+}

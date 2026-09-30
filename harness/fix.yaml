@@ -62,6 +62,7 @@ host_files:
 
 skills:
   - skills/fix-review
+  - skills/fix-history-rewrite
 
 env:
   runner:
@@ -75,12 +76,16 @@ env:
     PUSH_TOKEN: "${PUSH_TOKEN}"
     PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    # Conservative default: merge the target into the PR/MR branch when the
+    # forge reports a real conflict. Override via base: composition.
+    FIX_CONFLICT_UPDATE_STRATEGY: "merge"
   sandbox:
     MAX_RETRIES: "1"
     TIMEOUT_SECONDS: "1500"
     STRATEGY_ESCALATION_THRESHOLD: "3"
     ITERATION_CAP: "5"
     ITERATION_CAP_HUMAN: "10"
+    FIX_CONFLICT_UPDATE_STRATEGY: "merge"
     GOPATH: "/sandbox/go"
     GOMODCACHE: "/sandbox/go/pkg/mod"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"

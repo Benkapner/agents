@@ -48,6 +48,42 @@ forge_get_pr_head_ref() {
     --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null
 }
 
+# forge_get_pr_base_branch PR_NUMBER — PR base branch (not the repo default).
+# Empty on API failure; callers fall back to TARGET_BRANCH / main.
+forge_get_pr_base_branch() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json baseRefName --jq '.baseRefName // empty' 2>/dev/null
+}
+
+# forge_get_pr_merge_state PR_NUMBER — GitHub GraphQL MergeableState
+# (MERGEABLE | CONFLICTING | UNKNOWN). Prints "unknown" on API failure or
+# empty response so callers never treat a missing signal as a conflict.
+forge_get_pr_merge_state() {
+  local pr_number="$1"
+  local mergeable
+  mergeable="$(GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json mergeable --jq '.mergeable // empty' 2>/dev/null)" || {
+    echo "unknown"
+    return 0
+  }
+  if [ -z "${mergeable}" ]; then
+    echo "unknown"
+    return 0
+  fi
+  echo "${mergeable}"
+}
+
+# forge_pr_has_merge_conflict PR_NUMBER — return 0 only when GitHub reports
+# mergeable=CONFLICTING. BLOCKED / BEHIND / UNSTABLE / UNKNOWN / MERGEABLE
+# and API failures are not conflicts (issue #1518).
+forge_pr_has_merge_conflict() {
+  local pr_number="$1"
+  local mergeable
+  mergeable="$(forge_get_pr_merge_state "${pr_number}")" || return 1
+  [ "${mergeable}" = "CONFLICTING" ]
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
