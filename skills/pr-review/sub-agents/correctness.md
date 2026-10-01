@@ -4,7 +4,7 @@ description: >-
   Evaluates logic correctness, edge cases, nil handling, API contracts,
   test adequacy/integrity.
 model: opus
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, Bash(git)
 permissionMode: dontAsk
 background: true
 ---
