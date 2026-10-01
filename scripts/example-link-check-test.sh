@@ -121,6 +121,27 @@ else
   fail "findings-are-rendered" "script exited non-zero"
 fi
 
+# --- The dry-run preview cannot issue workflow commands ---
+#
+# Under GitHub Actions a stdout line starting with "::" is a workflow command.
+# The preview prints model output, so it must sit inside a stop-commands block
+# opened and closed by the same unguessable token, with the model's own "::"
+# lines strictly inside it.
+
+if run_post '{"status":"findings","summary":"1 broken link","comment":"::warning::forged\n- a.md -> b.md"}'; then
+  _first="$(printf '%s\n' "${LAST_STDOUT}" | head -n 1)"
+  _last="$(printf '%s\n' "${LAST_STDOUT}" | tail -n 1)"
+  _tok="${_first#::stop-commands::}"
+  if [[ "${_first}" =~ ^::stop-commands::[0-9a-f]{32}$ && "${_last}" == "::${_tok}::" \
+        && "$(printf '%s\n' "${LAST_STDOUT}" | sed '1d;$d')" == *"::warning::forged"* ]]; then
+    pass "dry-run-preview-is-inside-stop-commands"
+  else
+    fail "dry-run-preview-is-inside-stop-commands" "unexpected framing: ${LAST_STDOUT}"
+  fi
+else
+  fail "dry-run-preview-is-inside-stop-commands" "script exited non-zero: ${LAST_STDERR}"
+fi
+
 # --- status ok under dry run posts nothing ---
 
 if run_post '{"status":"ok","summary":"all good","comment":"All documentation links resolve."}'; then
@@ -313,7 +334,10 @@ if run_post "{\"status\":\"findings\",\"summary\":\"s\",\"comment\":\"${LONG_COM
   # The marker must fit INSIDE the cap, not extend past it: cutting at
   # MAX_COMMENT_CHARS and then appending would overshoot the limit the
   # result schema declares.
-  body_len=$(printf '%s' "${LAST_STDOUT}" | tail -n +3 | wc -c | tr -d ' ')
+  # Preview layout: ::stop-commands::<token>, **summary**, a blank line, the
+  # comment, ::<token>:: — keep only the comment.
+  body_len=$(printf '%s\n' "${LAST_STDOUT}" | sed '1,3d;$d' | wc -c | tr -d ' ')
+  body_len=$(( body_len - 1 ))   # the comment's own trailing newline
   if (( body_len <= 16384 )); then
     pass "truncated-comment-stays-within-the-cap"
   else

@@ -166,7 +166,16 @@ if [[ "${status}" == "ok" ]]; then
 fi
 
 if [[ "${POST_LINK_CHECK_DRY_RUN:-}" == "1" ]]; then
+  # The preview prints model output. Under GitHub Actions a line starting
+  # with "::" is a workflow command (the runner even trims leading spaces
+  # first), so wrap the preview in a stop-commands block whose token the
+  # model cannot guess: nothing inside it is interpreted, whatever its line
+  # breaks.
+  stop_token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  [[ ${#stop_token} -eq 32 ]] || { echo "post-link-check: could not generate a stop-commands token" >&2; exit 1; }
+  printf '::stop-commands::%s\n' "${stop_token}"
   printf '**%s**\n\n%s\n' "${summary}" "${comment}"
+  printf '::%s::\n' "${stop_token}"
   echo "post-link-check: dry run, not posting" >&2
   exit 0
 fi
