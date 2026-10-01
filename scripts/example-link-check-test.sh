@@ -353,6 +353,26 @@ else
 fi
 rm -rf "${workdir}"
 
+# --- The sandbox never receives the raw GitHub token ---
+#
+# The github-ro provider declares GH_TOKEN, so OpenShell hands the sandbox a
+# placeholder and swaps in the real token only on the wire. A GH_TOKEN entry
+# in the harness's env.sandbox would put the real token beside it. Only the
+# runner, where the post-script runs, gets it.
+
+HARNESS="${REPO_ROOT}/examples/link-check/harness/link-check.yaml"
+sandbox_env="$(awk '/^env:/{e=1; next} e && /^[^ ]/{e=0} e && /^  sandbox:/{s=1; next} e && /^  [^ ]/{s=0} s' "${HARNESS}")"
+runner_env="$(awk '/^env:/{e=1; next} e && /^[^ ]/{e=0} e && /^  runner:/{s=1; next} e && /^  [^ ]/{s=0} s' "${HARNESS}")"
+if [[ -z "${sandbox_env}" ]]; then
+  fail "sandbox-env-has-no-raw-gh-token" "could not find env.sandbox in ${HARNESS}"
+elif grep -q 'GH_TOKEN' <<<"${sandbox_env}"; then
+  fail "sandbox-env-has-no-raw-gh-token" "env.sandbox sets GH_TOKEN: ${sandbox_env}"
+elif ! grep -q 'GH_TOKEN' <<<"${runner_env}"; then
+  fail "sandbox-env-has-no-raw-gh-token" "env.runner lost GH_TOKEN, which the post-script needs"
+else
+  pass "sandbox-env-has-no-raw-gh-token"
+fi
+
 # --- Required environment ---
 
 workdir="$(mktemp -d)"

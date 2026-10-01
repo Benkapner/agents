@@ -76,8 +76,10 @@ while you fill in `agents/my-agent.md`.
   they are vendored copies of files that live in fullsend, so a change to one
   belongs there, not in this copy. One exception: `providers/github-ro.yaml`
   and `profiles/fullsend-github-ro.yaml` declare the GitHub token the
-  OpenShell 0.1 way this repository's own copies do, which the generator does
-  not emit yet
+  OpenShell 0.1 way this repository's own copies do, so the sandbox gets a
+  placeholder rather than the token, and to keep it that way
+  `harness/link-check.yaml` sets `GH_TOKEN` under `env.runner` only, not
+  under `env.sandbox` too. The generator does not emit either yet
   ([fullsend-ai/fullsend#7883](https://github.com/fullsend-ai/fullsend/issues/7883)).
   The generated GitHub profile also lacks the GraphQL endpoint the fleet
   profile has
