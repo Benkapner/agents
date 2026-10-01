@@ -58,7 +58,9 @@ contract requires.
    path from a pull request URL either: the sandbox's SSRF hook checks every
    URL in a command, and a URL pattern such as `github[.]com` gets the whole
    command refused. `gh` and `jq` are the only commands
-   its steps run (plus the `fullsend-check-output` self-check at the end).
+   its steps run (plus the `fullsend-check-output` self-check at the end);
+   the checkout is read with the Read and Glob tools, not with shell
+   commands such as `test` or `ls`.
 
    Keep the first list. Step 5 uses it twice: paths whose `status` is
    `added`, `renamed` or `copied` (any file type) will exist once the pull
@@ -88,8 +90,10 @@ contract requires.
    the line number in the file at head: each hunk header `@@ -a,b +c,d @@`
    restarts the counter at `c`; either count is optional (git omits `,1`),
    so `@@ -47 +47,2 @@`, `@@ -47 +47 @@` and `@@ -0,0 +1 @@` all restart
-   at their `c` too. An added line advances the counter by one, a context
-   line advances it by one, and a deleted line (`-`) does not change it. A
+   at their `c` too. The first added or context line after the header is
+   line `c`: such a line takes the counter's current value as its line
+   number, then advances the counter by one. A deleted line (`-`) takes no
+   number and does not change the counter. A
    REST `patch` starts at its first `@@`, so there are no file headers to
    skip.
 
@@ -155,9 +159,15 @@ contract requires.
    from the checkout; a path with `status` `removed`, or one that appears as
    `previous_filename` on a `renamed` entry, will not exist, so treat it as
    broken even though it is still on disk in this default-branch checkout.
-   A target may be a directory (`./new-guide/`, or `docs/guide` with no
-   extension). Strip any trailing `/` from the normalised target first, so
-   `new-guide/` and `new-guide` resolve identically. The files API lists
+   Check the checkout with the Read tool for a file and the Glob tool
+   (`<target>/**`) for a directory.
+   Decide a target as a **file** first, unless it ends in `/`: the list's
+   verdict above wins either way; only a path the list does not mention is
+   looked up in the checkout with the Read tool. Files without an extension — `LICENSE`, `Makefile` — are files
+   like any other. Only when no file exists at the path, or the target ends
+   in `/`, decide it as a **directory** (`./new-guide/`, or `docs/guide`
+   naming a directory). Strip any trailing `/` from the normalised target
+   first, so `new-guide/` and `new-guide` resolve identically. The files API lists
    files only and git does not track empty directories, so decide a
    directory this way: it exists once merged if any `added`, `renamed` or
    `copied` path starts with the target plus `/`. Otherwise start from the
@@ -168,7 +178,7 @@ contract requires.
    else under it survives, it is gone once merged. A file under the
    directory that the pull request did not touch keeps it alive, and only
    the checkout can show you those, so never conclude "gone" from the list
-   alone. For every other path, check the checkout. Do not assume a path
+   alone. Do not assume a path
    exists merely because it appears in the diff as a link target.
    Report it as `<file>:<line> -> <target>`, using the line number at head
    from step 3.

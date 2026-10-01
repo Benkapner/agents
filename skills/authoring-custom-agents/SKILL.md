@@ -48,7 +48,7 @@ URL in a command and refuses one it cannot resolve or parse.
 
 ## Procedure
 
-1. **Replace every `<!-- FILL IN -->` marker.** `skillsaw --strict` will not
+1. **Replace every `<!-- FILL IN: ... -->` marker.** `skillsaw --strict` will not
    catch a leftover one: it recognises `TODO` and bracket placeholders, not
    this marker. Unless your repository greps for it, nothing fails the build —
    check by hand. A vague step here is the most common reason a custom agent
@@ -57,7 +57,7 @@ URL in a command and refuses one it cannot resolve or parse.
 2. **Write the Steps section as commands, not intentions.** Name the exact
    command to run, the exact files to read, and the thresholds that decide the
    outcome. "Analyse the changes" produces nothing reproducible; "run
-   `gh api --paginate repos/OWNER/REPO/pulls/N/files --jq '.[].filename'`,
+   `gh api --paginate "repos/${REPO_FULL_NAME}/pulls/${ISSUE_NUMBER}/files" --jq '.[].filename'`,
    keep `.md` files, resolve each relative link against the file's directory"
    does. Use `gh api` and never a URL in a command (see above).
 
