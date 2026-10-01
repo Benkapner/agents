@@ -101,6 +101,9 @@ if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
 fi
 
 echo "Using result: ${RESULT_FILE}"
+# The severity filter below can drop an info-level sub-agent-failure. Keep the
+# unfiltered result so the projection still sees every failed dimension.
+UNFILTERED_RESULT_FILE="${RESULT_FILE}"
 
 # ---------------------------------------------------------------------------
 # Severity filtering: drop findings below the configured threshold.
@@ -494,6 +497,80 @@ if [[ "${HAS_RISK}" == "true" ]]; then
 else
   remove_stale_risk_labels
 fi
+
+# Append a machine-readable projection only when every schema-validated finding
+# can be represented safely. A lossy projection could turn a failed sub-agent
+# into an apparently clean dimension on the next re-review. Low-severity
+# challenger failures are non-dimensional and retain the pre-challenger findings.
+# A dimension failure the severity filter removed (Sonnet-tier failures are
+# recorded at info) must still suppress the projection.
+PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" '
+  def allowed_category:
+    IN(
+      "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
+      "auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln", "sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection", "unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open", "permission-expansion", "permission-reduction", "role-escalation", "workflow-permission", "secret-exposure",
+      "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering",
+      "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
+      "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
+      "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+    );
+  def safe_path:
+    type == "string" and length > 0 and . != "N/A" and
+    test("^[ -~]+$") and
+    (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+  def non_dimensional_category:
+    type == "string" and IN(
+      "protected-path", "provenance-warning", "scope-authorization-implicit"
+    );
+  def non_dimensional_finding:
+    (.category | non_dimensional_category) or
+    (.category == "sub-agent-failure" and .severity == "low");
+  def projectable:
+    (.category | type == "string" and allowed_category) and (.file == "N/A" or (.file | safe_path));
+  (.findings // []) as $findings
+  | ($findings | map(select(non_dimensional_finding | not))) as $dimension_findings
+  | (($unfiltered[0].findings // [])
+      | any(.[]; .category == "sub-agent-failure" and (non_dimensional_finding | not))) as $dimension_failed
+  | if (.action | IN("approve", "request-changes", "comment", "reject"))
+      and ($dimension_findings | all(.[]; projectable))
+      and ($dimension_failed | not) then
+      {
+        version: 2,
+        findings: [
+          $dimension_findings[]
+          | {severity, category, file: (if .file == "N/A" then null else .file end)}
+            + (if (.line | type) == "number" then {line} else {} end)
+        ]
+      }
+    else empty
+    end
+' "${RESULT_FILE}")"
+PROJECTION_MARKER=""
+if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
+  PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
+  PROJECTION_MARKER="<!-- fullsend:review-findings-v2:${PRIOR_FINDINGS_ENCODED} -->"
+fi
+TMP_RESULT="$(mktemp)"
+CLEANUP_FILES+=("${TMP_RESULT}")
+jq --arg marker "${PROJECTION_MARKER}" '
+  # pre-review ends the current section at the first line containing a
+  # history delimiter, so any copy in the agent body would hide the marker.
+  def strip_reserved:
+    gsub("(?m)^<!-- fullsend:review-findings-v[12]:[A-Za-z0-9+/=]+ -->\\r?$"; "")
+    | gsub("<!-- sticky:history-(start|end) -->"; "")
+    | gsub("(?m)^<summary>Previous run( \\([0-9]+\\))?</summary>\\r?$"; "");
+  # Removing a substring can join its neighbours into a new reserved string,
+  # so repeat until nothing changes. Each changing pass shortens the body.
+  def strip_reserved_fixpoint:
+    . as $in | strip_reserved | if . == $in then . else strip_reserved_fixpoint end;
+  .body = (
+    if (.body | type) == "string" then .body else "" end
+    | strip_reserved_fixpoint
+  )
+  | if $marker == "" then . else .body = (.body + "\n\n" + $marker) end
+' \
+  "${RESULT_FILE}" > "${TMP_RESULT}"
+mv "${TMP_RESULT}" "${RESULT_FILE}"
 
 # ---------------------------------------------------------------------------
 # Post the review. Exit code 10 = stale-head: the PR HEAD moved after the

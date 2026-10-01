@@ -35,10 +35,14 @@ code.
 
 ## Severity anchoring (re-reviews only)
 
-- If prior findings are provided, match each to the current code by
-function/class name (not line number)
-- If the code is unchanged, preserve the prior severity
-- If the code changed, re-evaluate independently
+The prior projection contains only severity, category, file, and optional line;
+prior descriptions are intentionally unavailable. Match only when the category,
+the same non-null file path, and the same function/class in unchanged code
+identify one prior finding. Use line only to disambiguate; do not require a prior
+description. If a prior file is null or the structural match is ambiguous, do
+not anchor severity. For a clear match in unchanged code, preserve its prior
+severity unless independent analysis shows the earlier assessment was clearly
+incorrect. Re-evaluate findings in changed code and unmatched findings normally.
 
 ## Constraints
 

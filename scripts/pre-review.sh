@@ -11,6 +11,8 @@
 # Optional environment variables:
 #   REVIEW_TOKEN        — token for PR state checks and comments
 #   REVIEW_SKIP_AUTHORS — comma-separated author list to skip
+#   PRIOR_REVIEW_FILE   — prior sticky review body; rewritten to validated JSON
+#   PRIOR_REVIEW_PROVENANCE — authenticated provenance for the prior review
 set -euo pipefail
 
 : "${PR_URL:?PR_URL must be set}"
@@ -600,6 +602,93 @@ echo "Input validation passed:"
 echo "  PR_NUMBER=${PR_NUMBER}"
 echo "  REPO=${REPO}"
 echo "  PR_URL=${PR_URL}"
+
+# ---------------------------------------------------------------------------
+# Replace the human-readable sticky review with a mechanically validated,
+# structured projection before host_files copies it into the sandbox. The
+# projection is appended by post-review.sh from schema-validated findings.
+# Anything missing, malformed, unauthenticated, or projection-invalid fails closed to
+# an empty file, which makes the agent perform a full first-review dispatch.
+# ---------------------------------------------------------------------------
+validate_prior_review_projection() {
+  local prior_file="$1"
+  local marker marker_version encoded decoded tmp_file
+  local -a markers
+
+  tmp_file="$(mktemp "${prior_file}.validated.XXXXXX")"
+  # The poster preserves old markers in sticky history. Only the current
+  # section can describe the reviewed SHA; history is never a fallback.
+  # Comments edited on the forge can come back with CRLF line endings.
+  mapfile -t markers < <(awk '/<!-- sticky:history-start -->/{exit} {sub(/\r$/, ""); print}' \
+    "${prior_file}" \
+    | grep -E '^<!-- fullsend:review-findings-v[12]:[A-Za-z0-9+/=]+ -->$' || true)
+  if [[ ${#markers[@]} -ne 1 ]]; then
+    : > "${prior_file}"
+    rm -f "${tmp_file}"
+    echo "::warning::Prior review projection rejected — using full first-review dispatch"
+    return
+  fi
+  marker="${markers[0]}"
+  marker_version="${marker#<!-- fullsend:review-findings-v}"
+  marker_version="${marker_version%%:*}"
+  encoded="${marker#<!-- fullsend:review-findings-v"${marker_version}":}"
+  encoded="${encoded% -->}"
+  decoded="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
+
+  if printf '%s' "${decoded}" | jq -ce --argjson marker_version "${marker_version}" '
+    def allowed_category:
+      IN(
+        "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
+        "auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln", "sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection", "unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open", "permission-expansion", "permission-reduction", "role-escalation", "workflow-permission", "secret-exposure",
+        "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering",
+        "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
+        "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
+        "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+      );
+    def safe_path:
+      type == "string" and length > 0 and . != "N/A" and
+      test("^[ -~]+$") and
+      (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+    .version as $projection_version
+    | if (
+      type == "object" and
+      ((keys - ["version", "findings"]) | length == 0) and
+      (.version | IN(1, 2)) and
+      .version == $marker_version and
+      (.findings | type == "array") and
+      all(.findings[];
+        type == "object" and
+        ((keys - ["severity", "category", "file", "line"]) | length == 0) and
+        (.severity | IN("info", "low", "medium", "high", "critical")) and
+        (.category | type == "string" and allowed_category) and
+        ((.file == null and $projection_version == 2) or (.file | safe_path)) and
+        (.line == null or (.line | type == "number" and . > 0 and floor == .))
+      )
+    ) then {
+      version: $projection_version,
+      findings: [.findings[] | {
+        severity: .severity,
+        category: .category,
+        file: .file,
+        line: .line
+      }]
+    } else error("invalid prior review projection") end
+  ' > "${tmp_file}"; then
+    mv "${tmp_file}" "${prior_file}"
+    echo "Prior review projection validated"
+  else
+    : > "${prior_file}"
+    rm -f "${tmp_file}"
+    echo "::warning::Prior review projection rejected — using full first-review dispatch"
+  fi
+}
+
+if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
+  case "${PRIOR_REVIEW_PROVENANCE:-none}" in
+    app-verified|bot-verified) validate_prior_review_projection "${PRIOR_REVIEW_FILE}" ;;
+    *) : > "${PRIOR_REVIEW_FILE}" ;;
+  esac
+fi
 
 # ---------------------------------------------------------------------------
 # Check PR state — skip review on merged or closed PRs
