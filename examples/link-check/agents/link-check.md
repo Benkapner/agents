@@ -58,7 +58,8 @@ contract requires.
    *current checkout's* remote, there is no `{number}` placeholder at all,
    and a literal `{number}` is sent through unsubstituted and returns 404.
    The URL match uses bash's own `[[ =~ ]]` so no extra command is needed;
-   `gh` and `jq` are the only commands this agent runs.
+   `gh` and `jq` are the only commands its steps run (plus the
+   `fullsend-check-output` self-check at the end).
 
    Keep the first list. Step 5 uses it twice: paths whose `status` is
    `added`, `renamed` or `copied` (any file type) will exist once the pull
@@ -197,9 +198,14 @@ Write exactly one JSON object to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 - `summary` — one line, at most 200 characters. Used as the comment heading.
 - `comment` — Markdown body posted on the pull request, at most 16384
   characters. List one broken link per bullet as `` `<file>:<line>` -> `<target>` ``.
+  If a target contains a backtick, wrap it in a code span delimited by more
+  backticks than its longest backtick run, with a space inside each end, so it
+  cannot close the span and turn the rest of the line into Markdown.
   When `status` is `ok` the post-script posts nothing unless an earlier run
-  left a findings comment on this pull request, in which case it replaces
-  that comment with `comment` so a fixed problem is no longer reported. So
+  left a findings comment on this pull request, in which case it puts
+  `comment` on that comment in place of the findings (the old findings stay
+  only in a collapsed history block), so the pull request no longer shows a
+  fixed problem as current. So
   `comment` is still required — a single line such as
   `All added documentation links resolve.` is fine.
 

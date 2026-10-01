@@ -14,7 +14,8 @@
 #
 # Optional env:
 #   FULLSEND_VALIDATED_ITERATION_DIR — set by fullsend when a validation_loop
-#     is configured and an iteration passed it. When present it names the
+#     is configured and an iteration passed it. Always an absolute path, so
+#     it is independent of the post-script cwd. When present it names the
 #     iteration whose output was validated, which is not necessarily the last
 #     one, so it wins over the scan below.
 #
@@ -123,19 +124,23 @@ NUMBER="${BASH_REMATCH[3]}"
 # On ok, post nothing — unless an earlier run left a findings comment on
 # this work item. The harness trigger fires again on later pushes, so a
 # problem the author has since fixed would otherwise stay reported.
-# --only-if-exists makes fullsend replace that comment (same marker, found
-# through the forge client and the bot's own author) with the all-clear,
-# and post nothing when there is no earlier comment.
+# --only-if-exists makes fullsend replace that comment with the all-clear,
+# and post nothing when there is no earlier comment. It matches only a
+# comment carrying this marker whose author is exactly the login fullsend
+# posts as; when that login cannot be resolved it posts nothing, so a
+# comment anyone else planted with the marker is never edited.
 if [[ "${status}" == "ok" ]]; then
   if [[ "${POST_LINK_CHECK_DRY_RUN:-}" == "1" ]]; then
-    echo "post-link-check: status=ok, nothing to post (dry run: an earlier findings comment would be replaced with the all-clear)" >&2
+    echo "post-link-check: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)" >&2
     exit 0
   fi
   # The runner's fullsend may predate --only-if-exists (it is pinned by the
   # repository's fullsend-ref, not by the CLI that generated this script).
   # Detect the flag instead of assuming it: on an older CLI, keep the old
   # behaviour — post nothing — rather than fail the common ok path.
-  if ! fullsend issues post-comment --help 2>&1 | grep -q -- '--only-if-exists'; then
+  # grep reads the whole help text (no -q): an early exit could SIGPIPE
+  # fullsend and, under pipefail, read as "flag missing".
+  if ! fullsend issues post-comment --help 2>&1 | grep -- '--only-if-exists' >/dev/null; then
     echo "post-link-check: status=ok, nothing to post (this fullsend has no --only-if-exists; an earlier findings comment, if any, stays until a later run with findings)" >&2
     exit 0
   fi
@@ -157,8 +162,8 @@ if [[ "${POST_LINK_CHECK_DRY_RUN:-}" == "1" ]]; then
 fi
 
 # fullsend issues post-comment is the repo's sticky-comment primitive: it
-# finds this agent's previous comment by marker and edits it in place, so
-# re-runs do not flood the work item.
+# finds this agent's previous comment by marker and its own author and edits
+# it in place, so re-runs do not flood the work item.
 printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
   | fullsend issues post-comment \
       --tracker github \
