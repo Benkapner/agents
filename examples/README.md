@@ -74,9 +74,13 @@ while you fill in `agents/my-agent.md`.
   which this example was regenerated from — merge that first), and are not
   hand-edited here:
   they are vendored copies of files that live in fullsend, so a change to one
-  belongs there, not in this copy. Two of them currently differ from what
-  fullsend's own scaffold ships, which is tracked as
-  [fullsend-ai/fullsend#6981](https://github.com/fullsend-ai/fullsend/issues/6981)
-  and [#7014](https://github.com/fullsend-ai/fullsend/issues/7014).
+  belongs there, not in this copy. One exception: `providers/github-ro.yaml`
+  and `profiles/fullsend-github-ro.yaml` declare the GitHub token the
+  OpenShell 0.1 way this repository's own copies do, which the generator does
+  not emit yet
+  ([fullsend-ai/fullsend#7883](https://github.com/fullsend-ai/fullsend/issues/7883)).
+  The generated GitHub profile also lacks the GraphQL endpoint the fleet
+  profile has
+  ([fullsend-ai/fullsend#7014](https://github.com/fullsend-ai/fullsend/issues/7014)).
 - **The prompt is written by hand.** `agents/<name>.md` is the one file the
   generator leaves for you, and completing it is the point of the example.
