@@ -1117,12 +1117,19 @@ fi
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
 jq --arg marker "${PROJECTION_MARKER}" '
-  .body = (
-    if (.body | type) == "string" then .body else "" end
-    |
+  # pre-review ends the current section at the first line containing a
+  # history delimiter, so any copy in the agent body would hide the marker.
+  def strip_reserved:
     gsub("(?m)^<!-- fullsend:review-findings-v[12]:[A-Za-z0-9+/=]+ -->\\r?$"; "")
     | gsub("<!-- sticky:history-(start|end) -->"; "")
-    | gsub("(?m)^<summary>Previous run( \\([0-9]+\\))?</summary>\\r?$"; "")
+    | gsub("(?m)^<summary>Previous run( \\([0-9]+\\))?</summary>\\r?$"; "");
+  # Removing a substring can join its neighbours into a new reserved string,
+  # so repeat until nothing changes. Each changing pass shortens the body.
+  def strip_reserved_fixpoint:
+    . as $in | strip_reserved | if . == $in then . else strip_reserved_fixpoint end;
+  .body = (
+    if (.body | type) == "string" then .body else "" end
+    | strip_reserved_fixpoint
   )
   | if $marker == "" then . else .body = (.body + "\n\n" + $marker) end
 ' \

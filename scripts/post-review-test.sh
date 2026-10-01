@@ -1496,6 +1496,103 @@ run_body_count_test "projection-appends-one-reserved-marker" \
   "${PROJECTION_INPUT}" \
   '<!-- fullsend:review-findings-v2:' "1"
 
+# Agent bodies that try to smuggle sticky-history delimiters or reserved
+# lines past the sanitizer. Removing one copy must not rebuild another.
+sticky_input() {
+  jq -cn --arg body "$1" '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":$body,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"description":"d"}]}'
+}
+declare -A STICKY_INPUTS
+STICKY_CASES=(plain nested rebuilt-marker rebuilt-summary)
+STICKY_INPUTS[plain]="$(sticky_input $'Quoted: `<!-- sticky:history-start -->` inline\n<!-- sticky:history-start -->\n<!-- sticky:history-end -->\r\nTrailing text <!-- sticky:history-end --> here')"
+STICKY_INPUTS[nested]="$(sticky_input $'<!-- sticky:history-<!-- sticky:history-<!-- sticky:history-start -->start -->start -->\n<!-- sticky:history-<!-- sticky:history-end -->end -->')"
+STICKY_INPUTS[rebuilt-marker]="$(sticky_input $'<!-- fullsend:review-findings-v2:AAAA --><!-- sticky:history-start -->')"
+STICKY_INPUTS[rebuilt-summary]="$(sticky_input $'<summary>Previous run</summary><!-- sticky:history-end -->')"
+
+for sticky_case in "${STICKY_CASES[@]}"; do
+  run_body_count_test "projection-strips-sticky-history-start-${sticky_case}" \
+    "${STICKY_INPUTS[${sticky_case}]}" '<!-- sticky:history-start -->' "0"
+  run_body_count_test "projection-strips-sticky-history-end-${sticky_case}" \
+    "${STICKY_INPUTS[${sticky_case}]}" '<!-- sticky:history-end -->' "0"
+  run_body_count_test "projection-keeps-one-marker-${sticky_case}" \
+    "${STICKY_INPUTS[${sticky_case}]}" '<!-- fullsend:review-findings-v' "1"
+done
+run_body_count_test "projection-strips-rebuilt-summary-line" \
+  "${STICKY_INPUTS[rebuilt-summary]}" '<summary>Previous run</summary>' "0"
+
+# Round trip: post the body, wrap it in a sticky history block that holds an
+# older marker, and check pre-review recovers only this run's projection.
+run_sticky_round_trip_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7}]}'
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local prior_file="${run_dir}/prior-review.txt"
+  local post_exit=0 old_marker
+  old_marker="<!-- fullsend:review-findings-v2:$(printf '%s' '{"version":2,"findings":[{"severity":"high","category":"auth-bypass","file":"old.go"}]}' | base64 | tr -d '\n') -->"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  rm -f "${TMPDIR}/last-result.json"
+
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake..."
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || post_exit=$?
+
+  if [[ ${post_exit} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — post-review exit code ${post_exit}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ ! -f "${TMPDIR}/last-result.json" ]]; then
+    echo "FAIL: ${test_name} — no result file captured"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  {
+    jq -r '.body' "${TMPDIR}/last-result.json"
+    printf '\n\n<details>\n<summary>Previous run</summary>\n\n<!-- sticky:history-start -->\nOlder review\n%s\n<!-- sticky:history-end -->\n\n</details>\n' "${old_marker}"
+  } > "${prior_file}"
+
+  # No REVIEW_TOKEN: pre-review skips its PR state check and only
+  # validates the prior-review projection, which is what this test needs.
+  local pre_exit=0
+  env \
+    PR_URL="https://github.com/test-org/test-repo/pull/99" \
+    FULLSEND_FORGE="github" \
+    REVIEW_TOKEN="" \
+    PRIOR_REVIEW_FILE="${prior_file}" \
+    PRIOR_REVIEW_PROVENANCE="app-verified" \
+    bash "${SCRIPT_DIR}/pre-review.sh" > "${run_dir}/pre-review.log" 2>&1 || pre_exit=$?
+  if [[ ${pre_exit} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — pre-review exit code ${pre_exit}"
+    cat "${run_dir}/pre-review.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! jq -e --argjson expected "${expected}" '. == $expected' "${prior_file}" >/dev/null 2>&1; then
+    echo "FAIL: ${test_name} — pre-review did not recover the projection"
+    cat "${prior_file}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+for sticky_case in "${STICKY_CASES[@]}"; do
+  run_sticky_round_trip_test \
+    "projection-round-trips-through-pre-review-${sticky_case}" \
+    "${STICKY_INPUTS[${sticky_case}]}"
+done
+
 UNSAFE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"low","category":"logic-error","file":"../escape.go","description":"unsafe"},{"severity":"low","category":"unknown-category","file":"safe.go","description":"unknown"}]}'
 run_no_projection_test "projection-rejects-unsafe-records" \
   "${UNSAFE_PROJECTION_INPUT}"
