@@ -673,6 +673,9 @@ if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
 fi
 
 echo "Using result: ${RESULT_FILE}"
+# The severity filter below can drop an info-level sub-agent-failure. Keep the
+# unfiltered result so the projection still sees every failed dimension.
+UNFILTERED_RESULT_FILE="${RESULT_FILE}"
 
 # ---------------------------------------------------------------------------
 # Severity filtering: drop findings below the configured threshold.
@@ -1071,7 +1074,9 @@ fi
 # can be represented safely. A lossy projection could turn a failed sub-agent
 # into an apparently clean dimension on the next re-review. Low-severity
 # challenger failures are non-dimensional and retain the pre-challenger findings.
-PRIOR_FINDINGS_PROJECTION="$(jq -c '
+# A dimension failure the severity filter removed (Sonnet-tier failures are
+# recorded at info) must still suppress the projection.
+PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" '
   def allowed_category:
     IN(
       "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
@@ -1096,8 +1101,11 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c '
     (.category | type == "string" and allowed_category) and (.file == "N/A" or (.file | safe_path));
   (.findings // []) as $findings
   | ($findings | map(select(non_dimensional_finding | not))) as $dimension_findings
+  | (($unfiltered[0].findings // [])
+      | any(.[]; .category == "sub-agent-failure" and (non_dimensional_finding | not))) as $dimension_failed
   | if (.action | IN("approve", "request-changes", "comment", "reject"))
-      and ($dimension_findings | all(.[]; projectable)) then
+      and ($dimension_findings | all(.[]; projectable))
+      and ($dimension_failed | not) then
       {
         version: 2,
         findings: [

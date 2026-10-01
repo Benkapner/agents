@@ -1607,11 +1607,19 @@ CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-age
 for projection_forge in github gitlab; do
   run_projection_test "projection-keeps-findings-with-challenger-failure-${projection_forge}" \
     "${CHALLENGER_FAILURE_INPUT}" "${PROJECTION_EXPECTED}" "${projection_forge}"
-  for failure_severity in medium high critical; do
+  for failure_severity in info medium high critical; do
     DIMENSION_FAILURE_INPUT="$(jq --arg severity "${failure_severity}" '.findings += [{severity:$severity, category:"sub-agent-failure", file:"N/A", description:"dimension failed", actionable:false}]' <<< "${CHALLENGER_FAILURE_INPUT}")"
     run_no_projection_test "projection-blocks-${failure_severity}-failure-with-challenger-${projection_forge}" \
       "${DIMENSION_FAILURE_INPUT}" "${projection_forge}"
   done
+done
+
+# A filtered-out ordinary info finding must not block the projection, and the
+# projection is still built from the findings that survive the filter.
+FILTERED_INFO_INPUT="$(jq '.findings += [{severity:"info", category:"style", file:"N/A", description:"style note"}]' <<< "${PROJECTION_INPUT}")"
+for projection_forge in github gitlab; do
+  run_projection_test "projection-ignores-filtered-info-finding-${projection_forge}" \
+    "${FILTERED_INFO_INPUT}" "${PROJECTION_EXPECTED}" "${projection_forge}"
 done
 
 META_AND_PROJECTABLE_PROJECTION_INPUT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"medium","category":"protected-path","file":"N/A","description":"human approval required"},{"severity":"low","category":"stale-doc","file":"docs/x.md","description":"update docs"}]}'

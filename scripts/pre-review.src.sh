@@ -46,7 +46,8 @@ validate_prior_review_projection() {
   tmp_file="$(mktemp "${prior_file}.validated.XXXXXX")"
   # The poster preserves old markers in sticky history. Only the current
   # section can describe the reviewed SHA; history is never a fallback.
-  mapfile -t markers < <(awk '/<!-- sticky:history-start -->/{exit} {print}' \
+  # Comments edited on the forge can come back with CRLF line endings.
+  mapfile -t markers < <(awk '/<!-- sticky:history-start -->/{exit} {sub(/\r$/, ""); print}' \
     "${prior_file}" \
     | grep -E '^<!-- fullsend:review-findings-v[12]:[A-Za-z0-9+/=]+ -->$' || true)
   if [[ ${#markers[@]} -ne 1 ]]; then

@@ -469,8 +469,14 @@ assert_contains "re-review fixed-scope heading covers conditional intent" "${SKI
   "Fixed-scope sub-agent assignments WITHOUT prior findings"
 assert_contains "isolated unmatched-file eval changes only changelog" "${EVAL_UNMATCHED}" \
   "path: CHANGELOG.md"
-assert_contains "isolated unmatched-file eval requires scope creep" "${EVAL_UNMATCHED_EXPECTATIONS}" \
+assert_contains "isolated unmatched-file eval accepts either scope finding" "${EVAL_UNMATCHED_EXPECTATIONS}" \
+  "required_any:"
+assert_contains "isolated unmatched-file eval lists scope-creep" "${EVAL_UNMATCHED_EXPECTATIONS}" \
   "- scope-creep"
+assert_contains "isolated unmatched-file eval lists unauthorized-change" "${EVAL_UNMATCHED_EXPECTATIONS}" \
+  "- unauthorized-change"
+assert_contains "isolated unmatched-file eval rubric names both categories" "${EVAL_UNMATCHED_EXPECTATIONS}" \
+  "scope-creep or unauthorized-change"
 assert_contains "isolated unmatched-file eval documents its isolation" "${EVAL_UNMATCHED_EXPECTATIONS}" \
   "only follow-up file is CHANGELOG.md"
 assert_contains "severity-anchor eval matches projection line" "${EVAL009_EXPECTATIONS}" \

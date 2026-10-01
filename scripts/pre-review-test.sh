@@ -372,6 +372,12 @@ ${OLD_MARKER}
 ${OLD_MARKER}
 <!-- sticky:history-end -->
 </details>" "${history_provenance}" EMPTY "${history_forge}"
+  # A comment edited on the forge can come back with CRLF line endings.
+  crlf_body="$(printf '%s\r\n' "Review body" "${VALID_MARKER}" "<details>" \
+    "<summary>Previous run</summary>" "<!-- sticky:history-start -->" \
+    "${OLD_MARKER}" "<!-- sticky:history-end -->" "</details>")"
+  run_prior_projection_test "${history_forge}-current-marker-with-crlf" \
+    "${crlf_body}" "${history_provenance}" "${VALID_PROJECTION}" "${history_forge}"
 done
 
 for fixture in "${REREVIEW_FIXTURES[@]}"; do
