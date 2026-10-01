@@ -7,8 +7,9 @@ labels:
   risk_label_required: true
 
 findings:
-  required:
+  required_any:
     - scope-creep
+    - unauthorized-change
 
 max_turns: 60
 max_cost_usd: 5.00
