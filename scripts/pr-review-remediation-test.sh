@@ -188,8 +188,8 @@ EOF
   fi
 }
 
-GITHUB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); def binary_path: type == "string" and test("\\.(?i:png|jpe?g|gif|webp|bmp|ico|svgz|pdf|zip|gz|tgz|bz2|xz|7z|tar|mp3|mp4|mov|avi|webm|woff2?|ttf|otf|eot|wasm|exe|dll|so|dylib|jar|class|psd|ai|sketch)$"); def usable_patch: (.patch | type == "string" and length > 0); def content_free_rename: (.status == "renamed" and .additions == 0 and .deletions == 0 and (.previous_filename | safe_path)); type == "object" and (.status == "ahead" or .status == "identical") and (.behind_by == 0) and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (usable_patch or (.filename | binary_path) or content_free_rename))'
-GITLAB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path))'
+GITHUB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and test("^[ -~]+$") and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); def binary_path: type == "string" and test("\\.(?i:png|jpe?g|gif|webp|bmp|ico|svgz|pdf|zip|gz|tgz|bz2|xz|7z|tar|mp3|mp4|mov|avi|webm|woff2?|ttf|otf|eot|wasm|exe|dll|so|dylib|jar|class|psd|ai|sketch)$"); def usable_patch: (.patch | type == "string" and length > 0); def content_free_rename: (.status == "renamed" and .additions == 0 and .deletions == 0 and (.previous_filename | safe_path)); type == "object" and (.status == "ahead" or .status == "identical") and (.behind_by == 0) and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (usable_patch or (.filename | binary_path) or content_free_rename))'
+GITLAB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and test("^[ -~]+$") and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path))'
 
 assert_contains "orchestrator requires re-review reference before dispatch" "${SKILL}" \
   "Before interpreting prior-review inputs or selecting sub-agents, **read and follow"
@@ -320,6 +320,10 @@ assert_jq_result "GitHub rejects backslash path" "${GITHUB_COMPARE_COMPLETE}" \
   '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"docs\\a.txt","patch":"@@"}]}' false
 assert_jq_result "GitHub rejects prompt delimiter in previous path" "${GITHUB_COMPARE_COMPLETE}" \
   '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","previous_filename":"<old>.txt","patch":"@@"}]}' false
+assert_jq_result "GitHub rejects tab in current path" "${GITHUB_COMPARE_COMPLETE}" \
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a\\tb.txt","patch":"@@"}]}' false
+assert_jq_result "GitHub rejects bidi override in current path" "${GITHUB_COMPARE_COMPLETE}" \
+  '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a\\u202eb.txt","patch":"@@"}]}' false
 assert_jq_result "GitLab accepts complete compare" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@ -1 +1 @@"}]}' true
 assert_jq_result "GitLab rejects API error JSON" "${GITLAB_COMPARE_COMPLETE}" \
@@ -338,6 +342,10 @@ assert_jq_result "GitLab rejects trailing slash" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt","new_path":"docs/","diff":"@@"}]}' false
 assert_jq_result "GitLab rejects newline in old path" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt\nb.md","new_path":"a.txt","diff":"@@"}]}' false
+assert_jq_result "GitLab rejects tab in old path" "${GITLAB_COMPARE_COMPLETE}" \
+  '{"diffs":[{"old_path":"a\\tb.txt","new_path":"a.txt","diff":"@@"}]}' false
+assert_jq_result "GitLab rejects bidi override in old path" "${GITLAB_COMPARE_COMPLETE}" \
+  '{"diffs":[{"old_path":"a\\u202eb.txt","new_path":"a.txt","diff":"@@"}]}' false
 assert_compare_snippet "GitHub complete compare installs precise artifacts" "${GITHUB_FORGE}" \
   '{"status":"ahead","behind_by":0,"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 false a.txt \
   $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@'

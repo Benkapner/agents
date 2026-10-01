@@ -646,6 +646,7 @@ validate_prior_review_projection() {
       );
     def safe_path:
       type == "string" and length > 0 and . != "N/A" and
+      test("^[ -~]+$") and
       (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
     .version as $projection_version
     | if (

@@ -511,6 +511,7 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c '
     );
   def safe_path:
     type == "string" and length > 0 and . != "N/A" and
+    test("^[ -~]+$") and
     (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
   def non_dimensional_category:
     type == "string" and IN(
@@ -548,6 +549,7 @@ jq --arg marker "${PROJECTION_MARKER}" '
     if (.body | type) == "string" then .body else "" end
     |
     gsub("(?m)^<!-- fullsend:review-findings-v[12]:[A-Za-z0-9+/=]+ -->\\r?$"; "")
+    | gsub("<!-- sticky:history-(start|end) -->"; "")
     | gsub("(?m)^<summary>Previous run( \\([0-9]+\\))?</summary>\\r?$"; "")
   )
   | if $marker == "" then . else .body = (.body + "\n\n" + $marker) end

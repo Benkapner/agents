@@ -397,7 +397,7 @@ run_prior_projection_test "malformed-projection-fails-closed" \
   "app-verified" \
   'EMPTY'
 
-for unsafe_path in '/abs.go' 'docs/../x.go' 'docs/./x.go' 'docs\x.go'; do
+for unsafe_path in '/abs.go' 'docs/../x.go' 'docs/./x.go' 'docs\x.go' $'docs/unsafe\tpath.go' $'docs/unsafe\u202epath.go'; do
   unsafe_projection="$(jq -cn --arg file "${unsafe_path}" '{version:1,findings:[{severity:"low",category:"logic-error",file:$file}]}')"
   run_prior_projection_test "unsafe-path-$(printf '%s' "${unsafe_path}" | tr '/\\.' '___')" \
     "$(projection_marker "${unsafe_projection}")" \
