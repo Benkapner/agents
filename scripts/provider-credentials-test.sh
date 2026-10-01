@@ -89,6 +89,8 @@ check_profile_credentials "profiles/fullsend-gitlab-ro.yaml" "GITLAB_TOKEN" "Git
 check_profile_credentials "profiles/fullsend-gitlab-rw.yaml" "GITLAB_TOKEN" "GitLab token"
 check_profile_credentials "profiles/fullsend-gitlab-code.yaml" "GITLAB_TOKEN" "GitLab token"
 check_profile_credentials "profiles/fullsend-jira-ro.yaml" "JIRA_TOKEN" "Jira API token"
+# The example agent carries its own copies, held to the same shape.
+check_profile_credentials "examples/link-check/profiles/fullsend-github-ro.yaml" "GH_TOKEN" "GitHub token"
 
 # ---------------------------------------------------------------------------
 # Credential-less providers omit the credentials: block
@@ -116,6 +118,7 @@ check_provider_no_credentials "providers/vertex-ai.yaml"
 check_provider_no_credentials "providers/gitleaks.yaml"
 check_provider_no_credentials "providers/package-registries.yaml"
 check_provider_no_credentials "providers/github-artifacts.yaml"
+check_provider_no_credentials "examples/link-check/providers/vertex-ai.yaml"
 
 # Token-bearing providers still pass the real env var through.
 check_provider_passes_token() {
@@ -149,6 +152,7 @@ check_provider_passes_token "providers/gitlab-ro.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-rw.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-code.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/jira-ro.yaml" "JIRA_TOKEN"
+check_provider_passes_token "examples/link-check/providers/github-ro.yaml" "GH_TOKEN"
 
 # ---------------------------------------------------------------------------
 # Summary

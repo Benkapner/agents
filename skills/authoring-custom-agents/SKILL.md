@@ -30,7 +30,14 @@ instead — this skill is the authoring procedure, not the evaluation lens.
 | `schemas/<name>-result.schema.json` | Only alongside the prompt and post-script |
 | `scripts/post-<name>.sh` | Only if the result shape changes |
 | `harness/<name>.yaml` (how it runs: image, timeout, trigger) | Only to change how it runs, not what it does |
-| `policies/`, `providers/`, `profiles/` | No — shared by every agent here |
+| `policies/`, `providers/`, `profiles/` | No — shared by every agent here, with one exception below |
+
+Until fullsend-ai/fullsend#7883 ships, the generated GitHub provider and
+profile do not declare the token and the harness passes the real `GH_TOKEN`
+into the sandbox. Copy the `credentials:` blocks from the example's
+[provider](../../examples/link-check/providers/github-ro.yaml) and
+[profile](../../examples/link-check/profiles/fullsend-github-ro.yaml), and remove `GH_TOKEN`
+from `env.sandbox` (keep it in `env.runner`). Make both changes, not one.
 
 ## Procedure
 
@@ -43,8 +50,10 @@ instead — this skill is the authoring procedure, not the evaluation lens.
 2. **Write the Steps section as commands, not intentions.** Name the exact
    command to run, the exact files to read, and the thresholds that decide the
    outcome. "Analyse the changes" produces nothing reproducible; "run
-   `gh pr diff --name-only`, keep `.md` files, resolve each relative link
-   against the file's directory" does.
+   `gh api --paginate repos/OWNER/REPO/pulls/N/files --jq '.[].filename'`,
+   keep `.md` files, resolve each relative link against the file's directory"
+   does. Use REST: `gh pr` goes through GraphQL, which the generated
+   profile blocks (fullsend-ai/fullsend#7014).
 
 3. **State the decision boundary explicitly.** Say what makes the result `ok`
    rather than `findings` rather than `error`. If you cannot write that

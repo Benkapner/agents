@@ -36,8 +36,7 @@ run_post() {
       && ISSUE_URL="${ISSUE_URL_OVERRIDE:-https://github.com/fullsend-ai/demo/pull/99}" \
          GH_TOKEN="test-token" \
          POST_LINK_CHECK_DRY_RUN=1 \
-         "$@" \
-         bash "${POST_SCRIPT}" ) > "${workdir}/stdout" 2> "${workdir}/stderr" || rc=$?
+         env "$@" bash "${POST_SCRIPT}" ) > "${workdir}/stdout" 2> "${workdir}/stderr" || rc=$?
   LAST_STDOUT="$(cat "${workdir}/stdout")"
   LAST_STDERR="$(cat "${workdir}/stderr")"
   rm -rf "${workdir}"
@@ -51,6 +50,8 @@ run_post() {
 # `--help` the way the real CLI does, listing --only-if-exists — or, with the
 # optional "old-cli" argument, NOT listing it and failing on any post, which
 # is what a runner pinned to a fullsend release older than the generator does.
+# LIVE_ISSUE_URL overrides the work item (default: pull request 99 in
+# fullsend-ai/demo).
 run_post_live() {
   local result_json="$1"; local cli="${2:-new-cli}"
   local workdir stubdir
@@ -66,7 +67,7 @@ run_post_live() {
   local rc=0
   ( cd "${workdir}" \
       && PATH="${stubdir}:${PATH}" \
-         ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
+         ISSUE_URL="${LIVE_ISSUE_URL:-https://github.com/fullsend-ai/demo/pull/99}" \
          GH_TOKEN="test..." \
          bash "${POST_SCRIPT}" ) > "${workdir}/stdout" 2> "${workdir}/stderr" || rc=$?
   LAST_STDOUT="$(cat "${workdir}/stdout")"
@@ -124,6 +125,11 @@ else
   fail "ok-status-dry-run-posts-nothing" "script exited non-zero"
 fi
 
+# The arguments every live post must carry: the repository and number parsed
+# from ISSUE_URL, and the marker that lets post-comment edit the earlier
+# comment instead of adding a second one.
+EXPECTED_TARGET_ARGS=$'issues\npost-comment\n--tracker\ngithub\n--project\nfullsend-ai/demo\n--number\n99\n--marker\n<!-- fullsend:link-check-agent -->\n'
+
 # --- status ok on the live path replaces an earlier findings comment ---
 #
 # The decision "is there an earlier comment to replace" belongs to
@@ -135,6 +141,11 @@ if run_post_live '{"status":"ok","summary":"all good","comment":"All documentati
     pass "ok-status-live-delegates-only-if-exists"
   else
     fail "ok-status-live-delegates-only-if-exists" "expected fullsend issues post-comment --only-if-exists, got args: ${LAST_FULLSEND_ARGS}"
+  fi
+  if [[ "${LAST_FULLSEND_ARGS}" == "${EXPECTED_TARGET_ARGS}"$'--only-if-exists\n--result\n-' ]]; then
+    pass "ok-status-live-targets-the-work-item"
+  else
+    fail "ok-status-live-targets-the-work-item" "got args: ${LAST_FULLSEND_ARGS}"
   fi
   if [[ "${LAST_FULLSEND_STDIN}" == *"All documentation links resolve."* ]]; then
     pass "ok-status-live-sends-the-all-clear-body"
@@ -169,8 +180,31 @@ if run_post_live '{"status":"findings","summary":"1 broken link","comment":"- `d
   else
     fail "findings-live-posts-without-only-if-exists" "got args: ${LAST_FULLSEND_ARGS}"
   fi
+  if [[ "${LAST_FULLSEND_ARGS}" == "${EXPECTED_TARGET_ARGS}"$'--result\n-' ]]; then
+    pass "findings-live-targets-the-work-item"
+  else
+    fail "findings-live-targets-the-work-item" "got args: ${LAST_FULLSEND_ARGS}"
+  fi
+  if [[ "${LAST_FULLSEND_STDIN}" == $'**1 broken link**\n\n- `docs/a.md:3` -> `../x.md`' ]]; then
+    pass "findings-live-sends-summary-and-comment"
+  else
+    fail "findings-live-sends-summary-and-comment" "unexpected body on stdin: ${LAST_FULLSEND_STDIN}"
+  fi
 else
   fail "findings-live-posts-without-only-if-exists" "script exited non-zero: ${LAST_STDERR}"
+fi
+
+# --- An issue URL is a valid work item too ---
+
+if LIVE_ISSUE_URL="https://github.com/o/r/issues/7" \
+    run_post_live '{"status":"findings","summary":"1 broken link","comment":"- x"}'; then
+  if [[ "${LAST_FULLSEND_ARGS}" == *$'--project\no/r\n--number\n7\n'* ]]; then
+    pass "issue-url-targets-the-issue"
+  else
+    fail "issue-url-targets-the-issue" "got args: ${LAST_FULLSEND_ARGS}"
+  fi
+else
+  fail "issue-url-targets-the-issue" "script exited non-zero: ${LAST_STDERR}"
 fi
 
 # --- Rejected inputs: each must fail rather than post ---
@@ -338,54 +372,43 @@ else
   fail "error-status-is-posted" "script exited non-zero"
 fi
 
-# --- GH_TOKEN is required, like ISSUE_URL ---
-
-workdir="$(mktemp -d)"
-mkdir -p "${workdir}/iteration-1/output"
-echo '{}' > "${workdir}/iteration-1/output/agent-result.json"
-rc=0
-( cd "${workdir}" && env -u GH_TOKEN ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
-    bash "${POST_SCRIPT}" ) >/dev/null 2>&1 || rc=$?
-if [[ "${rc}" -ne 0 ]]; then
-  pass "requires-gh-token"
-else
-  fail "requires-gh-token" "script ran without GH_TOKEN"
-fi
-rm -rf "${workdir}"
-
-# --- The sandbox never receives the raw GitHub token ---
+# --- GH_TOKEN reaches the runner, not the sandbox ---
 #
 # The github-ro provider declares GH_TOKEN, so OpenShell hands the sandbox a
-# placeholder and swaps in the real token only on the wire. A GH_TOKEN entry
-# in the harness's env.sandbox would put the real token beside it. Only the
-# runner, where the post-script runs, gets it.
+# placeholder and swaps in the real token on the wire. The post-script runs on
+# the runner and needs the real one, so env.runner must keep it. That
+# env.sandbox does NOT carry it is checked, with the fleet harnesses, by
+# scripts/sandbox-credential-boundary-test.sh.
 
 HARNESS="${REPO_ROOT}/examples/link-check/harness/link-check.yaml"
-sandbox_env="$(awk '/^env:/{e=1; next} e && /^[^ ]/{e=0} e && /^  sandbox:/{s=1; next} e && /^  [^ ]/{s=0} s' "${HARNESS}")"
-runner_env="$(awk '/^env:/{e=1; next} e && /^[^ ]/{e=0} e && /^  runner:/{s=1; next} e && /^  [^ ]/{s=0} s' "${HARNESS}")"
-if [[ -z "${sandbox_env}" ]]; then
-  fail "sandbox-env-has-no-raw-gh-token" "could not find env.sandbox in ${HARNESS}"
-elif grep -q 'GH_TOKEN' <<<"${sandbox_env}"; then
-  fail "sandbox-env-has-no-raw-gh-token" "env.sandbox sets GH_TOKEN: ${sandbox_env}"
-elif ! grep -q 'GH_TOKEN' <<<"${runner_env}"; then
-  fail "sandbox-env-has-no-raw-gh-token" "env.runner lost GH_TOKEN, which the post-script needs"
+if [[ "$(yq -r '.env.runner | has("GH_TOKEN")' "${HARNESS}")" == "true" ]]; then
+  pass "runner-env-has-gh-token"
 else
-  pass "sandbox-env-has-no-raw-gh-token"
+  fail "runner-env-has-gh-token" "env.runner in ${HARNESS} lost GH_TOKEN, which the post-script needs"
 fi
 
-# --- Required environment ---
+# --- Required environment: GH_TOKEN and ISSUE_URL ---
+#
+# The result is otherwise valid and the run is a dry run, so the only thing
+# that can stop it is the missing variable — checked by its own message.
 
-workdir="$(mktemp -d)"
-mkdir -p "${workdir}/iteration-1/output"
-echo '{}' > "${workdir}/iteration-1/output/agent-result.json"
-rc=0
-( cd "${workdir}" && env -u ISSUE_URL GH_TOKEN=t bash "${POST_SCRIPT}" ) >/dev/null 2>&1 || rc=$?
-if [[ "${rc}" -ne 0 ]]; then
-  pass "requires-issue-url"
-else
-  fail "requires-issue-url" "script ran without ISSUE_URL"
-fi
-rm -rf "${workdir}"
+for _var in GH_TOKEN ISSUE_URL; do
+  _name="requires-$(tr '[:upper:]_' '[:lower:]-' <<<"${_var}")"
+  workdir="$(mktemp -d)"
+  mkdir -p "${workdir}/iteration-1/output"
+  echo '{"status":"findings","summary":"1 broken link","comment":"- x"}' \
+    > "${workdir}/iteration-1/output/agent-result.json"
+  rc=0
+  ( cd "${workdir}" && env GH_TOKEN=t ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
+      POST_LINK_CHECK_DRY_RUN=1 env -u "${_var}" bash "${POST_SCRIPT}" ) \
+      >/dev/null 2>"${workdir}/err" || rc=$?
+  if [[ "${rc}" -ne 0 ]] && grep -qF "${_var} must be set" "${workdir}/err"; then
+    pass "${_name}"
+  else
+    fail "${_name}" "expected a failure naming ${_var}; rc=${rc}, stderr: $(cat "${workdir}/err")"
+  fi
+  rm -rf "${workdir}"
+done
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

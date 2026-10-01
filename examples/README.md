@@ -48,6 +48,18 @@ turns it on to match. It needs `python3` and the `jsonschema` package on the
 machine running the agent; the generated `preflight_check` checks for them
 before starting the agent rather than after it has finished.
 
+Until [fullsend-ai/fullsend#7883](https://github.com/fullsend-ai/fullsend/issues/7883)
+ships, make two changes to the generated files together, as this example
+does. Without them the sandbox gets the real GitHub token instead of a
+placeholder:
+
+- copy the `credentials:` blocks of `providers/github-ro.yaml` and
+  `profiles/fullsend-github-ro.yaml` from this example;
+- remove `GH_TOKEN` from `env.sandbox` in the harness, keeping it in
+  `env.runner`.
+
+Doing only the second leaves `gh` in the sandbox with no token at all.
+
 Then read the example alongside the
 [`authoring-custom-agents`](../skills/authoring-custom-agents/SKILL.md) skill
 while you fill in `agents/my-agent.md`.
