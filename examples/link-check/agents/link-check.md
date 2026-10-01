@@ -70,9 +70,10 @@ contract requires.
    In the second list, `select(.status != "removed")` drops files the pull
    request deletes and `select(.patch != null)` drops files GitHub returned
    without a diff. Decide what a missing diff means from the first list:
-   a `renamed` file with `changes` `0` is a pure rename with nothing to scan —
-   skip it. Any other `.md` file with `has_patch: false` — `added`,
-   `modified`, `copied`, or `renamed` with `changes` above `0` — had its diff
+   a `renamed` or `copied` file with `changes` `0` is an unchanged rename or
+   copy with nothing to scan — skip it. Any other `.md` file with
+   `has_patch: false` — `added`, `modified`, or `renamed` or `copied` with
+   `changes` above `0` — had its diff
    omitted because GitHub considered it too large; that hides links you were
    asked to check, so say so and use `status: "error"`, even if it was the
    only documentation change. Do the same if the response reached the
@@ -118,8 +119,13 @@ contract requires.
      `My Guide.md`), and collapse `.` and `..` segments. A path that climbs
      above the repository root cannot exist in it: report it as broken.
      Whether any other resolved path exists is decided in step 5, never here.
-   - **Root-relative path** (`/docs/x.md`) — resolve against the repository
-     root the same way.
+   - **Root-relative path** (`/docs/x.md`) — drop the leading `/` and resolve
+     the rest against the repository root the same way: `/docs/x.md` is
+     `docs/x.md`.
+
+   Every resolved path is repository-relative, with no leading `/` — the
+   form the files list's `filename` uses and the form to pass to Read and
+   Glob.
    - **Absolute URL** (any scheme, including `https`, `http` and `mailto`,
      and a protocol-relative `//host/path`) — skip it. The sandbox has no general egress, so a network check would be
      flaky rather than wrong.
@@ -171,6 +177,9 @@ contract requires.
    from the checkout; a path with `status` `removed`, or one that appears as
    `previous_filename` on a `renamed` entry, will not exist, so treat it as
    broken even though it is still on disk in this default-branch checkout.
+   If a path is in both sets — renamed away and then added, or renamed to
+   by another entry — it exists: a post-merge `filename` wins over a
+   `previous_filename`.
    Check the checkout with the Read tool for a file and the Glob tool
    (`<target>/**`) for a directory.
    Decide a target as a **file** first, unless it ends in `/`: the list's
