@@ -10,6 +10,7 @@ skills:
   - fix-review
   - fix-history-rewrite
   - fix-ci-inspection
+  - fix-verification
 ---
 
 # Fix Agent
@@ -318,9 +319,10 @@ On a validation retry:
 - The failure text in your prompt is the only feedback you get, and it is
   redacted and truncated. Today it reports structured-output schema
   violations, so the usual fix is to correct `agent-result.json`.
-- Capture `AGENT_START=$(date +%s)` before anything else if the `fix-review`
-  skill's time checks rely on it — a validation retry does not re-enter the
-  skill's opening steps, and an unset value makes the budget look exhausted.
+- Capture `AGENT_START=$(date +%s)` before anything else if the
+  `fix-verification` skill's time checks rely on it — a validation retry
+  does not re-enter the skill's opening steps, and an unset value makes
+  the budget look exhausted.
 - The runner clears the output directory between iterations, so
   `agent-result.json` must be written again this iteration even if the
   failure was elsewhere.
@@ -355,3 +357,4 @@ On a validation retry:
 Follow the `fix-review` skill for the step-by-step fix procedure.
 Follow the `fix-ci-inspection` skill for project-CI inspection.
 Follow the `fix-history-rewrite` skill for rebase, squash, and redo/reset.
+Follow the `fix-verification` skill for verification and commit.

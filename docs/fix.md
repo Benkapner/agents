@@ -86,6 +86,10 @@ To cover a CI system other than GitHub Actions or GitLab CI, add a skill in `.ag
 
 The fix agent uses the `fix-history-rewrite` skill for human-requested rebase, squash, and redo/reset, and for a forge-conflict rebase when `FIX_CONFLICT_UPDATE_STRATEGY=rebase`.
 
+### Skill: `fix-verification`
+
+The fix agent uses the `fix-verification` skill after fixes are implemented: mandatory secret scanning, pre-commit hooks with an infrastructure fallback, tests and linters, self-review, and committing with disclosures.
+
 ## How the agent works
 
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
