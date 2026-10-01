@@ -50,6 +50,8 @@ run_post() {
 # `--help` the way the real CLI does, listing --only-if-exists — or, with the
 # optional "old-cli" argument, NOT listing it and failing on any post, which
 # is what a runner pinned to a fullsend release older than the generator does.
+# With "broken-cli:<rc>" the stub's --help itself exits <rc> (127 stands in
+# for a fullsend that is not installed), and any post is recorded.
 # With "failing-cli" the stub lists the flag but every post exits non-zero,
 # as post-comment does when it cannot resolve the login it posts as.
 # LIVE_ISSUE_URL overrides the work item (default: pull request 99 in
@@ -60,7 +62,9 @@ run_post_live() {
   workdir="$(mktemp -d)"; stubdir="$(mktemp -d)"
   mkdir -p "${workdir}/iteration-1/output"
   printf '%s' "${result_json}" > "${workdir}/iteration-1/output/agent-result.json"
-  if [[ "${cli}" == "failing-cli" ]]; then
+  if [[ "${cli}" == broken-cli:* ]]; then
+    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "fullsend: broken" >&2; exit %s; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > /dev/null\n' "${cli#broken-cli:}" "${stubdir}" > "${stubdir}/fullsend"
+  elif [[ "${cli}" == "failing-cli" ]]; then
     printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --only-if-exists   update an existing comment but never create one"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > /dev/null\necho "Error: cannot resolve the authenticated login" >&2; exit 1\n' "${stubdir}" > "${stubdir}/fullsend"
   elif [[ "${cli}" == "old-cli" ]]; then
     printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --dry-run   print what would be posted"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\necho "Error: unknown flag: --only-if-exists" >&2; exit 1\n' "${stubdir}" > "${stubdir}/fullsend"
@@ -146,7 +150,7 @@ if run_post_live '{"status":"ok","summary":"all good","comment":"All documentati
   else
     fail "ok-status-live-delegates-only-if-exists" "expected fullsend issues post-comment --only-if-exists, got args: ${LAST_FULLSEND_ARGS}"
   fi
-  if [[ "${LAST_FULLSEND_ARGS}" == "${EXPECTED_TARGET_ARGS}"$'--only-if-exists\n--result\n-' ]]; then
+  if [[ "${LAST_FULLSEND_ARGS}" == "${EXPECTED_TARGET_ARGS}"$'--only-if-exists\n--keep-history=false\n--result\n-' ]]; then
     pass "ok-status-live-targets-the-work-item"
   else
     fail "ok-status-live-targets-the-work-item" "got args: ${LAST_FULLSEND_ARGS}"
@@ -175,6 +179,22 @@ if run_post_live '{"status":"ok","summary":"all good","comment":"All documentati
 else
   fail "ok-status-live-older-fullsend-posts-nothing" "script exited non-zero on an older fullsend: ${LAST_STDERR}"
 fi
+
+# --- status ok with a fullsend whose --help fails ---
+#
+# A missing or broken fullsend is a broken runner, not an older CLI: the run
+# must fail, naming the --help failure, rather than skip the replacement as
+# if the flag were merely absent.
+
+for _rc in 1 127; do
+  if run_post_live '{"status":"ok","summary":"all good","comment":"All documentation links resolve."}' "broken-cli:${_rc}"; then
+    fail "ok-status-live-broken-help-fails-the-run-rc${_rc}" "script exited 0 although --help failed"
+  elif [[ "${LAST_STDERR}" == *"--help' failed"* && -z "${LAST_FULLSEND_ARGS}" ]]; then
+    pass "ok-status-live-broken-help-fails-the-run-rc${_rc}"
+  else
+    fail "ok-status-live-broken-help-fails-the-run-rc${_rc}" "expected a --help failure and no post; stderr: ${LAST_STDERR}; args: ${LAST_FULLSEND_ARGS}"
+  fi
+done
 
 # --- status findings on the live path posts unconditionally ---
 
