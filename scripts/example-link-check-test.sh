@@ -50,6 +50,8 @@ run_post() {
 # `--help` the way the real CLI does, listing --only-if-exists — or, with the
 # optional "old-cli" argument, NOT listing it and failing on any post, which
 # is what a runner pinned to a fullsend release older than the generator does.
+# With "failing-cli" the stub lists the flag but every post exits non-zero,
+# as post-comment does when it cannot resolve the login it posts as.
 # LIVE_ISSUE_URL overrides the work item (default: pull request 99 in
 # fullsend-ai/demo).
 run_post_live() {
@@ -58,7 +60,9 @@ run_post_live() {
   workdir="$(mktemp -d)"; stubdir="$(mktemp -d)"
   mkdir -p "${workdir}/iteration-1/output"
   printf '%s' "${result_json}" > "${workdir}/iteration-1/output/agent-result.json"
-  if [[ "${cli}" == "old-cli" ]]; then
+  if [[ "${cli}" == "failing-cli" ]]; then
+    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --only-if-exists   update an existing comment but never create one"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > /dev/null\necho "Error: cannot resolve the authenticated login" >&2; exit 1\n' "${stubdir}" > "${stubdir}/fullsend"
+  elif [[ "${cli}" == "old-cli" ]]; then
     printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --dry-run   print what would be posted"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\necho "Error: unknown flag: --only-if-exists" >&2; exit 1\n' "${stubdir}" > "${stubdir}/fullsend"
   else
     printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --only-if-exists   update an existing comment but never create one"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > "%s/stdin"\n' "${stubdir}" "${stubdir}" > "${stubdir}/fullsend"
@@ -193,6 +197,22 @@ if run_post_live '{"status":"findings","summary":"1 broken link","comment":"- `d
 else
   fail "findings-live-posts-without-only-if-exists" "script exited non-zero: ${LAST_STDERR}"
 fi
+
+# --- A failed post fails the run ---
+#
+# post-comment exits non-zero without posting when it cannot resolve its own
+# login. The script must surface that (set -e), on both paths, rather than
+# report success with nothing posted.
+
+for _status in ok findings; do
+  if run_post_live "{\"status\":\"${_status}\",\"summary\":\"s\",\"comment\":\"c\"}" failing-cli; then
+    fail "${_status}-live-post-failure-fails-the-run" "script exited 0 although post-comment failed"
+  elif [[ "${LAST_FULLSEND_ARGS}" == *$'issues\npost-comment\n'* ]]; then
+    pass "${_status}-live-post-failure-fails-the-run"
+  else
+    fail "${_status}-live-post-failure-fails-the-run" "script failed before posting: ${LAST_STDERR}"
+  fi
+done
 
 # --- An issue URL is a valid work item too ---
 
