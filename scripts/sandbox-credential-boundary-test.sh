@@ -69,10 +69,13 @@ check_env_sandbox() {
 # their source files.
 check_host_files() {
   local harness_file="$1" denied_var="$2"
-  local src src_path
+  local src src_path fullsend_dir
+  # host_files sources resolve against the directory that holds harness/:
+  # the repo root for the fleet, examples/<name>/ for an example.
+  fullsend_dir="$(dirname "$(dirname "${harness_file}")")"
   while IFS= read -r src; do
     [[ "${src}" == *'$'* ]] && continue
-    src_path="${REPO_ROOT}/${src}"
+    src_path="${fullsend_dir}/${src}"
     if [[ -f "${src_path}" ]] && grep -qF "${denied_var}" "${src_path}"; then
       echo "${src}"
     fi
@@ -88,7 +91,9 @@ check_host_files() {
 # ---------------------------------------------------------------------------
 HARNESS_DIR="${REPO_ROOT}/harness"
 HARNESS_FILES=()
-for f in "${HARNESS_DIR}"/*.yaml; do
+# examples/ holds reference agents meant to be copied, so they are held to
+# the same boundary as the fleet.
+for f in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/examples/*/harness/*.yaml; do
   [[ -f "$f" ]] && HARNESS_FILES+=("$f")
 done
 

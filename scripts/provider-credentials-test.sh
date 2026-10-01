@@ -26,6 +26,17 @@ assert_fail() {
   FAILURES=$((FAILURES + 1))
 }
 
+# test_id <rel> — the file's basename, prefixed with the example's directory
+# for an examples/ copy, so the fleet file and its copy get distinct names.
+test_id() {
+  local rel="$1" id
+  id="$(basename "${rel}" .yaml)"
+  if [[ "${rel}" == examples/* ]]; then
+    id="$(cut -d/ -f1-2 <<<"${rel}" | tr / -)-${id}"
+  fi
+  printf '%s' "${id}"
+}
+
 # ---------------------------------------------------------------------------
 # Token-bearing profiles declare credentials immediately after category:
 # ---------------------------------------------------------------------------
@@ -36,7 +47,7 @@ check_profile_credentials() {
   local file="${REPO_ROOT}/${rel}"
   local test_name
 
-  test_name="$(basename "${rel}" .yaml)-declares-${env_var}"
+  test_name="$(test_id "${rel}")-declares-${env_var}"
   if [ ! -f "${file}" ]; then
     assert_fail "${test_name}" "${rel} not found"
     return
@@ -89,6 +100,8 @@ check_profile_credentials "profiles/fullsend-gitlab-ro.yaml" "GITLAB_TOKEN" "Git
 check_profile_credentials "profiles/fullsend-gitlab-rw.yaml" "GITLAB_TOKEN" "GitLab token"
 check_profile_credentials "profiles/fullsend-gitlab-code.yaml" "GITLAB_TOKEN" "GitLab token"
 check_profile_credentials "profiles/fullsend-jira-ro.yaml" "JIRA_TOKEN" "Jira API token"
+# The example agent carries its own copies, held to the same shape.
+check_profile_credentials "examples/link-check/profiles/fullsend-github-ro.yaml" "GH_TOKEN" "GitHub token"
 
 # ---------------------------------------------------------------------------
 # Credential-less providers omit the credentials: block
@@ -98,7 +111,7 @@ check_provider_no_credentials() {
   local file="${REPO_ROOT}/${rel}"
   local test_name
 
-  test_name="$(basename "${rel}" .yaml)-no-credentials-block"
+  test_name="$(test_id "${rel}")-no-credentials-block"
   if [ ! -f "${file}" ]; then
     assert_fail "${test_name}" "${rel} not found"
     return
@@ -116,6 +129,7 @@ check_provider_no_credentials "providers/vertex-ai.yaml"
 check_provider_no_credentials "providers/gitleaks.yaml"
 check_provider_no_credentials "providers/package-registries.yaml"
 check_provider_no_credentials "providers/github-artifacts.yaml"
+check_provider_no_credentials "examples/link-check/providers/vertex-ai.yaml"
 
 # Token-bearing providers still pass the real env var through.
 check_provider_passes_token() {
@@ -124,7 +138,7 @@ check_provider_passes_token() {
   local file="${REPO_ROOT}/${rel}"
   local test_name
 
-  test_name="$(basename "${rel}" .yaml)-passes-${env_var}"
+  test_name="$(test_id "${rel}")-passes-${env_var}"
   if [ ! -f "${file}" ]; then
     assert_fail "${test_name}" "${rel} not found"
     return
@@ -149,6 +163,7 @@ check_provider_passes_token "providers/gitlab-ro.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-rw.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-code.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/jira-ro.yaml" "JIRA_TOKEN"
+check_provider_passes_token "examples/link-check/providers/github-ro.yaml" "GH_TOKEN"
 
 # ---------------------------------------------------------------------------
 # Summary
