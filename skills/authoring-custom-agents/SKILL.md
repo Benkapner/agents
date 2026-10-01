@@ -39,6 +39,13 @@ into the sandbox. Copy the `credentials:` blocks from the example's
 [profile](../../examples/link-check/profiles/fullsend-github-ro.yaml), and remove `GH_TOKEN`
 from `env.sandbox` (keep it in `env.runner`). Make both changes, not one.
 
+`gh pr` and `gh issue` go through GraphQL, which the generated profile blocks
+(fullsend-ai/fullsend#7014), so use REST via `gh api` — starting with the
+generated first step: replace its `gh issue view` with
+`gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}"`. Build API paths
+from those variables, never from a URL: the sandbox's SSRF hook checks every
+URL in a command and refuses one it cannot resolve or parse.
+
 ## Procedure
 
 1. **Replace every `<!-- FILL IN -->` marker.** `skillsaw --strict` will not
@@ -52,8 +59,7 @@ from `env.sandbox` (keep it in `env.runner`). Make both changes, not one.
    outcome. "Analyse the changes" produces nothing reproducible; "run
    `gh api --paginate repos/OWNER/REPO/pulls/N/files --jq '.[].filename'`,
    keep `.md` files, resolve each relative link against the file's directory"
-   does. Use REST: `gh pr` goes through GraphQL, which the generated
-   profile blocks (fullsend-ai/fullsend#7014).
+   does. Use `gh api` and never a URL in a command (see above).
 
 3. **State the decision boundary explicitly.** Say what makes the result `ok`
    rather than `findings` rather than `error`. If you cannot write that

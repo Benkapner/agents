@@ -60,6 +60,11 @@ placeholder:
 
 Doing only the second leaves `gh` in the sandbox with no token at all.
 
+The generated prompt's first step, `gh issue view`, goes through GraphQL,
+which the generated profile does not allow
+([fullsend-ai/fullsend#7014](https://github.com/fullsend-ai/fullsend/issues/7014)):
+replace it with `gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}"`.
+
 Then read the example alongside the
 [`authoring-custom-agents`](../skills/authoring-custom-agents/SKILL.md) skill
 while you fill in `agents/my-agent.md`.

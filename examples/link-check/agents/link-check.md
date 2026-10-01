@@ -24,7 +24,8 @@ contract requires.
 
 ## Inputs
 
-- `ISSUE_URL` — the HTML URL of the pull request this run was dispatched for.
+- `REPO_FULL_NAME` — `owner/repo` of the repository the pull request is in.
+- `ISSUE_NUMBER` — the number of the pull request this run was dispatched for.
 - `FULLSEND_FORGE` — always `github` for this agent.
 - The target repository is checked out at the sandbox working directory. It is
   a **shallow checkout of the default branch, not the pull request's head** —
@@ -38,28 +39,26 @@ contract requires.
    so there is no history to diff against locally.
 
    ```bash
-   # ISSUE_URL looks like https://github.com/OWNER/REPO/pull/NUMBER
-   [[ "$ISSUE_URL" =~ ^https://github[.]com/([^/]+)/([^/]+)/(pull|issues)/([0-9]+)$ ]]
-   OWNER="${BASH_REMATCH[1]}" REPO="${BASH_REMATCH[2]}" NUMBER="${BASH_REMATCH[4]}"
-   HEAD_SHA=$(gh api "repos/${OWNER}/${REPO}/pulls/${NUMBER}" --jq .head.sha)
+   HEAD_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${ISSUE_NUMBER}" --jq .head.sha)
    # Every changed file, with its status — step 5 needs the full set.
-   gh api --paginate "repos/${OWNER}/${REPO}/pulls/${NUMBER}/files" \
+   gh api --paginate "repos/${REPO_FULL_NAME}/pulls/${ISSUE_NUMBER}/files" \
      --jq '.[] | {filename, status, previous_filename, changes, has_patch: (.patch != null)}'
    # The Markdown files to scan, with their diffs.
-   gh api --paginate "repos/${OWNER}/${REPO}/pulls/${NUMBER}/files" \
+   gh api --paginate "repos/${REPO_FULL_NAME}/pulls/${ISSUE_NUMBER}/files" \
      --jq '.[] | select(.status != "removed")
            | select(.filename | endswith(".md"))
            | select(.patch != null)
            | {filename, patch}'
    ```
 
-   Interpolate those values yourself, as above. Do not write
-   `{owner}`/`{repo}` literally: those are `gh`'s own placeholders for the
-   *current checkout's* remote, there is no `{number}` placeholder at all,
-   and a literal `{number}` is sent through unsubstituted and returns 404.
-   The URL match uses bash's own `[[ =~ ]]` so no extra command is needed;
-   `gh` and `jq` are the only commands its steps run (plus the
-   `fullsend-check-output` self-check at the end).
+   Use those two variables, as above. Do not write `{owner}`/`{repo}`
+   literally: those are `gh`'s own placeholders for the *current checkout's*
+   remote, there is no `{number}` placeholder at all, and a literal
+   `{number}` is sent through unsubstituted and returns 404. Do not build the
+   path from a pull request URL either: the sandbox's SSRF hook checks every
+   URL in a command, and a URL pattern such as `github[.]com` gets the whole
+   command refused. `gh` and `jq` are the only commands
+   its steps run (plus the `fullsend-check-output` self-check at the end).
 
    Keep the first list. Step 5 uses it twice: paths whose `status` is
    `added`, `renamed` or `copied` (any file type) will exist once the pull
@@ -130,7 +129,7 @@ contract requires.
    safe_path='^[A-Za-z0-9._/ +()-]+$'   # in a variable: a bare space would split the [[ ]] expression
    [[ "$FILE" =~ $safe_path ]] || { echo "unchecked: $FILE"; continue; }
    gh api -H "Accept: application/vnd.github.raw+json" \
-     "repos/${OWNER}/${REPO}/contents/${FILE}?ref=${HEAD_SHA}"
+     "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}"
    ```
 
    Never paste a filename into a command without that check — bash would
