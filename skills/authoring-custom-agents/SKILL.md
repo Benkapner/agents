@@ -34,9 +34,9 @@ instead — this skill is the authoring procedure, not the evaluation lens.
 
 Until fullsend-ai/fullsend#7883 ships, the generated GitHub provider and
 profile do not declare the token and the harness passes the real `GH_TOKEN`
-into the sandbox. Copy the `credentials:` blocks from the example's
-[provider](../../examples/link-check/providers/github-ro.yaml) and
-[profile](../../examples/link-check/profiles/fullsend-github-ro.yaml), and remove `GH_TOKEN`
+into the sandbox. Copy the `credentials:` blocks from
+`examples/link-check/providers/github-ro.yaml` and
+`examples/link-check/profiles/fullsend-github-ro.yaml`, and remove `GH_TOKEN`
 from `env.sandbox` (keep it in `env.runner`). Make both changes, not one.
 
 `gh pr` and `gh issue` go through GraphQL, which the generated profile blocks

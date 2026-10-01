@@ -16,6 +16,11 @@ POST_SCRIPT="${REPO_ROOT}/examples/link-check/scripts/post-link-check.sh"
 
 FAILURES=0
 
+# Every scratch directory lives under one root that is removed on exit, so an
+# early failure under set -e leaves nothing behind.
+TEST_TMP="$(mktemp -d)"
+trap 'rm -rf "${TEST_TMP}"' EXIT
+
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1 — $2"; FAILURES=$((FAILURES + 1)); }
 
@@ -27,7 +32,7 @@ fail() { echo "FAIL: $1 — $2"; FAILURES=$((FAILURES + 1)); }
 run_post() {
   local result_json="$1"; shift
   local workdir
-  workdir="$(mktemp -d)"
+  workdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"
   mkdir -p "${workdir}/iteration-1/output"
   printf '%s' "${result_json}" > "${workdir}/iteration-1/output/agent-result.json"
 
@@ -59,7 +64,7 @@ run_post() {
 run_post_live() {
   local result_json="$1"; local cli="${2:-new-cli}"
   local workdir stubdir
-  workdir="$(mktemp -d)"; stubdir="$(mktemp -d)"
+  workdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"; stubdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"
   mkdir -p "${workdir}/iteration-1/output"
   printf '%s' "${result_json}" > "${workdir}/iteration-1/output/agent-result.json"
   if [[ "${cli}" == broken-cli:* ]]; then
@@ -349,7 +354,7 @@ fi
 
 # --- Missing result file ---
 
-workdir="$(mktemp -d)"
+workdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"
 rc=0
 ( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
     GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 bash "${POST_SCRIPT}" ) >/dev/null 2>"${workdir}/err" || rc=$?
@@ -362,7 +367,7 @@ rm -rf "${workdir}"
 
 # --- Later iterations win, and a validated iteration wins over both ---
 
-workdir="$(mktemp -d)"
+workdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"
 for n in 1 2; do
   mkdir -p "${workdir}/iteration-${n}/output"
   printf '{"status":"findings","summary":"iteration %s","comment":"c"}' "${n}" \
@@ -391,7 +396,7 @@ rm -rf "${workdir}"
 
 # --- iteration-10 must beat iteration-9 (numeric, not lexical, ordering) ---
 
-workdir="$(mktemp -d)"
+workdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"
 for n in 9 10; do
   mkdir -p "${workdir}/iteration-${n}/output"
   printf '{"status":"findings","summary":"iteration %s","comment":"c"}' "${n}" \
@@ -408,7 +413,7 @@ rm -rf "${workdir}"
 
 # --- A validated iteration dir with no result is an error, not a fallback ---
 
-workdir="$(mktemp -d)"
+workdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"
 mkdir -p "${workdir}/iteration-1/output" "${workdir}/empty"
 printf '{"status":"findings","summary":"s","comment":"c"}' \
   > "${workdir}/iteration-1/output/agent-result.json"
@@ -458,7 +463,7 @@ fi
 
 for _var in GH_TOKEN ISSUE_URL; do
   _name="requires-$(tr '[:upper:]_' '[:lower:]-' <<<"${_var}")"
-  workdir="$(mktemp -d)"
+  workdir="$(mktemp -d "${TEST_TMP}/t.XXXXXX")"
   mkdir -p "${workdir}/iteration-1/output"
   echo '{"status":"findings","summary":"1 broken link","comment":"- x"}' \
     > "${workdir}/iteration-1/output/agent-result.json"

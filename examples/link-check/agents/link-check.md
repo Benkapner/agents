@@ -80,17 +80,24 @@ contract requires.
    were checked when they were not.
 
    If the command fails, write a result with `status: "error"`, a `summary`
-   naming the command that failed, and stop.
+   naming the command that failed, a one-line `comment` saying the links
+   were not checked, and stop.
 
 2. If no `.md` files changed, write `status: "ok"` with the summary
-   `No documentation changes` and stop.
+   `No documentation changes`, the `comment` `No documentation changes.`,
+   and stop.
+
+   Every result, including these early ones, carries all three fields of
+   the output contract below: `status`, `summary` and `comment`.
 
 3. Each `patch` is a unified diff. Walk it and keep only the **added** lines —
    those beginning with a single `+`. Track
    the line number in the file at head: each hunk header `@@ -a,b +c,d @@`
    restarts the counter at `c`; either count is optional (git omits `,1`),
    so `@@ -47 +47,2 @@`, `@@ -47 +47 @@` and `@@ -0,0 +1 @@` all restart
-   at their `c` too. The first added or context line after the header is
+   at their `c` too. A line starting with `\` (`\ No newline at end of
+   file`) is a marker, not content: it takes no number and does not move the
+   counter. The first added or context line after the header is
    line `c`: such a line takes the counter's current value as its line
    number, then advances the counter by one. A deleted line (`-`) takes no
    number and does not change the counter. A
@@ -107,12 +114,14 @@ contract requires.
 
    - **Relative path** (`../guides/x.md`, `./y.md#anchor`) — resolve it against
      the directory of the file that contains it. Strip any `#anchor` and any
-     `?query` suffix, and percent-decode the result (`My%20Guide.md` is
-     `My Guide.md`), then check whether that path exists in the checkout.
+     `?query` suffix, percent-decode the result (`My%20Guide.md` is
+     `My Guide.md`), and collapse `.` and `..` segments. A path that climbs
+     above the repository root cannot exist in it: report it as broken.
+     Whether any other resolved path exists is decided in step 5, never here.
    - **Root-relative path** (`/docs/x.md`) — resolve against the repository
-     root and check the same way.
-   - **Absolute URL** (any scheme, including `https`, `http` and `mailto`) —
-     skip it. The sandbox has no general egress, so a network check would be
+     root the same way.
+   - **Absolute URL** (any scheme, including `https`, `http` and `mailto`,
+     and a protocol-relative `//host/path`) — skip it. The sandbox has no general egress, so a network check would be
      flaky rather than wrong.
    - **Anchor-only** (`#section`) — skip it.
 
@@ -132,14 +141,17 @@ contract requires.
    # fails it is NOT checked — record it; step 6 turns that into status: "error".
    safe_path='^[A-Za-z0-9._/ +()-]+$'   # in a variable: a bare space would split the [[ ]] expression
    [[ "$FILE" =~ $safe_path ]] || { echo "unchecked: $FILE"; continue; }
+   # gh api does not encode the path: a space or + must be percent-encoded,
+   # segment by segment so the / separators stay.
+   FILE_ENC=$(jq -rn --arg p "$FILE" '$p | split("/") | map(@uri) | join("/")')
    gh api -H "Accept: application/vnd.github.raw+json" \
-     "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}"
+     "repos/${REPO_FULL_NAME}/contents/${FILE_ENC}?ref=${HEAD_SHA}"
    ```
 
    Never paste a filename into a command without that check — bash would
    expand `$(...)` or backticks inside it before `gh` ever ran. The class
    admits spaces, `+` and parentheses (all valid git paths; quoted, they are
-   harmless) and rejects `$`, backticks, newlines and everything else. That is a
+   harmless, and `FILE_ENC` encodes them for the request path) and rejects `$`, backticks, newlines and everything else. That is a
    read-only REST call to `api.github.com`, which this agent's profile
    allows. Walk the file from the top and apply the CommonMark fence
    rule: a line starting with three or more backticks or tildes opens a

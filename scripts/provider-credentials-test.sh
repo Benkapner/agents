@@ -26,6 +26,17 @@ assert_fail() {
   FAILURES=$((FAILURES + 1))
 }
 
+# test_id <rel> — the file's basename, prefixed with the example's directory
+# for an examples/ copy, so the fleet file and its copy get distinct names.
+test_id() {
+  local rel="$1" id
+  id="$(basename "${rel}" .yaml)"
+  if [[ "${rel}" == examples/* ]]; then
+    id="$(cut -d/ -f1-2 <<<"${rel}" | tr / -)-${id}"
+  fi
+  printf '%s' "${id}"
+}
+
 # ---------------------------------------------------------------------------
 # Token-bearing profiles declare credentials immediately after category:
 # ---------------------------------------------------------------------------
@@ -36,7 +47,7 @@ check_profile_credentials() {
   local file="${REPO_ROOT}/${rel}"
   local test_name
 
-  test_name="$(basename "${rel}" .yaml)-declares-${env_var}"
+  test_name="$(test_id "${rel}")-declares-${env_var}"
   if [ ! -f "${file}" ]; then
     assert_fail "${test_name}" "${rel} not found"
     return
@@ -100,7 +111,7 @@ check_provider_no_credentials() {
   local file="${REPO_ROOT}/${rel}"
   local test_name
 
-  test_name="$(basename "${rel}" .yaml)-no-credentials-block"
+  test_name="$(test_id "${rel}")-no-credentials-block"
   if [ ! -f "${file}" ]; then
     assert_fail "${test_name}" "${rel} not found"
     return
@@ -127,7 +138,7 @@ check_provider_passes_token() {
   local file="${REPO_ROOT}/${rel}"
   local test_name
 
-  test_name="$(basename "${rel}" .yaml)-passes-${env_var}"
+  test_name="$(test_id "${rel}")-passes-${env_var}"
   if [ ! -f "${file}" ]; then
     assert_fail "${test_name}" "${rel} not found"
     return
