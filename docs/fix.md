@@ -74,7 +74,11 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 ### Skill: `fix-review`
 
-The fix agent uses the `fix-review` skill for its procedure, including project-CI inspection. Forge-specific recipes live in `skills/fix-review/github` and `skills/fix-review/gitlab`.
+The fix agent uses the `fix-review` skill for its procedure. Forge-specific recipes live in `skills/fix-review/github` and `skills/fix-review/gitlab`.
+
+### Skill: `fix-ci-inspection`
+
+The fix agent uses the `fix-ci-inspection` skill to inspect project CI, classify failures, and record `ci_inspections`. Forge-specific command recipes remain in `skills/fix-review/github` and `skills/fix-review/gitlab`.
 
 To cover a CI system other than GitHub Actions or GitLab CI, add a skill in `.agents/skills/` whose description names that system (or log inspection) and include it in your harness `skills:` array via `base:` composition. During CI inspection the agent only uses skills already injected for the run through that harness `skills:`/`base:` composition — it does not scan or load `SKILL.md` files from the PR's own working-tree checkout.
 
