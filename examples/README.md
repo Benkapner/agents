@@ -34,7 +34,7 @@ and agents-repo fallback unavailable`.
 
 Generate your own rather than copying this directory. The command records the
 exact container image the agents in this repository currently run on, and
-writes the network-access files the role you pick needs:
+names the providers the role you pick needs:
 
 ```bash
 fullsend agent new my-agent --fullsend-dir .fullsend \
@@ -47,23 +47,6 @@ repository's `harness/` directory that has a schema uses one, so the example
 turns it on to match. It needs `python3` and the `jsonschema` package on the
 machine running the agent; the generated `preflight_check` checks for them
 before starting the agent rather than after it has finished.
-
-Until [fullsend-ai/fullsend#7883](https://github.com/fullsend-ai/fullsend/issues/7883)
-ships, make two changes to the generated files together, as this example
-does. Without them the sandbox gets the real GitHub token instead of a
-placeholder:
-
-- copy the `credentials:` blocks of `providers/github-ro.yaml` and
-  `profiles/fullsend-github-ro.yaml` from this example;
-- remove `GH_TOKEN` from `env.sandbox` in the harness, keeping it in
-  `env.runner`.
-
-Doing only the second leaves `gh` in the sandbox with no token at all.
-
-The generated prompt's first step, `gh issue view`, goes through GraphQL,
-which the generated profile does not allow
-([fullsend-ai/fullsend#7014](https://github.com/fullsend-ai/fullsend/issues/7014)):
-replace it with `gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}"`.
 
 Then read the example alongside the
 [`authoring-custom-agents`](../skills/authoring-custom-agents/SKILL.md) skill
@@ -84,25 +67,13 @@ while you fill in `agents/my-agent.md`.
 - **It loads.** `fullsend lock <name> --fullsend-dir examples/<name> --offline`
   must pass. It resolves the harness by path, so it works against the example
   as it sits here, unregistered.
-- **The shared assets are what the generator produces.** `policies/`,
-  `providers/`, `profiles/` and `scripts/validate-output-schema.sh` are
-  byte-identical to `fullsend agent new` output (as of fullsend-ai/fullsend
-  [#7914](https://github.com/fullsend-ai/fullsend/pull/7914),
-  [#7915](https://github.com/fullsend-ai/fullsend/pull/7915),
-  [#7916](https://github.com/fullsend-ai/fullsend/pull/7916) and
-  [#7917](https://github.com/fullsend-ai/fullsend/pull/7917), which this
-  example was regenerated from — merge those first), and are not
-  hand-edited here:
-  they are vendored copies of files that live in fullsend, so a change to one
-  belongs there, not in this copy. One exception: `providers/github-ro.yaml`
-  and `profiles/fullsend-github-ro.yaml` declare the GitHub token the
-  OpenShell 0.1 way this repository's own copies do, so the sandbox gets a
-  placeholder rather than the token, and to keep it that way
-  `harness/link-check.yaml` sets `GH_TOKEN` under `env.runner` only, not
-  under `env.sandbox` too. The generator does not emit either yet
-  ([fullsend-ai/fullsend#7883](https://github.com/fullsend-ai/fullsend/issues/7883)).
-  The generated GitHub profile also lacks the GraphQL endpoint the fleet
-  profile has
-  ([fullsend-ai/fullsend#7014](https://github.com/fullsend-ai/fullsend/issues/7014)).
+- **The shared assets are what the generator produces.** `policies/` and
+  `scripts/validate-output-schema.sh` are byte-identical to `fullsend agent
+  new` output, and so is `harness/link-check.yaml`, regenerated from fullsend
+  `main` after [fullsend-ai/fullsend#7995](https://github.com/fullsend-ai/fullsend/pull/7995).
+  They are not hand-edited here: a change to one belongs in fullsend, not in
+  this copy. The harness names its providers by bare name, so the example
+  carries no `providers/` or `profiles/` files: `fullsend run` resolves them
+  from the fullsend binary.
 - **The prompt is written by hand.** `agents/<name>.md` is the one file the
   generator leaves for you, and completing it is the point of the example.
