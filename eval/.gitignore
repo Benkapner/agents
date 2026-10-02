@@ -1,2 +1,3 @@
 runs/
 **/eval-runtime-*.yaml
+release-cases-*/

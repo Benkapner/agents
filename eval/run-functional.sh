@@ -95,7 +95,22 @@ notice "EVAL_TIER=${EVAL_TIER} (${TIER_REASON})"
 # same depth under eval/<agent>/) so a case's relative symlinks (e.g.
 # repo/ -> ../../repos/foo) still resolve correctly from the copy.
 # ---------------------------------------------------------------------------
+EVAL_YAML=""
 RELEASE_STAGE_DIR=""
+cleanup_runtime_config() {
+  # Trailing `true` is load-bearing: an EXIT trap's own exit status
+  # replaces an already-issued `exit N` when the trap's last command is
+  # false, and the `[[ -n ... ]] &&` guards below are false whenever that
+  # path was never created — without `true` a successful run would be
+  # reported to the caller as exit 1.
+  [[ -n "$EVAL_YAML" ]] && rm -f "$EVAL_YAML"
+  [[ -n "$RELEASE_STAGE_DIR" ]] && rm -rf "$RELEASE_STAGE_DIR"
+  true
+}
+# Armed before either temp path is created, so a failure while staging
+# release cases cannot leave eval/<agent>/release-cases-* behind.
+trap cleanup_runtime_config EXIT
+
 if [[ "$EVAL_TIER" == "release" ]]; then
   RELEASE_STAGE_DIR="$(mktemp -d "${EVAL_DIR}/${AGENT}/release-cases-XXXXXX")"
   release_case_count=0
@@ -121,17 +136,6 @@ fi
 # workspace.py (config-dir-relative) and execute.py (cwd-relative). Work
 # around this by rewriting dataset.path to an absolute path at runtime.
 EVAL_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX.yaml")"
-cleanup_runtime_config() {
-  # Trailing `true` is load-bearing: an EXIT trap's own exit status
-  # replaces an already-issued `exit N` when the trap's last command is
-  # false, and the `[[ -n ... ]] &&` guard below is false on every
-  # non-release-tier run (RELEASE_STAGE_DIR unset) — without `true` a
-  # successful full-tier run would be reported to the caller as exit 1.
-  rm -f "$EVAL_YAML"
-  [[ -n "$RELEASE_STAGE_DIR" ]] && rm -rf "$RELEASE_STAGE_DIR"
-  true
-}
-trap cleanup_runtime_config EXIT
 
 yq_expr=".dataset.path = \"${CASES_DIR}\""
 if [[ "$EVAL_TIER" == "release" ]]; then
@@ -242,18 +246,24 @@ fi
 
 # A non-zero exit from any individual case must fail the script, even when
 # other cases produced output — the aggregate execute.py exit code above is
-# not reliable enough to gate on by itself. Check every case's own
-# run_result.json exit record instead.
+# not reliable enough to gate on by itself (a -1 timeout is hidden by its
+# max()). Check every expected case's own run_result.json exit record; a
+# case with no record (skipped, or execute.py died first) is a failure too.
 case_failures=()
-for run_result in "$RUN_DIR"/cases/*/run_result.json; do
-  [[ -f "$run_result" ]] || continue
-  case_exit="$(jq -r '.exit_code // 0' "$run_result")"
+for case_dir in "${case_dirs[@]}"; do
+  case_name="$(basename "$case_dir")"
+  run_result="$RUN_DIR/cases/${case_name}/run_result.json"
+  if [[ ! -f "$run_result" ]]; then
+    case_failures+=("${case_name} (no run_result.json)")
+    continue
+  fi
+  case_exit="$(jq -r '.exit_code // "missing"' "$run_result")"
   if [[ "$case_exit" != "0" ]]; then
-    case_failures+=("$(basename "$(dirname "$run_result")") (exit ${case_exit})")
+    case_failures+=("${case_name} (exit ${case_exit})")
   fi
 done
 if [[ ${#case_failures[@]} -gt 0 ]]; then
-  echo "ERROR: ${#case_failures[@]} case(s) exited non-zero:" >&2
+  echo "ERROR: ${#case_failures[@]} case(s) failed to run cleanly:" >&2
   printf '  %s\n' "${case_failures[@]}" >&2
 fi
 
@@ -291,6 +301,10 @@ AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
 echo ""
 if [[ ${#case_failures[@]} -gt 0 ]]; then
   echo "=== RESULT: ${#case_failures[@]} case(s) failed ===" >&2
+  exit 1
+fi
+if [[ $exec_exit -ne 0 ]]; then
+  echo "=== RESULT: execute.py exited ${exec_exit} ===" >&2
   exit 1
 fi
 echo "=== RESULT: All phases complete ==="

@@ -367,6 +367,74 @@ else
 fi
 rm -rf "$ROOT"
 
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_EXECUTE_EXIT=1 \
+  STUB_CASE_RESULTS="001-release-case:0" 2>&1) || RC=$?
+if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "002-full-only-case (no run_result.json)"; then
+  pass "a case with no run_result.json fails the script"
+else
+  fail "a case with no run_result.json fails the script (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_EXECUTE_EXIT=0 \
+  STUB_CASE_RESULTS="001-release-case:0,002-full-only-case:-1" 2>&1) || RC=$?
+if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "002-full-only-case (exit -1)"; then
+  pass "a timed-out case (exit -1) fails the script"
+else
+  fail "a timed-out case (exit -1) fails the script (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_EXECUTE_EXIT=1 \
+  STUB_CASE_RESULTS="001-release-case:0,002-full-only-case:0" 2>&1) || RC=$?
+if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "execute.py exited 1"; then
+  pass "a non-zero execute.py exit fails the script even when every case record is 0"
+else
+  fail "a non-zero execute.py exit fails the script even when every case record is 0 (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_EXECUTE_EXIT=0 \
+  STUB_CASE_RESULTS="001-release-case:0,002-full-only-case:null" 2>&1) || RC=$?
+if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "002-full-only-case (exit missing)"; then
+  pass "a case record with no exit_code fails the script"
+else
+  fail "a case record with no exit_code fails the script (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=release \
+  STUB_EXECUTE_EXIT=0 \
+  STUB_CASE_RESULTS="001-release-case:0" 2>&1) || RC=$?
+shopt -s nullglob
+LEFTOVER=("${ROOT}"/eval/testagent/release-cases-*)
+shopt -u nullglob
+if [[ $RC -eq 0 && ${#LEFTOVER[@]} -eq 0 ]]; then
+  pass "release tier succeeds and removes its staged release-cases dir"
+else
+  fail "release tier succeeds and removes its staged release-cases dir (rc=$RC, leftover: ${LEFTOVER[*]:-none}, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
