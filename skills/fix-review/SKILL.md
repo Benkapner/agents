@@ -146,36 +146,9 @@ conventions, referencing the PR number and noting any disagreements.
 
 ### 9. Produce structured output
 
-**MANDATORY.** Write `$FULLSEND_OUTPUT_DIR/agent-result.json`:
-
-```json
-{
-  "pr_number": 42,
-  "trigger_source": "bot",
-  "iteration": 1,
-  "actions": [
-    {"type": "fix", "finding": "Missing input validation", "path": "src/input.sh", "description": "Reject empty input before processing"},
-    {"type": "disagree", "finding": "Rename the public command", "path": "src/cli.sh", "reason": "The existing name is part of the documented public interface"}
-  ],
-  "decision_points": [{"description": "Preserve the public command name", "alternatives": ["Rename the command", "Keep the documented name"], "rationale": "Renaming would break existing callers"}],
-  "summary": "Addressed both review findings",
-  "strategy_change": null,
-  "tests_passed": true,
-  "files_changed": ["src/input.sh"],
-  "ci_inspections": [
-    {"job": "lint", "status": "success", "classification": "passing", "diagnosis": "Lint passed."},
-    {"job": "unit-tests", "status": "failure", "classification": "pr-related", "diagnosis": "Failing test matches this diff.", "remediation": "Fixed the test."}
-  ]
-}
-```
-
-**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`fix-history-rewrite` skill) and `ci_inspections` (`fix-ci-inspection` skill; each entry requires `job` and `classification`, with `status`/`diagnosis`/`remediation` optional — see the forge-specific `fix-review` skill for the recipes that gather these). `trigger_source` is `"bot"`/`"human"`. Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1), `summary`, `tests_passed`, `files_changed`.
-
-Validate: `fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"`. If fails after 3 attempts, write best JSON and exit.
-
-## Partial work
-
-If token limit reached: commit partial work, document addressed/remaining findings in structured output.
+Follow the `fix-result-contract` skill: schema requirements, the
+`fullsend-check-output` validation loop, partial-work behavior, and
+validation-retry semantics for `agent-result.json`.
 
 ## Constraints
 

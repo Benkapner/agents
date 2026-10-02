@@ -90,6 +90,10 @@ The fix agent uses the `fix-history-rewrite` skill for human-requested rebase, s
 
 The fix agent uses the `fix-verification` skill after fixes are implemented: mandatory secret scanning, pre-commit hooks with an infrastructure fallback, tests and linters, self-review, and committing with disclosures.
 
+### Skill: `fix-result-contract`
+
+The fix agent uses the `fix-result-contract` skill as the canonical owner of the `agent-result.json` handoff contract: schema requirements, the `fullsend-check-output` validation loop, partial-work behavior, failure handling, and validation-retry semantics (including carrying `rebased_onto_target`, `merged_target`, `conflict_update`, and `history_rewritten` forward when the runner clears the output directory between retries).
+
 ## How the agent works
 
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:

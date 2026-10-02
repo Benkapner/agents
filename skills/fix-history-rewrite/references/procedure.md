@@ -51,10 +51,10 @@ authorized.
      so setting `true` here unconditionally never overrides an up-to-date
      remote.
    - On a validation-loop retry that rewrites `agent-result.json` without
-     re-running `git rebase` (see "Validation retry behavior" in
-     `agents/fix.md`), carry this field forward from the iteration that
-     performed (or no-op'd) the rebase if its result still needs
-     publishing.
+     re-running `git rebase` (see "Validation retry behavior" in the
+     `fix-result-contract` skill), carry this field forward from the
+     iteration that performed (or no-op'd) the rebase if its result
+     still needs publishing.
    - Never set this field for a failed/aborted rebase. A bot-triggered
      run may set it only when reconciling a forge-reported conflict with
      `FIX_CONFLICT_UPDATE_STRATEGY=rebase`. The post-script independently
