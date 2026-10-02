@@ -67,22 +67,22 @@ Return a JSON object with two fields:
       "description": "<description, possibly amended>",
       "remediation": "<remediation, required for critical/high>",
       "actionable": true|false,
-      "challenger_action": "kept|downgraded|merged|removed",
+      "challenger_action": "kept|downgraded|merged",
       "original_identity": {
         "category": "<original category>",
         "file": "<original file>",
-        "line": "<original line number, optional>",
+        "line": "<original line number, required when the finding has a line>",
         "description": "<verbatim original description, required for line-less findings>"
       },
       "merged_from": [
         {
           "category": "<original category>",
           "file": "<original file>",
-          "line": "<original line number, optional>",
+          "line": "<original line number, required when the finding has a line>",
           "description": "<verbatim original description, required for line-less findings>"
         }
       ],
-      "challenger_reason": "<why this finding was kept/changed/removed>"
+      "challenger_reason": "<why this finding was kept/changed/merged>"
     }
   ],
   "removed_findings": [

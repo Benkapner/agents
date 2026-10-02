@@ -1064,8 +1064,9 @@ budget section), skip the challenger: keep the merged finding set from
      A `removal_reason` must cite evidence. Missing, incomplete,
      duplicated, ambiguous, unmatched, or evidence-free accounting is a
      failure.
-   - Strip `challenger_action` and `challenger_reason` from
-     `adjudicated_findings` after accounting; log but do not emit them.
+   - Strip `challenger_action`, `challenger_reason`, `original_identity`,
+     and `merged_from` from `adjudicated_findings` after accounting; log but
+     do not emit them.
    - Replace the challenged subset with `adjudicated_findings`, then
      re-append withheld findings (the size-withheld `low`/`info` findings and
      the `sub-agent-failure` findings, never challenged).

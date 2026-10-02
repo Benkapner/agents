@@ -62,10 +62,10 @@ assert_contains "line-less removals match on original description" \
   '`original_description` when line-less'
 assert_contains "adjudicated findings match on category file line" \
   '`category` + `file` + `line`'
-assert_contains "line-less findings match on exact description" \
-  'exact `description` match when line-less'
-assert_contains "merged findings account for consolidated inputs" \
-  '`merged` `challenger_action` accounts for the findings'
+assert_contains "line-less findings match on verbatim original description" \
+  'Match line-less inputs on the verbatim original description'
+assert_contains "merged findings list consolidated inputs in merged_from" \
+  '`merged_from` list'
 assert_contains "removed findings never apply to withheld findings" \
   'never apply to withheld findings'
 assert_contains "removal reasons cite specific evidence" \
@@ -129,6 +129,10 @@ assert_contains "removed_findings schema emits original_description" \
   '"original_description":'
 assert_contains "removed_findings schema emits removal_reason" \
   '"removal_reason":'
+assert_contains "adjudicated_findings schema emits original_identity" \
+  '"original_identity":'
+assert_contains "adjudicated_findings schema emits merged_from" \
+  '"merged_from":'
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
