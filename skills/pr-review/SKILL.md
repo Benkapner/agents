@@ -971,8 +971,11 @@ authorization, PR metadata), so 6f's "no findings → approve" applies
 only when the set is still empty after them.
 A dimension dispatch failure records a `sub-agent-failure` finding
 (high for Opus-tier, info for Sonnet-tier), which is withheld from the
-challenger and carried straight through to 6e–6f, so a failed
-dimension still forces at least `request-changes`.
+challenger and carried straight through to 6e–6f. An Opus-tier
+(`correctness`, `security`) failure is high-severity, so it forces at
+least `request-changes` (step 6f). A Sonnet-tier failure is
+info-severity and does not by itself block approval — it resolves per
+step 6f.
 
 Steps 6e–6f below refer to the *adjudicated set*: the challenger's
 `adjudicated_findings` plus the re-appended withheld findings (step 3
