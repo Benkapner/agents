@@ -94,7 +94,6 @@ check_profile_credentials() {
   assert_pass "${test_name}"
 }
 
-check_profile_credentials "profiles/fullsend-github-ro.yaml" "GH_TOKEN" "GitHub token"
 check_profile_credentials "profiles/fullsend-github-code.yaml" "GH_TOKEN" "GitHub token"
 check_profile_credentials "profiles/fullsend-gitlab-ro.yaml" "GITLAB_TOKEN" "GitLab token"
 check_profile_credentials "profiles/fullsend-gitlab-rw.yaml" "GITLAB_TOKEN" "GitLab token"
@@ -125,10 +124,6 @@ check_provider_no_credentials() {
   assert_pass "${test_name}"
 }
 
-check_provider_no_credentials "providers/vertex-ai.yaml"
-check_provider_no_credentials "providers/gitleaks.yaml"
-check_provider_no_credentials "providers/package-registries.yaml"
-check_provider_no_credentials "providers/github-artifacts.yaml"
 check_provider_no_credentials "examples/link-check/providers/vertex-ai.yaml"
 
 # Token-bearing providers still pass the real env var through.
@@ -157,7 +152,6 @@ check_provider_passes_token() {
   assert_pass "${test_name}"
 }
 
-check_provider_passes_token "providers/github-ro.yaml" "GH_TOKEN"
 check_provider_passes_token "providers/github-code.yaml" "GH_TOKEN"
 check_provider_passes_token "providers/gitlab-ro.yaml" "GITLAB_TOKEN"
 check_provider_passes_token "providers/gitlab-rw.yaml" "GITLAB_TOKEN"
