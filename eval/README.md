@@ -23,6 +23,30 @@ script runs three phases:
 
 Results are written to `eval/runs/<agent>/<run-id>/`.
 
+### Tiers
+
+`EVAL_TIER` selects how many cases run and what gates the result:
+
+- **`full`** (default) — runs every case in `cases/`, as described above.
+  This is what agents PR/push/merge-queue/dispatch runs and local runs use.
+- **`release`** — runs only this agent's case(s) whose `annotations.yaml`
+  sets `release: true`, and fails only on a non-zero case exit or a
+  deterministic judge (e.g. `required_labels`, `forbidden_labels`). LLM
+  judges (name ends in `_quality`) and the `max_turns`/`max_cost` budget
+  judges still run and are reported, but don't fail the tier. If the agent
+  has no `release: true` case, the script prints a notice and exits 0.
+
+If `EVAL_TIER` is unset, it defaults to `release` when running as a
+cross-repo `workflow_call` under GitHub Actions (`GITHUB_ACTIONS=true` and
+`GITHUB_REPOSITORY` set to something other than `fullsend-ai/agents`) —
+this is how the fullsend release gate calls into this repo's functional
+tests — and to `full` otherwise. Setting `EVAL_TIER` explicitly always
+wins over the default.
+
+```bash
+EVAL_ORG=my-org EVAL_TIER=release ./eval/run-functional.sh review
+```
+
 ### Linting cases
 
 Validate that all test cases have the required annotations before
@@ -73,6 +97,7 @@ calls during both execution and scoring.
 | `EVAL_RUNTIME` | Run every case under this runtime (`claude` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
 | `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |
 | `EVAL_EFFORT` | Effort override via `fullsend run --effort`. |
+| `EVAL_TIER` | `full` or `release` — see [Tiers](#tiers) above. Defaults to `release` under a cross-repo Actions `workflow_call`, `full` otherwise. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account key file for Vertex AI. |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project ID for Anthropic Vertex. |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID. |
@@ -111,7 +136,8 @@ Each case directory under `eval/<agent>/cases/` contains:
   PR files). Pull-request cases may add `followup_files` and a
   `prior_review` body/provenance to exercise a re-review.
 - `annotations.yaml` — expected outcomes (labels, review expectations,
-  `max_turns`, `max_cost_usd`)
+  `max_turns`, `max_cost_usd`). Set `release: true` to include the case
+  in `EVAL_TIER=release` runs (see [Tiers](#tiers) above).
 - `repo/` (optional) — base repo contents pushed to main before the
   fixture is created
 
