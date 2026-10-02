@@ -27,7 +27,19 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
   merge_group:
+  # Nightly full-suite run against fullsend main (#1573). The release gate
+  # runs only the release tier, so model-quality and budget judges are
+  # exercised here; failures are reported to a tracking issue below.
+  schedule:
+    - cron: '17 6 * * *'
   workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Eval tier: auto (script default), full or release'
+        required: false
+        type: choice
+        options: [auto, full, release]
+        default: auto
   workflow_call:
     inputs:
       fullsend_ref:
@@ -35,6 +47,14 @@ on:
         required: false
         type: string
         default: main
+      tier:
+        # Empty keeps eval/run-functional.sh's caller-derived default
+        # (release for a cross-repo call), so callers that omit it -- and
+        # callers pinned to an older copy of this workflow -- behave the same.
+        description: "Eval tier: '' (script default), full or release"
+        required: false
+        type: string
+        default: ''
     secrets:
       E2E_GCP_WIF_PROVIDER:
         required: false
@@ -210,7 +230,9 @@ jobs:
       needs.detect.outputs.agents != '[]' &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The full-tier review leg takes 39-43 min (9 live cases); 60 leaves
+    # headroom. The release tier runs one case per agent.
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -386,6 +408,8 @@ jobs:
           EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
           FULLSEND_DIR: ${{ github.workspace }}
           AGENT: ${{ matrix.agent }}
+          # '' and 'auto' leave EVAL_TIER empty, i.e. the script's default.
+          EVAL_TIER: ${{ inputs.tier != 'auto' && inputs.tier || '' }}
         run: ./eval/run-functional.sh "$AGENT"
 
       # Protected-path change (human review required): scrub eval artifacts before
@@ -456,3 +480,38 @@ jobs:
           CROSS_REPO: ${{ github.repository != 'fullsend-ai/agents' }}
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/check-rollup-result.sh
+
+  # ---------------------------------------------------------------------------
+  # Nightly failure report: open (or comment on) one tracking issue so a
+  # failing full-suite run is seen by a human (#1573).
+  # ---------------------------------------------------------------------------
+  nightly-report:
+    needs: [detect, functional-tests]
+    if: >-
+      always() &&
+      github.event_name == 'schedule' &&
+      github.repository == 'fullsend-ai/agents' &&
+      (needs.detect.result != 'success' ||
+       contains(fromJSON('["failure", "cancelled"]'), needs.functional-tests.result))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Report nightly failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DETECT_RESULT: ${{ needs.detect.result }}
+          TESTS_RESULT: ${{ needs.functional-tests.result }}
+        run: |
+          TITLE="Nightly functional tests failing"
+          BODY="Nightly full-suite run failed (detect: ${DETECT_RESULT}, functional-tests: ${TESTS_RESULT}): ${RUN_URL}"
+          NUMBER=$(gh issue list --repo "$REPO" --state open --search "\"${TITLE}\" in:title" \
+            --json number,title --jq "map(select(.title == \"${TITLE}\"))[0].number // empty")
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --repo "$REPO" --body "$BODY"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+          fi
