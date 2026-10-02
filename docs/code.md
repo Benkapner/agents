@@ -185,6 +185,13 @@ HASH=$(curl -sL "https://raw.githubusercontent.com/fullsend-ai/agents/${SHA}/har
 echo "https://raw.githubusercontent.com/fullsend-ai/agents/${SHA}/harness/code.yaml#sha256=${HASH}"
 ```
 
+The harnesses on `main` name fullsend's built-in providers by bare name
+(`vertex-ai`, `package-registries`, ...), so pin a `<SHA>` from `main` only
+with a fullsend release that resolves them
+([fullsend-ai/fullsend#7995](https://github.com/fullsend-ai/fullsend/pull/7995)
+or later). With an older fullsend, pin the `fullsend-ai/agents` tag that
+matches your fullsend version instead.
+
 And then reference that harness in your `.fullsend/config.yaml`:
 
 ```yaml
