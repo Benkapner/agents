@@ -1,6 +1,10 @@
 # Expected fixture state after triage agent runs.
 state: open
 
+# Selected as the triage agent's release-tier smoke case (eval/run-functional.sh
+# EVAL_TIER=release).
+release: true
+
 labels:
   required:
     - ready-to-code

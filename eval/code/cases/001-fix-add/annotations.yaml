@@ -4,6 +4,10 @@
 # capture-fixture.sh writes into fixture-state.json.
 state: open
 
+# Selected as the code agent's release-tier smoke case (eval/run-functional.sh
+# EVAL_TIER=release) — the only case for this agent.
+release: true
+
 # End-to-end success: post-script opened a PR that touches the buggy file.
 expected_files:
   - calc.py
