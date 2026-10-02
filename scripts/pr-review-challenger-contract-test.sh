@@ -50,33 +50,41 @@ assert_not_contains() {
 
 assert_contains "structured response requires both arrays" \
   "Require a parsed object with both arrays."
-assert_contains "full removal requires complete evidence-backed accounting" \
-  "has one distinct, evidence-backed"
-assert_contains "full removal requires one-to-one correspondence" \
-  "matched one-to-one using"
-assert_contains "full removal records match on identity fields including line" \
+assert_contains "challenged findings are accounted exactly once" \
+  "Account for every challenged finding exactly once"
+assert_contains "accounting applies regardless of empty adjudication" \
+  'whether or not `adjudicated_findings` is empty'
+assert_contains "accounting matches one-to-one" \
+  "Match one-to-one on identity:"
+assert_contains "removed findings match on original identity fields" \
   '`original_category` + `original_file` + `original_line`'
-assert_contains "same-category same-file records disambiguated by line" \
-  '`original_line` when the finding has a line'
-assert_contains "line-less removal records require exact description match" \
-  'require an exact `original_description` match'
-assert_contains "full removal reasons cite specific evidence" \
+assert_contains "line-less removals match on original description" \
+  '`original_description` when line-less'
+assert_contains "adjudicated findings match on category file line" \
+  '`category` + `file` + `line`'
+assert_contains "line-less findings match on exact description" \
+  'exact `description` match when line-less'
+assert_contains "merged findings account for consolidated inputs" \
+  '`merged` `challenger_action` accounts for the findings'
+assert_contains "removed findings never apply to withheld findings" \
+  'never apply to withheld findings'
+assert_contains "removal reasons cite specific evidence" \
   '`removal_reason` must cite evidence.'
-assert_contains "full removal is gated on empty adjudication" \
-  'non-empty challenged subset with empty `adjudicated_findings`'
-assert_contains "full removal replaces the challenged subset" \
-  'Replace the challenged subset with the empty array'
-assert_contains "successful full removal restores withheld findings" \
-  'the empty array, then re-append withheld findings.'
+assert_contains "adjudicated findings replace the challenged subset" \
+  'Replace the challenged subset with `adjudicated_findings`'
+assert_contains "withheld findings are re-appended" \
+  're-append withheld findings'
+assert_contains "sub-agent-failure findings are never challenged" \
+  'the `sub-agent-failure` findings, never challenged'
 
-assert_contains "ambiguous or incomplete empty accounting is a failure" \
+assert_contains "ambiguous or incomplete accounting is a failure" \
   "Missing, incomplete, duplicated, ambiguous, unmatched, or evidence-free accounting is a failure."
 assert_not_contains "empty adjudication is no longer an unconditional failure" \
   "treat this as a challenger failure"
 assert_contains "genuine challenger failures use fallback" \
-  "has a timeout or tool error, returns malformed or empty"
-assert_contains "invalid empty accounting uses fallback" \
-  "invalid empty-adjudication accounting"
+  "has a timeout or tool error, returns malformed output"
+assert_contains "invalid adjudication accounting uses fallback" \
+  "invalid adjudication accounting"
 assert_contains "failure fallback restores the pre-challenger set" \
   "fall back to the pre-challenger merged finding set"
 
@@ -89,12 +97,16 @@ assert_contains "prompt-size guard withholds low and info findings" \
   'tokens, withhold `low` and `info` findings from the challenger'
 assert_contains "prompt-size guard restores withheld findings" \
   "input and re-append them, unchallenged, after step 3."
-assert_contains "retained findings replace the challenged subset" \
-  'Otherwise replace the challenged subset with `adjudicated_findings`,'
-assert_contains "retained findings restore withheld findings" \
-  "then re-append withheld findings."
+assert_contains "sub-agent-failure findings are always withheld from the challenger" \
+  '`sub-agent-failure` findings are always withheld'
+assert_contains "sub-agent-failure findings are re-appended unchanged" \
+  're-appended unchanged after step 3'
 assert_contains "removed findings are logged but excluded" \
   'Log `removed_findings`, but exclude them from the final review.'
+assert_contains "challenger input excludes sub-agent-failure findings" \
+  'EXCLUDING `sub-agent-failure` findings'
+assert_contains "adjudicated set includes re-appended withheld findings" \
+  'plus the re-appended withheld findings'
 
 assert_contains "challenger failure finding is low severity" \
   '"severity": "low"'

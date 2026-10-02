@@ -961,37 +961,24 @@ sub-agent to adversarially challenge the findings with fresh context.
 The challenger has not seen the orchestrator's synthesis — it receives
 only the raw findings and the diff, preserving context isolation.
 
-**Skip when there is nothing to adjudicate.** If the merged finding set
-from steps 6a–6c is empty, skip the challenger dispatch — and only the
-dispatch. Continue through steps 6e, 6e-1, and 6f as usual: the
-orchestrator-only checks (6e) run after the challenger and can add
-findings of their own (protected paths, scope authorization, PR
-metadata), so 6f's "no findings → approve" outcome applies only when
-the set is still empty after them.
-A dimension dispatch failure cannot produce this empty set: step 5
-records a `sub-agent-failure` finding for it (high for Opus-tier,
-info for Sonnet-tier), so a failed dimension keeps the set non-empty
-and the challenger still runs. An empty set means every dispatched
-dimension came back clean, and the challenger's job is to adjudicate
-findings it is given, not manufacture them from nothing. This rule
-exists for determinism: it codifies the skip the orchestrator already
-makes on clean runs, so the choice is no longer a per-run judgment
-call. Whether a set holding only `info` findings should skip as well is
-an open question; as written it does not.
-(This does forfeit the challenger's secondary, not-owned allowance —
-see `sub-agents/challenger.md`'s "Do not own" section — to flag a
-genuine issue it happens to notice while checking an empty set against
-the diff. Accepted: on a clean run the orchestrator was already
-forfeiting it.) Note `challenger: skipped (no findings to adjudicate)`
-in your own reasoning for auditability — there is no field for it in
-`agent-result.json` (`schemas/review-result.schema.json` is
-`additionalProperties: false`), and it does not belong in the posted
-review body.
+**Skip when there is nothing to adjudicate.** The challenger receives
+the merged finding set from steps 6a–6c minus `sub-agent-failure`
+findings (always withheld, step 2); if that leaves nothing, skip the
+challenger dispatch — and only the dispatch. Continue through steps 6e,
+6e-1, and 6f as usual: the orchestrator-only checks (6e) run after the
+challenger and can add findings of their own (protected paths, scope
+authorization, PR metadata), so 6f's "no findings → approve" applies
+only when the set is still empty after them.
+A dimension dispatch failure records a `sub-agent-failure` finding
+(high for Opus-tier, info for Sonnet-tier), which is withheld from the
+challenger and carried straight through to 6e–6f, so a failed
+dimension still forces at least `request-changes`.
 
 Steps 6e–6f below refer to the *adjudicated set*: the challenger's
-`adjudicated_findings`; the unchanged 6a–6c set when the challenger
-was skipped; or, when it failed, the 6a–6c set plus the recorded
-`sub-agent-failure` finding (step 4 below).
+`adjudicated_findings` plus the re-appended withheld findings (step 3
+below); the unchanged 6a–6c set when the challenger was skipped; or,
+when it failed, the 6a–6c set plus the recorded `sub-agent-failure`
+finding (step 4 below).
 
 Otherwise, dispatch the challenger:
 
@@ -1017,7 +1004,7 @@ budget section), skip the challenger: keep the merged finding set from
    ## Context
 
    ### Findings to challenge
-   <JSON array of all findings from steps 6a–6c>
+   <JSON array of all findings from steps 6a–6c, EXCLUDING `sub-agent-failure` findings>
 
    ### Diff
    Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
@@ -1044,8 +1031,11 @@ budget section), skip the challenger: keep the merged finding set from
 
    **Prompt size guard:** If the findings JSON alone exceeds 80 000
    tokens, withhold `low` and `info` findings from the challenger's
-   input and re-append them, unchallenged, after step 3. The diff and
-   files are read from disk, not pasted.
+   input and re-append them, unchallenged, after step 3. `sub-agent-failure`
+   findings are always withheld from the challenger's input and re-appended
+   unchanged after step 3; they are line-less, non-actionable gaps the
+   challenger cannot adjudicate against the diff. The diff and files are read
+   from disk, not pasted.
 
    The challenger runs **after** dimension sub-agents complete (it
    needs their findings as input), so it is dispatched sequentially,
@@ -1057,22 +1047,27 @@ budget section), skip the challenger: keep the merged finding set from
    finding array). Parse accordingly:
 
    - Require a parsed object with both arrays.
+   - Account for every challenged finding exactly once across
+     `adjudicated_findings` and `removed_findings`, whether or not
+     `adjudicated_findings` is empty. Match one-to-one on identity:
+     `original_category` + `original_file` + `original_line` (or
+     `original_description` when line-less) in `removed_findings`, and
+     `category` + `file` + `line` (or an exact `description` match when
+     line-less) in `adjudicated_findings`; a `merged` `challenger_action`
+     accounts for the findings it consolidates. `removed_findings` never
+     apply to withheld findings.
+     A `removal_reason` must cite evidence. Missing, incomplete,
+     duplicated, ambiguous, unmatched, or evidence-free accounting is a
+     failure.
    - Strip `challenger_action` and `challenger_reason` from
-     `adjudicated_findings` before merging; log but do not emit them.
-   - For a non-empty challenged subset with empty `adjudicated_findings`,
-     accept only if `removed_findings` has one distinct, evidence-backed record
-     per challenged finding, matched one-to-one using `original_category` +
-     `original_file` + `original_line` when the finding has a line; for line-less
-     findings, require an exact `original_description` match. `removal_reason`
-     must cite evidence. Replace the challenged subset with the empty array,
-     then re-append withheld findings. Missing, incomplete, duplicated,
-     ambiguous, unmatched, or evidence-free accounting is a failure.
-   - Otherwise replace the challenged subset with `adjudicated_findings`,
-     then re-append withheld findings.
+     `adjudicated_findings` after accounting; log but do not emit them.
+   - Replace the challenged subset with `adjudicated_findings`, then
+     re-append withheld findings (the size-withheld `low`/`info` findings and
+     the `sub-agent-failure` findings, never challenged).
    - Log `removed_findings`, but exclude them from the final review.
 
-4. If the challenger has a timeout or tool error, returns malformed or empty
-   output or invalid empty-adjudication accounting, or is skipped on the time
+4. If the challenger has a timeout or tool error, returns malformed output,
+   no parsed object, or invalid adjudication accounting, or is skipped on the time
    check, fall back to the pre-challenger merged finding set from steps 6a–6c.
    Record a
    **low**-level finding (`info` is below the posting threshold):
