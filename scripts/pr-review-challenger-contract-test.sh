@@ -137,6 +137,8 @@ assert_contains "challenger_action enum is kept|downgraded|merged" \
   '"challenger_action": "kept|downgraded|merged"'
 assert_contains "identity line is required when the finding has a line" \
   'required when the finding has a line'
+assert_contains "constraints state every input appears exactly once" \
+  'Every challenged input finding appears exactly once'
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

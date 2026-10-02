@@ -109,6 +109,10 @@ every challenged input exactly once.
 
 ## Constraints
 
+- Every challenged input finding appears exactly once across
+  `adjudicated_findings` and `removed_findings`: retained inputs keep
+  `original_identity`, inputs absorbed by a merge are listed in `merged_from`,
+  and removed inputs appear in `removed_findings`.
 - Read changed files from `/sandbox/workspace/pr-head/` (the PR head), not
   from the repository checkout — that is base-branch code
 - Every removal or downgrade must cite specific evidence from the code
