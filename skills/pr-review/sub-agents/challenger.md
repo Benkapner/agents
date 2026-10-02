@@ -75,7 +75,8 @@ Return a JSON object with two fields:
     {
       "original_category": "<category>",
       "original_file": "<file>",
-      "original_description": "<original description summary>",
+      "original_line": "<line number, required when the finding has a line>",
+      "original_description": "<verbatim original description, required for line-less findings>",
       "removal_reason": "<evidence-based reason for removal>"
     }
   ]
