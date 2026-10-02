@@ -31,7 +31,13 @@ jobs:
 
   report:
     needs: run
-    if: always() && github.repository == 'fullsend-ai/agents' && needs.run.result != 'success'
+    # Only main-health runs report; a manual dispatch from a feature branch
+    # must not comment on the tracking issue.
+    if: >-
+      always() &&
+      github.repository == 'fullsend-ai/agents' &&
+      github.ref == 'refs/heads/main' &&
+      needs.run.result != 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
