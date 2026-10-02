@@ -1051,11 +1051,13 @@ budget section), skip the challenger: keep the merged finding set from
      `adjudicated_findings` and `removed_findings`, whether or not
      `adjudicated_findings` is empty. Match one-to-one on identity:
      `original_category` + `original_file` + `original_line` (or
-     `original_description` when line-less) in `removed_findings`, and
-     `category` + `file` + `line` (or an exact `description` match when
-     line-less) in `adjudicated_findings`; a `merged` `challenger_action`
-     accounts for the findings it consolidates. `removed_findings` never
-     apply to withheld findings.
+     `original_description` when line-less) in `removed_findings`; a
+     `kept`/`downgraded` finding's `original_identity` (`category` +
+     `file` + `line`, or `description` when line-less) and each entry of
+     a `merged` finding's `merged_from` list in `adjudicated_findings`.
+     Match line-less inputs on the verbatim original description, never
+     the amended `description`. `removed_findings` never apply to
+     withheld findings.
      A `removal_reason` must cite evidence. Missing, incomplete,
      duplicated, ambiguous, unmatched, or evidence-free accounting is a
      failure.

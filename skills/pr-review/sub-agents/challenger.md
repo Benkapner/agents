@@ -68,6 +68,20 @@ Return a JSON object with two fields:
       "remediation": "<remediation, required for critical/high>",
       "actionable": true|false,
       "challenger_action": "kept|downgraded|merged|removed",
+      "original_identity": {
+        "category": "<original category>",
+        "file": "<original file>",
+        "line": "<original line number, optional>",
+        "description": "<verbatim original description, required for line-less findings>"
+      },
+      "merged_from": [
+        {
+          "category": "<original category>",
+          "file": "<original file>",
+          "line": "<original line number, optional>",
+          "description": "<verbatim original description, required for line-less findings>"
+        }
+      ],
       "challenger_reason": "<why this finding was kept/changed/removed>"
     }
   ],
@@ -82,6 +96,14 @@ Return a JSON object with two fields:
   ]
 }
 ```
+
+`original_identity` is required for `kept` and `downgraded` findings and
+records the single input this entry retains; its `description` is the
+verbatim original, so a line-less input matches on it even when the emitted
+`description` is amended. `merged_from` is required for `merged` findings and
+lists every input the merge consolidates (`original_identity` is omitted).
+Together with `removed_findings`, these fields must account for every
+challenged input exactly once.
 
 ## Constraints
 
