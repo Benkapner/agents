@@ -28,6 +28,13 @@ on:
     types: [opened, synchronize, reopened, labeled]
   merge_group:
   workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Eval tier: auto (script default), full or release'
+        required: false
+        type: choice
+        options: [auto, full, release]
+        default: auto
   workflow_call:
     inputs:
       fullsend_ref:
@@ -35,6 +42,14 @@ on:
         required: false
         type: string
         default: main
+      tier:
+        # Empty keeps eval/run-functional.sh's caller-derived default
+        # (release for a cross-repo call), so callers that omit it -- and
+        # callers pinned to an older copy of this workflow -- behave the same.
+        description: "Eval tier: '' or auto (script default), full or release"
+        required: false
+        type: string
+        default: ''
     secrets:
       E2E_GCP_WIF_PROVIDER:
         required: false
@@ -191,7 +206,8 @@ jobs:
           if [ -n "$CHANGED_FILES" ]; then
             AGENTS=$(echo "$CHANGED_FILES" | bash .github/scripts/select-eval-agents.sh)
           else
-            # workflow_dispatch: run all agents with eval configs
+            # No diff (dispatch, workflow_call, or a failed diff fetch): run all
+            # agents with eval configs
             AGENTS=$(for d in eval/*/eval.yaml; do basename "$(dirname "$d")"; done)
           fi
           JSON=$(echo "$AGENTS" | jq -Rsc '[split("\n")[] | select(length > 0)]')
@@ -210,7 +226,9 @@ jobs:
       needs.detect.outputs.agents != '[]' &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The full-tier review leg takes 39-43 min (9 live cases); 60 leaves
+    # headroom. The release tier runs one case per agent.
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -386,6 +404,8 @@ jobs:
           EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
           FULLSEND_DIR: ${{ github.workspace }}
           AGENT: ${{ matrix.agent }}
+          # '' and 'auto' leave EVAL_TIER empty, i.e. the script's default.
+          EVAL_TIER: ${{ inputs.tier != 'auto' && inputs.tier || '' }}
         run: ./eval/run-functional.sh "$AGENT"
 
       # Protected-path change (human review required): scrub eval artifacts before

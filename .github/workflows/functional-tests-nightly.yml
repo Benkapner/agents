@@ -1,0 +1,64 @@
+name: Functional Tests (nightly)
+
+# Nightly full-suite run against fullsend main (#1573). The fullsend release
+# gate runs only the release tier, so the model-quality and budget judges are
+# exercised here. Kept out of functional-tests.yml on purpose: a reusable
+# workflow's callers must grant every permission any of its jobs requests,
+# so an issues: write job there would break fullsend's release gate at its
+# next pin bump. Calling it from here also gives the nightly its own
+# concurrency group, apart from push-to-main runs.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  run:
+    if: github.repository == 'fullsend-ai/agents'
+    uses: ./.github/workflows/functional-tests.yml
+    with:
+      tier: full
+    secrets: inherit
+    # Union of what functional-tests.yml's jobs request.
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+      checks: read
+
+  report:
+    needs: run
+    # Only main-health runs report; a manual dispatch from a feature branch
+    # must not comment on the tracking issue.
+    if: >-
+      always() &&
+      github.repository == 'fullsend-ai/agents' &&
+      github.ref == 'refs/heads/main' &&
+      needs.run.result != 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Report nightly failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT: ${{ needs.run.result }}
+        run: |
+          TITLE="Nightly functional tests failing"
+          BODY="Nightly full-suite run ended with result '${RESULT}': ${RUN_URL}"
+          # Only issues this workflow opened, so a look-alike issue opened by
+          # anyone else is never commented on.
+          NUMBER=$(gh issue list --repo "$REPO" --state open --author app/github-actions \
+            --search "\"${TITLE}\" in:title" \
+            --json number,title --jq "map(select(.title == \"${TITLE}\"))[0].number // empty")
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --repo "$REPO" --body "$BODY"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+          fi
