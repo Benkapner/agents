@@ -1056,24 +1056,24 @@ budget section), skip the challenger: keep the merged finding set from
    `adjudicated_findings` and `removed_findings` arrays (not a flat
    finding array). Parse accordingly:
 
-   - Extract the `adjudicated_findings` array from the challenger's
-     JSON output. Strip the challenger-specific fields
-     (`challenger_action`, `challenger_reason`) before merging into the
-     review finding set — these are logged for transparency but are not
-     part of the standard finding schema.
-   - If `adjudicated_findings` is empty but the set sent to the
-     challenger was non-empty, treat this as a challenger failure (fall back
-     per the immediate next step below). A legitimate challenger pass
-     that removes all findings is unlikely — an empty result more likely
-     indicates a parsing error or context truncation.
-   - Otherwise, replace the challenged subset with the challenger's
-     `adjudicated_findings` (then re-append anything withheld).
-   - Log any `removed_findings` for transparency but do not include
-     them in the final review.
+   - Require a parsed object with both arrays.
+   - Strip `challenger_action` and `challenger_reason` from
+     `adjudicated_findings` before merging; log but do not emit them.
+   - For a non-empty challenged subset with empty `adjudicated_findings`,
+     accept only if `removed_findings` has one distinct, evidence-backed record
+     per challenged finding, matched one-to-one using `original_category` +
+     `original_file` (`original_description` corroborates); `removal_reason`
+     must cite evidence. Replace the challenged subset with the empty array,
+     then re-append withheld findings. Missing, incomplete, duplicated,
+     unmatched, or evidence-free accounting is a failure.
+   - Otherwise replace the challenged subset with `adjudicated_findings`,
+     then re-append withheld findings.
+   - Log `removed_findings`, but exclude them from the final review.
 
-4. If the challenger sub-agent fails (timeout, error, empty
-   response) or was skipped on the time check, fall back to using the
-   pre-challenger merged finding set from steps 6a–6c. Record a
+4. If the challenger has a timeout or tool error, returns malformed or empty
+   output or invalid empty-adjudication accounting, or is skipped on the time
+   check, fall back to the pre-challenger merged finding set from steps 6a–6c.
+   Record a
    **low**-level finding (`info` is below the posting threshold):
 
    ```json
