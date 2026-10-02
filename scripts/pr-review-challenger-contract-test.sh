@@ -9,6 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SKILL="${REPO_ROOT}/skills/pr-review/SKILL.md"
+CHALLENGER="${REPO_ROOT}/skills/pr-review/sub-agents/challenger.md"
 FAILURES=0
 
 CHALLENGER_SECTION="$(awk '
@@ -25,10 +26,11 @@ fi
 # Normalize to a single space-separated line so assertions survive markdown
 # re-wrapping.
 CHALLENGER_SECTION="$(printf '%s\n' "${CHALLENGER_SECTION}" | tr '\n' ' ' | tr -s ' ')"
+TARGET="${CHALLENGER_SECTION}"
 
 assert_contains() {
   local name="$1" expected="$2"
-  if grep -qF -- "${expected}" <<<"${CHALLENGER_SECTION}"; then
+  if grep -qF -- "${expected}" <<<"${TARGET}"; then
     echo "PASS: ${name}"
   else
     echo "FAIL: ${name} — missing '${expected}' in challenger guidance"
@@ -38,7 +40,7 @@ assert_contains() {
 
 assert_not_contains() {
   local name="$1" unexpected="$2"
-  if grep -qF -- "${unexpected}" <<<"${CHALLENGER_SECTION}"; then
+  if grep -qF -- "${unexpected}" <<<"${TARGET}"; then
     echo "FAIL: ${name} — found forbidden '${unexpected}' in challenger guidance"
     FAILURES=$((FAILURES + 1))
   else
@@ -52,10 +54,12 @@ assert_contains "full removal requires complete evidence-backed accounting" \
   "has one distinct, evidence-backed"
 assert_contains "full removal requires one-to-one correspondence" \
   "matched one-to-one using"
-assert_contains "full removal records match on named identity fields" \
-  '`original_category` + `original_file`'
-assert_contains "full removal records corroborate with the description" \
-  '`original_description` corroborates'
+assert_contains "full removal records match on identity fields including line" \
+  '`original_category` + `original_file` + `original_line`'
+assert_contains "same-category same-file records disambiguated by line" \
+  '`original_line` when the finding has a line'
+assert_contains "line-less removal records require exact description match" \
+  'require an exact `original_description` match'
 assert_contains "full removal reasons cite specific evidence" \
   '`removal_reason` must cite evidence.'
 assert_contains "full removal is gated on empty adjudication" \
@@ -65,8 +69,8 @@ assert_contains "full removal replaces the challenged subset" \
 assert_contains "successful full removal restores withheld findings" \
   'the empty array, then re-append withheld findings.'
 
-assert_contains "incomplete empty accounting is a failure" \
-  "Missing, incomplete, duplicated, unmatched, or evidence-free accounting is a failure."
+assert_contains "ambiguous or incomplete empty accounting is a failure" \
+  "Missing, incomplete, duplicated, ambiguous, unmatched, or evidence-free accounting is a failure."
 assert_not_contains "empty adjudication is no longer an unconditional failure" \
   "treat this as a challenger failure"
 assert_contains "genuine challenger failures use fallback" \
@@ -100,6 +104,19 @@ assert_contains "challenger failure preserves the original findings" \
   'Using pre-challenger finding set.'
 assert_contains "challenger failure is non-actionable" \
   '"actionable": false'
+
+CHALLENGER_SCHEMA="$(printf '%s\n' "$(cat "${CHALLENGER}")" | tr '\n' ' ' | tr -s ' ')"
+TARGET="${CHALLENGER_SCHEMA}"
+assert_contains "removed_findings schema emits original_category" \
+  '"original_category":'
+assert_contains "removed_findings schema emits original_file" \
+  '"original_file":'
+assert_contains "removed_findings schema emits original_line" \
+  '"original_line":'
+assert_contains "removed_findings schema emits original_description" \
+  '"original_description":'
+assert_contains "removed_findings schema emits removal_reason" \
+  '"removal_reason":'
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

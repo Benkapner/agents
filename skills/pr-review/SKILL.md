@@ -1062,10 +1062,11 @@ budget section), skip the challenger: keep the merged finding set from
    - For a non-empty challenged subset with empty `adjudicated_findings`,
      accept only if `removed_findings` has one distinct, evidence-backed record
      per challenged finding, matched one-to-one using `original_category` +
-     `original_file` (`original_description` corroborates); `removal_reason`
+     `original_file` + `original_line` when the finding has a line; for line-less
+     findings, require an exact `original_description` match. `removal_reason`
      must cite evidence. Replace the challenged subset with the empty array,
      then re-append withheld findings. Missing, incomplete, duplicated,
-     unmatched, or evidence-free accounting is a failure.
+     ambiguous, unmatched, or evidence-free accounting is a failure.
    - Otherwise replace the challenged subset with `adjudicated_findings`,
      then re-append withheld findings.
    - Log `removed_findings`, but exclude them from the final review.
