@@ -101,9 +101,11 @@ Return a JSON object with two fields:
 records the single input this entry retains; its `description` is the
 verbatim original, so a line-less input matches on it even when the emitted
 `description` is amended. `merged_from` is required for `merged` findings and
-lists every input the merge consolidates (`original_identity` is omitted).
-Together with `removed_findings`, these fields must account for every
-challenged input exactly once.
+lists every input the merge consolidates (`original_identity` is omitted);
+the entry's top-level `category`, `file`, `line`, and `description` are those
+of the input with the highest severity, breaking ties on the more specific
+remediation. Together with `removed_findings`, these fields must account for
+every challenged input exactly once.
 
 ## Constraints
 

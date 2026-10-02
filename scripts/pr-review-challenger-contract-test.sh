@@ -133,6 +133,10 @@ assert_contains "adjudicated_findings schema emits original_identity" \
   '"original_identity":'
 assert_contains "adjudicated_findings schema emits merged_from" \
   '"merged_from":'
+assert_contains "challenger_action enum is kept|downgraded|merged" \
+  '"challenger_action": "kept|downgraded|merged"'
+assert_contains "identity line is required when the finding has a line" \
+  'required when the finding has a line'
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
