@@ -71,7 +71,8 @@ and **How to redo / reset** in
 Set `rebased_onto_target` and `history_rewritten` as specified in
 [references/procedure.md](references/procedure.md). On a validation
 retry, carry those fields forward when the rewrite still needs
-publishing (see "Validation retry behavior" in `agents/fix.md`). Never
+publishing (see "Validation retry behavior" in the `fix-result-contract`
+skill). Never
 set them for a failed or aborted rewrite. A bot-triggered run may set
 `rebased_onto_target` only when reconciling a forge-reported conflict
 with `FIX_CONFLICT_UPDATE_STRATEGY=rebase`. Never set

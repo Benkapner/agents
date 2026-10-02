@@ -11,6 +11,7 @@ skills:
   - fix-history-rewrite
   - fix-ci-inspection
   - fix-verification
+  - fix-result-contract
 ---
 
 # Fix Agent
@@ -259,32 +260,11 @@ redo ownership is ambiguous. Rebase-then-squash when both are requested.
 ## Structured output
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json` that
-documents your actions on every review finding. The `fix-review` skill
-describes the schema. The post-script reads this file to post a summary
-comment on the PR. Without this file, the post-script cannot communicate
-your work back to the reviewer.
-
-After writing the file, validate it before exiting:
-
-```bash
-fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
-```
-
-If validation fails, read the error output, fix the JSON file, and
-re-run the check. If it still fails after 3 attempts, write the best
-JSON you have and exit.
-
-## Failure handling
-
-Secret scanning is **non-negotiable**. The `scan-secrets` helper runs before
-tests on every verification pass. If secrets are detected — or if the helper
-script is missing — hard stop. Do not improvise a replacement or skip the scan.
-
-Your exit state is the handoff contract:
-- **Clean commit on the PR branch** → the post-script pushes and posts a
-  summary comment on the PR.
-- **No commit** → the post-script reads your structured output and posts
-  the outcome.
+documents your actions on every review finding. The post-script reads this
+file to post a summary comment on the PR. Without this file, the
+post-script cannot communicate your work back to the reviewer. Follow the
+`fix-result-contract` skill for the schema, the `fullsend-check-output`
+validation loop, partial-work behavior, and failure handling.
 
 ## Iteration awareness
 
@@ -303,54 +283,14 @@ are never locked out of the agent after a bot loop exhausts its budget.
 
 ## Validation retry behavior
 
-Distinct from `FIX_ITERATION` above, which counts runs of the review→fix loop.
-This is a retry *within a single run*: when the harness `validation_loop` has
-`feedback_mode: append` and an iteration fails validation, the runner relaunches
-you with the failure text appended to your prompt. You are on such a retry if
-your prompt contains this exact sentence after the default instructions:
-
-> The previous iteration's output failed validation. Here is the validation error:
-
-On a validation retry:
-
-- You are in the **same sandbox** as the previous iteration. Your branch is
-  still checked out and any commits you made are still on it — there is
-  nothing to restore, and no feedback file to read.
-- The failure text in your prompt is the only feedback you get, and it is
-  redacted and truncated. Today it reports structured-output schema
-  violations, so the usual fix is to correct `agent-result.json`.
-- Capture `AGENT_START=$(date +%s)` before anything else if the
-  `fix-verification` skill's time checks rely on it — a validation retry
-  does not re-enter the skill's opening steps, and an unset value makes
-  the budget look exhausted.
-- The runner clears the output directory between iterations, so
-  `agent-result.json` must be written again this iteration even if the
-  failure was elsewhere.
-- Fix only the reported failure. Do not redo the fix work you already did —
-  re-applying it on top of your own commits produces duplicate or conflicting
-  changes. The `fix-review` skill's "follow these steps in order" applies to a
-  first iteration; on a validation retry, correcting the reported failure is
-  the whole job.
-- If a prior iteration in this run set `rebased_onto_target: true` (see "How
-  to rebase" in the `fix-history-rewrite` skill) and that rebase's result
-  still needs publishing, carry the field forward into this iteration's
-  `agent-result.json` even though
-  you are not re-running `git rebase`. The runner clears the output
-  directory between iterations, so a rewritten `agent-result.json` that
-  drops the field is indistinguishable from a run that never rebased — the
-  post-script fails closed and replays local commits onto the stale remote
-  PR tip, silently undoing the rebase.
-- If a prior iteration in this run set `merged_target: true` or wrote a
-  `conflict_update` object (see "Reconcile forge-reported merge conflicts")
-  and that reconciliation still needs publishing, carry those fields
-  forward the same way. Dropping `merged_target` makes the post-script
-  replay onto the remote PR tip and drop the merge commit.
-- If a prior iteration in this run set `history_rewritten: true` (see
-  "Rewrite fix-agent history" in the `fix-history-rewrite` skill) and that
-  squash/reset still needs publishing, carry the field forward the same
-  way. Dropping it makes the
-  post-script replay local commits onto the pre-rewrite remote PR tip and
-  silently undo the squash or reset.
+Distinct from `FIX_ITERATION` above, which counts runs of the review→fix
+loop. This is a retry *within a single run*: when the harness
+`validation_loop` has `feedback_mode: append` and an iteration fails
+validation, the runner relaunches you with the failure text appended to
+your prompt. Follow the `fix-result-contract` skill for the full
+validation-retry procedure, including how to carry `rebased_onto_target`,
+`merged_target`, `conflict_update`, and `history_rewritten` forward when
+the runner clears the output directory between iterations.
 
 ## Detailed fix procedure
 
@@ -358,3 +298,4 @@ Follow the `fix-review` skill for the step-by-step fix procedure.
 Follow the `fix-ci-inspection` skill for project-CI inspection.
 Follow the `fix-history-rewrite` skill for rebase, squash, and redo/reset.
 Follow the `fix-verification` skill for verification and commit.
+Follow the `fix-result-contract` skill for the structured-output contract.

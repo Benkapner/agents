@@ -65,6 +65,7 @@ skills:
   - skills/fix-history-rewrite
   - skills/fix-ci-inspection
   - skills/fix-verification
+  - skills/fix-result-contract
 
 env:
   runner:
