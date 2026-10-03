@@ -154,8 +154,8 @@ Each case directory under `eval/<agent>/cases/` contains:
   PR files). Issue cases may set `labels`, applied before the agent runs
   (e.g. `ready-to-code` for a code case). Pull-request cases may add
   `followup_files` and a `prior_review` body/provenance to exercise a
-  re-review. PR file `content` is written with `yq -r`, which adds a final
-  newline: use `|-` for a block that must end with exactly one.
+  re-review. Each PR file is written ending with exactly one final
+  newline, whatever block style its `content` uses.
 - `annotations.yaml` — expected outcomes (labels, review expectations)
   and the report-only budgets: `max_cost_usd`, plus `max_turns` where the
   eval has a `max_turns` judge. Set `release: true` to include the case

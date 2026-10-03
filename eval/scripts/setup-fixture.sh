@@ -15,6 +15,8 @@
 #   $CASE_WORKSPACE/.hook-outputs.yaml — env vars for the runner
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 CASE_WORKSPACE="${CASE_WORKSPACE:?CASE_WORKSPACE is required}"
 EVAL_ORG="${EVAL_ORG:?EVAL_ORG is required}"
 
@@ -132,7 +134,7 @@ case "${FORGE}:${FIXTURE_TYPE}" in
     for i in $(seq 0 $((file_count - 1))); do
       path=$(echo "$FIXTURE_FILES" | yq -r ".[$i].path")
       mkdir -p "$TARGET_DIR/$(dirname "$path")"
-      echo "$FIXTURE_FILES" | yq -r ".[$i].content" > "$TARGET_DIR/$path"
+      echo "$FIXTURE_FILES" | yq -r ".[$i].content" | "$SCRIPT_DIR/write-fixture-file.sh" "$TARGET_DIR/$path"
     done
     git -C "$TARGET_DIR" add -A
     git -C "$TARGET_DIR" commit -m "eval: fixture changes"
@@ -143,7 +145,7 @@ case "${FORGE}:${FIXTURE_TYPE}" in
       for i in $(seq 0 $((followup_count - 1))); do
         path=$(echo "$FOLLOWUP_FILES" | yq -r ".[$i].path")
         mkdir -p "$TARGET_DIR/$(dirname "$path")"
-        echo "$FOLLOWUP_FILES" | yq -r ".[$i].content" > "$TARGET_DIR/$path"
+        echo "$FOLLOWUP_FILES" | yq -r ".[$i].content" | "$SCRIPT_DIR/write-fixture-file.sh" "$TARGET_DIR/$path"
       done
       git -C "$TARGET_DIR" add -A
       git -C "$TARGET_DIR" commit -m "eval: re-review follow-up"
