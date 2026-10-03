@@ -478,8 +478,12 @@ print_judge_errors() {
   local judge count first_error
   while IFS= read -r judge; do
     [[ -n "$judge" ]] || continue
-    count="$(yq -r "[.per_case[] | select(.[\"${judge}\"].error != null)] | length" "$SUMMARY_YAML")"
-    first_error="$(yq -r "[.per_case[] | .[\"${judge}\"].error | select(. != null)] | .[0]" "$SUMMARY_YAML" | head -c 300)"
+    count="$(yq -r "[.per_case[] | select(.[\"${judge}\"].error != null)] | length" "$SUMMARY_YAML" 2>/dev/null || echo "?")"
+    # Read the whole value, then cut it in bash: piping into `head -c`
+    # can SIGPIPE yq on a long error and, under pipefail, end the script
+    # before it reports a result.
+    first_error="$(yq -r "[.per_case[] | .[\"${judge}\"].error | select(. != null)] | .[0]" "$SUMMARY_YAML" 2>/dev/null || true)"
+    first_error="${first_error:0:300}"
     echo "JUDGE ERROR: $(log_safe "$judge") errored on ${count} case(s); first error: $(log_safe "$first_error")" >&2
   done <<< "$1"
 }

@@ -128,14 +128,17 @@ case "${FORGE}:${FIXTURE_TYPE}" in
     mapfile -t fixture_labels < <(yq -r '.fixture.labels // [] | .[]' "$INPUT")
     for label in "${fixture_labels[@]}"; do
       [[ -n "$label" ]] || continue
+      # Logged on one line with every "::" broken up, so a label cannot
+      # be read as an Actions workflow command.
+      label_log="$(printf '%s' "$label" | tr '\r\n' '  ' | sed 's/::/: :/g')"
       # gh issue edit --add-label splits its value on commas.
       if [[ "$label" == *,* ]]; then
-        echo "ERROR: fixture label '${label}' contains a comma" >&2
+        echo "ERROR: fixture label '${label_log}' contains a comma" >&2
         exit 1
       fi
       gh label create "$label" --repo "$EPHEMERAL_REPO" --force >/dev/null
       gh issue edit "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --add-label "$label" >/dev/null
-      echo "Labeled issue: $label"
+      echo "Labeled issue: ${label_log}"
     done
     ;;
   github:pull_request)

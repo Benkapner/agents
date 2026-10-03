@@ -809,6 +809,21 @@ else
 fi
 rm -rf "$ROOT"
 
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+BIG_ERR="$(head -c 300000 /dev/zero | tr '\0' 'x')"
+BIG_SUMMARY="per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: \"${BIG_ERR}\"\n      value: null\n"
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$BIG_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 1 case(s)" \
+  && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "a very long judge error is truncated without ending the run"
+else
+  fail "a very long judge error is truncated without ending the run (rc=$RC, output tail: $(echo "$OUT" | tail -3))"
+fi
+rm -rf "$ROOT"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
