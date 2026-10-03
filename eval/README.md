@@ -33,9 +33,13 @@ Results are written to `eval/runs/<agent>/<run-id>/`.
 - **`release`** — runs only this agent's case(s) whose `annotations.yaml`
   sets `release: true`, and fails only on a non-zero case exit or a
   deterministic judge (e.g. `required_labels`, `forbidden_labels`). LLM
-  judges (name ends in `_quality`) and the `max_turns`/`max_cost` budget
-  judges still run and are reported, but don't fail the tier. If the agent
-  has no `release: true` case, the script prints a notice and exits 0.
+  judges (name ends in `_quality`) still run and are reported, but don't
+  fail the tier. If the agent has no `release: true` case, the script
+  prints a notice and exits 0.
+
+In both tiers, the `max_turns`/`max_cost` budget judges run and report
+but gate nothing: no eval declares a threshold for them. Review has no
+`max_turns` judge, because its turn count does not track the work done.
 
 If `EVAL_TIER` is unset, it defaults to `release` when running as a
 cross-repo `workflow_call` under GitHub Actions (`GITHUB_ACTIONS=true` and
@@ -149,8 +153,9 @@ Each case directory under `eval/<agent>/cases/` contains:
 - `input.yaml` — fixture definition (forge, fixture type, title, body,
   PR files). Pull-request cases may add `followup_files` and a
   `prior_review` body/provenance to exercise a re-review.
-- `annotations.yaml` — expected outcomes (labels, review expectations,
-  `max_turns`, `max_cost_usd`). Set `release: true` to include the case
+- `annotations.yaml` — expected outcomes (labels, review expectations)
+  and the report-only budgets: `max_cost_usd`, plus `max_turns` where the
+  eval has a `max_turns` judge. Set `release: true` to include the case
   in `EVAL_TIER=release` runs (see [Tiers](#tiers) above).
 - `repo/` (optional) — base repo contents pushed to main before the
   fixture is created

@@ -10,8 +10,7 @@ findings:
   required:
     - scope-creep
 
-max_turns: 60
-max_cost_usd: 5.00
+max_cost_usd: 2.25
 
 review_expectations: |
   This is a trusted GitHub re-review. The prior review requested documentation

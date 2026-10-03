@@ -8,4 +8,4 @@ state: open
 release: true
 
 max_turns: 40
-max_cost_usd: 2.00
+max_cost_usd: 0.50

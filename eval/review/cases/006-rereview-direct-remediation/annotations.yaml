@@ -13,8 +13,7 @@ findings:
     - scope-exceeded
     - missing-authorization
 
-max_turns: 60
-max_cost_usd: 5.00
+max_cost_usd: 2.75
 
 review_expectations: |
   This is a trusted GitHub re-review whose only follow-up is docs/foo.md. The

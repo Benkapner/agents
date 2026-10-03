@@ -10,8 +10,7 @@ findings:
   required:
     - injection-vuln
 
-max_turns: 60
-max_cost_usd: 5.00
+max_cost_usd: 2.75
 
 review_expectations: |
   This is an app-verified GitHub re-review. The prior structured projection

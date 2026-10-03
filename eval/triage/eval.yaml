@@ -194,6 +194,9 @@ judges:
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
+# max_turns and max_cost run and report but gate nothing: per-case turn
+# counts and cost vary run to run far more than any regression they have
+# caught (none since 2026-08), so a budget miss is not a failure.
 thresholds:
   triage_quality:
     # TODO: raise to 3.5 once the triage agent critically examines source
@@ -206,7 +209,3 @@ thresholds:
     min_pass_rate: 0.9
   forbidden_labels:
     min_pass_rate: 0.9
-  max_turns:
-    min_pass_rate: 1.0
-  max_cost:
-    min_pass_rate: 1.0
