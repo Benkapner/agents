@@ -120,12 +120,22 @@ case "${FORGE}:${FIXTURE_TYPE}" in
     # Optional fixture.labels: labels the issue already carries when the
     # agent starts, e.g. ready-to-code for a code case (the code agent is
     # dispatched only after triage applies it).
-    while IFS= read -r label; do
+    if ! yq -e '(.fixture.labels // []) | type == "!!seq"' "$INPUT" >/dev/null; then
+      echo "ERROR: fixture.labels must be a list" >&2
+      exit 1
+    fi
+    mapfile -t fixture_labels < <(yq -r '.fixture.labels // [] | .[]' "$INPUT")
+    for label in "${fixture_labels[@]}"; do
       [[ -n "$label" ]] || continue
+      # gh issue edit --add-label splits its value on commas.
+      if [[ "$label" == *,* ]]; then
+        echo "ERROR: fixture label '${label}' contains a comma" >&2
+        exit 1
+      fi
       gh label create "$label" --repo "$EPHEMERAL_REPO" --force >/dev/null
       gh issue edit "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --add-label "$label" >/dev/null
       echo "Labeled issue: $label"
-    done < <(yq -r '.fixture.labels // [] | .[]' "$INPUT")
+    done
     ;;
   github:pull_request)
     PR_BRANCH="${FIXTURE_HEAD:-eval-pr-$(date +%s)-$$}"

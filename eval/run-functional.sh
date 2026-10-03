@@ -45,8 +45,8 @@
 #       scored cases (a quality regression), or score.py failed without a
 #       regression list (a crash or a config error)
 #   3 — infrastructure, not an agent or quality result: every failed case
-#       failed before the agent ran (non-zero exit other than the harness
-#       timeout, no turns, no cost) on its first run and on one retry, or
+#       failed before the agent ran (non-zero exit other than a timeout,
+#       no turns, cost or tokens) on its first run and on one retry, or
 #       every failing threshold is explained by LLM judge calls that errored
 #       (an error_rate gate, or a judge left with no score), after one
 #       scoring retry
@@ -266,28 +266,34 @@ execute_run() {
       case_name=$(basename "$ws_case")
       if [[ -d "$ws_case/output" ]]; then
         mkdir -p "$run_dir/cases/${case_name}/output"
-        cp -a "$ws_case/output/." "$run_dir/cases/${case_name}/output/"
+        if ! cp -a "$ws_case/output/." "$run_dir/cases/${case_name}/output/"; then
+          echo "ERROR: copying ${case_name} output into ${run_dir} failed" >&2
+          return 2
+        fi
       fi
     done
   fi
 }
 
-# A case that exited non-zero with no agent turns and no cost never reached
-# the agent: a fixture, sandbox, provider or profile setup failure (e.g. a
-# provider profile reported missing right after import). Exit -1 is the
-# harness's own timeout, which kills the run before metrics are copied and
-# so also records no turns or cost; it is an agent that ran too long, not a
-# setup failure, so it is left out. Prints one case name per line.
+# A case that exited non-zero with no agent turns, no cost and no tokens
+# never reached the agent: a fixture, sandbox, provider or profile setup
+# failure (e.g. a provider profile reported missing right after import), or
+# a runner that could not start. A timed-out agent is left out: the
+# script's own `timeout` (exit 124, or 137 after SIGKILL) and the harness
+# timeout (exit -1) cut the run before its final turn and cost totals, so
+# those can read 0, but the agent ran (tokens are recorded as it goes).
+# Prints one case name per line.
 pre_agent_failures() {
   local case_dir case_name run_result
   for case_dir in "${case_dirs[@]}"; do
     case_name="$(basename "$case_dir")"
     run_result="$RUN_DIR/cases/${case_name}/run_result.json"
     [[ -f "$run_result" ]] || continue
-    if jq -e '(.exit_code // 0) != 0
-              and (.exit_code // 0) != -1
+    if jq -e '(.exit_code // 0) as $e
+              | $e != 0 and ([-1, 124, 137] | index($e) | not)
               and ((.num_turns // 0) == 0)
-              and ((.cost_usd // 0) == 0)' "$run_result" >/dev/null 2>&1; then
+              and ((.cost_usd // 0) == 0)
+              and (([(.token_usage // {})[]?] | add // 0) == 0)' "$run_result" >/dev/null 2>&1; then
       echo "$case_name"
     fi
   done
@@ -321,7 +327,9 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
   RETRY_RUN_ID="${RUN_ID}-retry"
   RETRY_RUN_DIR="${RUNS_DIR}/${RETRY_RUN_ID}"
   first_exec_exit=$exec_exit
-  if execute_run "$RETRY_YAML" "$RETRY_RUN_ID" "$RETRY_RUN_DIR"; then
+  retry_rc=0
+  execute_run "$RETRY_YAML" "$RETRY_RUN_ID" "$RETRY_RUN_DIR" || retry_rc=$?
+  if [[ $retry_rc -eq 0 ]]; then
     for case_name in "${retry_cases[@]}"; do
       retried="${RETRY_RUN_DIR}/cases/${case_name}"
       [[ -d "$retried" ]] || continue
@@ -330,11 +338,19 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
       # score.py also reads each case's record from the run-level
       # run_result.json; point it at the retry's.
       if [[ -f "${RUN_DIR}/run_result.json" && -f "${retried}/run_result.json" ]]; then
-        jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" \
-          '.per_case[$c] = $r[0]' "${RUN_DIR}/run_result.json" > "${RUN_DIR}/run_result.json.tmp" \
-          && mv "${RUN_DIR}/run_result.json.tmp" "${RUN_DIR}/run_result.json"
+        # Only per_case is updated; the run-level totals (cost, turns,
+        # tokens) still describe the first attempt and leave out the
+        # retry's spend, which the retry's own run directory records.
+        if ! { jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" \
+                 '.per_case[$c] = $r[0]' "${RUN_DIR}/run_result.json" > "${RUN_DIR}/run_result.json.tmp" \
+               && mv "${RUN_DIR}/run_result.json.tmp" "${RUN_DIR}/run_result.json"; }; then
+          echo "WARNING: could not update run_result.json per_case for ${case_name}" >&2
+        fi
       fi
     done
+  elif [[ $retry_rc -eq 2 ]]; then
+    echo "WARNING: the retry ran but its output could not be copied; keeping the first attempt's results" >&2
+    exec_exit=$first_exec_exit
   else
     echo "WARNING: the retry could not start; keeping the first attempt's results" >&2
     exec_exit=$first_exec_exit
@@ -409,15 +425,15 @@ run_score() {
   return "$rc"
 }
 
-# LLM judges whose model call errored on at least one case, sorted, one per
-# line. A check judge that raises, or a judge's own `if:` condition raising,
-# is a bug in the eval (possibly in the change under test), not a failed
-# call, so only judge_type llm counts and "Condition error" entries are
-# left out.
+# Model-backed judges (judge_type llm or agent) whose call errored on at
+# least one case, sorted, one per line. A check judge that raises, or a
+# judge's own `if:` condition raising, is a bug in the eval (possibly in the
+# change under test), not a failed call, so other judge types and
+# "Condition error" entries are left out.
 errored_judges() {
   [[ -f "$SUMMARY_YAML" ]] || return 0
   yq -r '[.per_case[] | to_entries[]
-          | select(.value.judge_type == "llm" and .value.error != null
+          | select((.value.judge_type == "llm" or .value.judge_type == "agent") and .value.error != null
                    and (.value.error | test("^Condition error") | not))
           | .key] | .[]' "$SUMMARY_YAML" 2>/dev/null | sort -u || true
 }

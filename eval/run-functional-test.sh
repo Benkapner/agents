@@ -123,9 +123,12 @@ case "${1:-}" in
     if [[ -n "$results" && -n "$output_arg" ]]; then
       IFS=',' read -ra pairs <<< "${results}"
       for pair in "${pairs[@]}"; do
-        IFS=':' read -r name code turns <<< "$pair"
+        IFS=':' read -r name code turns tokens <<< "$pair"
         mkdir -p "${output_arg}/cases/${name}"
-        if [[ -n "${turns:-}" ]]; then
+        if [[ -n "${tokens:-}" ]]; then
+          printf '{"exit_code": %s, "num_turns": %s, "cost_usd": 0, "token_usage": {"input": %s, "output": 0}}\n' \
+            "$code" "${turns:-0}" "$tokens" > "${output_arg}/cases/${name}/run_result.json"
+        elif [[ -n "${turns:-}" ]]; then
           printf '{"exit_code": %s, "num_turns": %s, "cost_usd": 0.05}\n' "$code" "$turns" \
             > "${output_arg}/cases/${name}/run_result.json"
         else
@@ -135,7 +138,7 @@ case "${1:-}" in
       done
       # Run-level record, as execute.py writes it: per_case mirrors each
       # case's run_result.json.
-      jq -n --arg d "${output_arg}/cases" '{per_case: {}}' > "${output_arg}/run_result.json"
+      jq -n '{per_case: {}}' > "${output_arg}/run_result.json"
       for rr in "${output_arg}"/cases/*/run_result.json; do
         cname="$(basename "$(dirname "$rr")")"
         jq --arg c "$cname" --slurpfile r "$rr" '.per_case[$c] = $r[0]' \
@@ -565,6 +568,34 @@ if [[ $RC -eq 1 && "$CALLS" == "1" ]] && ! echo "$OUT" | grep -q "Retrying"; the
   pass "a harness timeout (exit -1, no turns) is not retried as a setup failure and exits 1"
 else
   fail "a harness timeout (exit -1, no turns) is not retried as a setup failure and exits 1 (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+for tcode in 124 137; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+    STUB_CASE_RESULTS="001-release-case:${tcode},002-full-only-case:0:5" 2>&1) || RC=$?
+  CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+  if [[ $RC -eq 1 && "$CALLS" == "1" ]] && ! echo "$OUT" | grep -q "Retrying"; then
+    pass "a script timeout (exit ${tcode}) is not retried as a setup failure and exits 1"
+  else
+    fail "a script timeout (exit ${tcode}) is not retried as a setup failure and exits 1 (rc=$RC, calls=$CALLS, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:1:0:1200,002-full-only-case:0:5" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && ! echo "$OUT" | grep -q "Retrying"; then
+  pass "a failure with recorded tokens but no final turn count is an agent failure, not retried"
+else
+  fail "a failure with recorded tokens but no final turn count is an agent failure, not retried (rc=$RC, calls=$CALLS, output: $OUT)"
 fi
 rm -rf "$ROOT"
 
