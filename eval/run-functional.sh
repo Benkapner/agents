@@ -37,6 +37,14 @@
 #                   rather than a pinned commit). Otherwise defaults to
 #                   "full". Any other value is an error.
 #   GOOGLE_APPLICATION_CREDENTIALS, ANTHROPIC_VERTEX_PROJECT_ID, etc.
+#
+# Exit status:
+#   0 — every phase passed
+#   1 — a case failed to run, or a judge threshold failed on scored cases
+#       (a quality regression)
+#   3 — every failing threshold belongs to a judge whose calls errored
+#       (after one scoring retry): a judge infrastructure error, reported
+#       with the error text, not a quality regression
 #   AGENT_EVAL_HARNESS_DIR — path to agent-eval-harness
 set -euo pipefail
 
@@ -293,10 +301,65 @@ echo "=== Scoring ==="
 if [[ -n "${EVALS_HOST_CREDENTIALS:-}" ]]; then
   export GOOGLE_APPLICATION_CREDENTIALS="$EVALS_HOST_CREDENTIALS"
 fi
-AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
-  python3 "$SCORE_PY" judges \
-    --run-id "$RUN_ID" \
-    --config "$EVAL_YAML"
+SCORE_LOG="${RUN_DIR}/score.log"
+SUMMARY_YAML="${RUN_DIR}/summary.yaml"
+
+# score.py exits 1 for any threshold miss, including one caused only by
+# judge calls that errored (a 400 from the model API, an unparseable
+# reply): those cases carry an `error:` entry and a null score. Capture
+# its output instead of letting set -e end the script, so a judge error is
+# reported as infrastructure, not as a quality regression.
+run_score() {
+  local rc=0
+  AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
+    python3 "$SCORE_PY" judges \
+      --run-id "$RUN_ID" \
+      --config "$EVAL_YAML" 2>&1 | tee "$SCORE_LOG" || rc=$?
+  return "$rc"
+}
+
+# Judges with at least one errored case, one name per line.
+errored_judges() {
+  [[ -f "$SUMMARY_YAML" ]] || return 0
+  yq -r '[.per_case[] | to_entries[] | select(.value.error != null) | .key] | unique | .[]' \
+    "$SUMMARY_YAML" 2>/dev/null || true
+}
+
+# Judges score.py listed under "REGRESSIONS: N detected", one per line.
+regressed_judges() {
+  awk '/REGRESSIONS: [0-9]+ detected/ {in_list = 1; next}
+       in_list && match($0, /^ +\[[A-Za-z0-9_.-]+\] /) {
+         name = substr($0, RSTART, RLENGTH); gsub(/[][ ]/, "", name); print name; next }
+       in_list {in_list = 0}' "$SCORE_LOG" | sort -u
+}
+
+score_exit=0
+run_score || score_exit=$?
+if [[ $score_exit -ne 0 && -n "$(errored_judges)" ]]; then
+  # One retry: a transient API failure that outlived the SDK's own retries
+  # often clears on a second pass. A deterministic error (such as a prompt
+  # over the model's input limit) fails the same way twice.
+  echo "Judge call(s) errored ($(errored_judges | paste -sd, -)); retrying scoring once" >&2
+  score_exit=0
+  run_score || score_exit=$?
+fi
+
+judge_infra_error=false
+if [[ $score_exit -ne 0 ]]; then
+  errored="$(errored_judges)"
+  regressed="$(regressed_judges)"
+  # Every listed regression comes from a judge that errored, or score.py
+  # failed without listing any: an infrastructure failure.
+  if [[ -z "$regressed" ]] || [[ -z "$(comm -23 <(printf '%s\n' "$regressed") <(printf '%s\n' "$errored"))" ]]; then
+    judge_infra_error=true
+  fi
+  while IFS= read -r judge; do
+    [[ -n "$judge" ]] || continue
+    count="$(yq -r "[.per_case[] | select(.[\"${judge}\"].error != null)] | length" "$SUMMARY_YAML")"
+    first_error="$(yq -r "[.per_case[] | .[\"${judge}\"].error | select(. != null)] | .[0]" "$SUMMARY_YAML" | head -c 300)"
+    echo "JUDGE ERROR: ${judge} errored on ${count} case(s); first error: ${first_error}" >&2
+  done <<< "$errored"
+fi
 
 echo ""
 if [[ ${#case_failures[@]} -gt 0 ]]; then
@@ -305,6 +368,14 @@ if [[ ${#case_failures[@]} -gt 0 ]]; then
 fi
 if [[ $exec_exit -ne 0 ]]; then
   echo "=== RESULT: execute.py exited ${exec_exit} ===" >&2
+  exit 1
+fi
+if [[ "$judge_infra_error" == "true" ]]; then
+  echo "=== RESULT: judge infrastructure error (not a quality regression) ===" >&2
+  exit 3
+fi
+if [[ $score_exit -ne 0 ]]; then
+  echo "=== RESULT: quality regression (score.py exited ${score_exit}) ===" >&2
   exit 1
 fi
 echo "=== RESULT: All phases complete ==="

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for run-functional.sh's tier selection, release-tier case
-# filtering/gating, and the non-zero-case-exit ("false green") fix.
+# filtering/gating, the non-zero-case-exit ("false green") fix, and the
+# judge-error classification (infrastructure vs quality regression).
 #
 # Every invocation of the script under test runs with `env -i` and a
 # minimal stub PATH: a per-test bin/ directory stubs python3 (standing in
@@ -123,6 +124,30 @@ case "${1:-}" in
     exit "${STUB_EXECUTE_EXIT:-0}"
     ;;
   *score.py)
+    # Per-call behaviour for the judge-error tests: call N (1-based) uses
+    # STUB_SCORE_EXITS' Nth comma-separated exit code, prints
+    # STUB_SCORE_OUT_<N> and writes STUB_SUMMARY_<N> as the run's
+    # summary.yaml. Without them, exit STUB_SCORE_EXIT.
+    n=$(( $(cat "${CAPTURE_DIR}/score-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "${CAPTURE_DIR}/score-calls"
+    run_id=""
+    prev=""
+    for a in "$@"; do
+      [[ "$prev" == "--run-id" ]] && run_id="$a"
+      prev="$a"
+    done
+    summary_var="STUB_SUMMARY_${n}"
+    out_var="STUB_SCORE_OUT_${n}"
+    if [[ -n "${!summary_var:-}" ]]; then
+      for d in "${AGENT_EVAL_RUNS_DIR}"/*/"${run_id}"; do
+        printf '%b' "${!summary_var}" > "${d}/summary.yaml"
+      done
+    fi
+    [[ -n "${!out_var:-}" ]] && printf '%b' "${!out_var}"
+    if [[ -n "${STUB_SCORE_EXITS:-}" ]]; then
+      IFS=',' read -ra codes <<< "${STUB_SCORE_EXITS}"
+      exit "${codes[$((n - 1))]:-0}"
+    fi
     exit "${STUB_SCORE_EXIT:-0}"
     ;;
   *)
@@ -432,6 +457,80 @@ if [[ $RC -eq 0 && ${#LEFTOVER[@]} -eq 0 ]]; then
   pass "release tier succeeds and removes its staged release-cases dir"
 else
   fail "release tier succeeds and removes its staged release-cases dir (rc=$RC, leftover: ${LEFTOVER[*]:-none}, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
+# Judge errors: a threshold miss caused only by judge calls that errored is
+# a judge infrastructure error (exit 3, one scoring retry), not a quality
+# regression (exit 1).
+# ---------------------------------------------------------------------------
+
+ERRORED_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      error: "Error code: 400 - prompt is too long"\n      value: null\n  002-full-only-case:\n    agent_quality:\n      error: "Error code: 400 - prompt is too long"\n      value: null\n    deterministic_check:\n      value: true\n'
+MIXED_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      error: "Error code: 400 - prompt is too long"\n      value: null\n    deterministic_check:\n      value: false\n'
+CLEAN_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      value: 4\n  002-full-only-case:\n    agent_quality:\n      value: 4\n'
+QUALITY_REGRESSION_OUT='\n  REGRESSIONS: 1 detected\n    [agent_quality] mean: >= 3.0 -> n/a\n'
+MIXED_REGRESSION_OUT='\n  REGRESSIONS: 2 detected\n    [agent_quality] mean: >= 3.0 -> n/a\n    [deterministic_check] pass_rate: >= 1.0 -> 0.0\n'
+CASES_OK="001-release-case:0,002-full-only-case:0"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$ERRORED_SUMMARY" STUB_SCORE_OUT_1="$QUALITY_REGRESSION_OUT" \
+  STUB_SUMMARY_2="$ERRORED_SUMMARY" STUB_SCORE_OUT_2="$QUALITY_REGRESSION_OUT" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 3 && "$CALLS" == "2" ]] \
+  && echo "$OUT" | grep -q "RESULT: judge infrastructure error (not a quality regression)" \
+  && echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 2 case(s); first error: Error code: 400 - prompt is too long"; then
+  pass "a threshold miss caused only by judge errors exits 3 after one retry, with the error text"
+else
+  fail "a threshold miss caused only by judge errors exits 3 after one retry, with the error text (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,0" \
+  STUB_SUMMARY_1="$ERRORED_SUMMARY" STUB_SCORE_OUT_1="$QUALITY_REGRESSION_OUT" \
+  STUB_SUMMARY_2="$CLEAN_SUMMARY" STUB_SCORE_OUT_2='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 0 && "$CALLS" == "2" ]] && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "a judge error that clears on the scoring retry passes"
+else
+  fail "a judge error that clears on the scoring retry passes (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$MIXED_SUMMARY" STUB_SCORE_OUT_1="$MIXED_REGRESSION_OUT" \
+  STUB_SUMMARY_2="$MIXED_SUMMARY" STUB_SCORE_OUT_2="$MIXED_REGRESSION_OUT" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "RESULT: quality regression" \
+  && echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 1 case(s)"; then
+  pass "a regression on a scored judge stays a quality regression (exit 1) and still reports the judge error"
+else
+  fail "a regression on a scored judge stays a quality regression (exit 1) and still reports the judge error (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1" \
+  STUB_SUMMARY_1="$CLEAN_SUMMARY" STUB_SCORE_OUT_1="$QUALITY_REGRESSION_OUT" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && echo "$OUT" | grep -q "RESULT: quality regression (score.py exited 1)"; then
+  pass "a regression with no judge errors exits 1 without a scoring retry"
+else
+  fail "a regression with no judge errors exits 1 without a scoring retry (rc=$RC, calls=$CALLS, output: $OUT)"
 fi
 rm -rf "$ROOT"
 
