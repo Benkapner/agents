@@ -6,7 +6,10 @@ name: Functional Tests
 #
 # Each change runs the full tier once, in the merge queue, on the commit that
 # lands. PR runs use the release tier (one release:true case per agent)
-# unless the PR carries the eval-full label. There is no push-to-main run:
+# unless the PR carries the eval-full label. Applying eval-full does not
+# start a run by itself (only ok-to-test does, so authorization stays
+# tied to a fresh ok-to-test); it applies from the next push or
+# ok-to-test run. There is no push-to-main run:
 # the merge queue already tested that merge commit, and the nightly
 # (functional-tests-nightly.yml) runs the full tier for every agent.
 
@@ -71,9 +74,7 @@ jobs:
     # Never checkout github.event.pull_request.head.sha here.
     if: >-
       github.event_name == 'pull_request_target' &&
-      (github.event.action != 'labeled' ||
-       github.event.label.name == 'ok-to-test' ||
-       github.event.label.name == 'eval-full')
+      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

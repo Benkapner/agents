@@ -53,7 +53,7 @@ full tier once:
 
 | Event | Tier |
 |---|---|
-| Pull request | `release`. Add the `eval-full` label to run `full` on the PR. |
+| Pull request | `release`. With the `eval-full` label, `full`, from the next push or `ok-to-test` run (adding the label alone starts no run). |
 | Merge queue | `full`, on the commit that lands |
 | Nightly (`functional-tests-nightly.yml`) | `full`, every agent, report-only |
 | Manual dispatch, cross-repo `workflow_call` | the `tier` input, or the script default |

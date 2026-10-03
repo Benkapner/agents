@@ -598,6 +598,16 @@ done
 
 run_test
 FIXTURE="$(setup_fixture)"
+RESULT=$(echo "eval/scripts/scrub-eval-results-test.sh" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ -z "$RESULT" ]]; then
+  pass "an eval script's own test file selects nothing"
+else
+  fail "an eval script's own test file selects nothing (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+run_test
+FIXTURE="$(setup_fixture)"
 RESULT=$(echo "eval/README.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 if [[ -z "$RESULT" ]]; then
   pass "an eval/ file outside any agent and the runner selects nothing"

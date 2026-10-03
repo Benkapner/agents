@@ -57,6 +57,8 @@ extract_refs() {
 select_all=false
 for changed in "${CHANGED_FILES[@]}"; do
   case "$changed" in
+    # A script's own test file does not change what any eval runs.
+    eval/scripts/*-test.sh) ;;
     config.yaml|eval/run-functional.sh|eval/scripts/*|eval/.agent-eval-harness|eval/.agent-eval-harness/*)
       select_all=true
       break
