@@ -12,11 +12,8 @@ effort: high
 image: ghcr.io/fullsend-ai/fullsend-code@sha256:d681249e95e6a26e31cf4f5192ee7ed7c9ed050d03bb4d80b40a3bf252238103
 policy: policies/base.yaml
 readonly_repo: true
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml
 providers:
-  - providers/vertex-ai.yaml
+  - vertex-ai
   - openai
 
 role: review
@@ -82,10 +79,7 @@ timeout_minutes: 45
 forge:
   github:
     providers:
-      - providers/github-ro.yaml
-    openshell:
-      profiles:
-        - profiles/fullsend-github-ro.yaml
+      - github-ro
     skills:
       - skills/github-forge
       - skills/issue-labels/github

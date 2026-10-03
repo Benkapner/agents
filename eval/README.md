@@ -28,13 +28,18 @@ Results are written to `eval/runs/<agent>/<run-id>/`.
 `EVAL_TIER` selects how many cases run and what gates the result:
 
 - **`full`** (default) — runs every case in `cases/`, as described above.
-  This is what agents PR/push/merge-queue/dispatch runs and local runs use.
+  This is what local runs, merge-queue runs, the nightly run and PRs with
+  the `eval-full` label use.
 - **`release`** — runs only this agent's case(s) whose `annotations.yaml`
   sets `release: true`, and fails only on a non-zero case exit or a
   deterministic judge (e.g. `required_labels`, `forbidden_labels`). LLM
-  judges (name ends in `_quality`) and the `max_turns`/`max_cost` budget
-  judges still run and are reported, but don't fail the tier. If the agent
-  has no `release: true` case, the script prints a notice and exits 0.
+  judges (name ends in `_quality`) still run and are reported, but don't
+  fail the tier. If the agent has no `release: true` case, the script
+  prints a notice and exits 0.
+
+In both tiers, the `max_turns`/`max_cost` budget judges run and report
+but gate nothing: no eval declares a threshold for them. Review has no
+`max_turns` judge, because its turn count does not track the work done.
 
 If `EVAL_TIER` is unset, it defaults to `release` when running as a
 cross-repo `workflow_call` under GitHub Actions (`GITHUB_ACTIONS=true` and
@@ -46,6 +51,19 @@ wins over the default.
 ```bash
 EVAL_ORG=my-org EVAL_TIER=release ./eval/run-functional.sh review
 ```
+
+In CI (`.github/workflows/functional-tests.yml`), each change runs the
+full tier once:
+
+| Event | Tier |
+|---|---|
+| Pull request | `release`. With the `eval-full` label, `full`, from the next push or `ok-to-test` run (adding the label alone starts no run). |
+| Merge queue | `full`, on the commit that lands |
+| Nightly (`functional-tests-nightly.yml`) | `full`, every agent, report-only |
+| Manual dispatch, cross-repo `workflow_call` | the `tier` input, or the script default |
+
+There is no run on push to `main`: the merge queue already tested that
+commit.
 
 ### Linting cases
 
@@ -133,10 +151,14 @@ the ability to create PRs and post comments during the agent run.
 Each case directory under `eval/<agent>/cases/` contains:
 
 - `input.yaml` — fixture definition (forge, fixture type, title, body,
-  PR files). Pull-request cases may add `followup_files` and a
-  `prior_review` body/provenance to exercise a re-review.
-- `annotations.yaml` — expected outcomes (labels, review expectations,
-  `max_turns`, `max_cost_usd`). Set `release: true` to include the case
+  PR files). Issue cases may set `labels`, applied before the agent runs
+  (e.g. `ready-to-code` for a code case). Pull-request cases may add
+  `followup_files` and a `prior_review` body/provenance to exercise a
+  re-review. Each PR file is written ending with exactly one final
+  newline, whatever block style its `content` uses.
+- `annotations.yaml` — expected outcomes (labels, review expectations)
+  and the report-only budgets: `max_cost_usd`, plus `max_turns` where the
+  eval has a `max_turns` judge. Set `release: true` to include the case
   in `EVAL_TIER=release` runs (see [Tiers](#tiers) above).
 - `repo/` (optional) — base repo contents pushed to main before the
   fixture is created

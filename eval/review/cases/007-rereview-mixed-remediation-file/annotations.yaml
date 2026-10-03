@@ -11,8 +11,7 @@ findings:
     - scope-creep
     - unauthorized-change
 
-max_turns: 60
-max_cost_usd: 5.00
+max_cost_usd: 2.50
 
 review_expectations: |
   This trusted GitHub re-review changes only docs/foo.md. The Foo description

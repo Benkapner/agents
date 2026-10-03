@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for run-functional.sh's tier selection, release-tier case
-# filtering/gating, and the non-zero-case-exit ("false green") fix.
+# filtering/gating, the non-zero-case-exit ("false green") fix, and the
+# judge-error classification (infrastructure vs quality regression).
 #
 # Every invocation of the script under test runs with `env -i` and a
 # minimal stub PATH: a per-test bin/ directory stubs python3 (standing in
@@ -111,18 +112,78 @@ case "${1:-}" in
         ls "$dataset_path" > "${CAPTURE_DIR}/staged-cases.txt"
       fi
     fi
-    if [[ -n "${STUB_CASE_RESULTS:-}" && -n "$output_arg" ]]; then
-      IFS=',' read -ra pairs <<< "${STUB_CASE_RESULTS}"
+    # Call N (1-based) uses STUB_CASE_RESULTS_<N> when set, else
+    # STUB_CASE_RESULTS: comma-separated name:exit[:turns[:tokens]]. With
+    # tokens, the record carries token_usage.input, the given turns (default
+    # 0) and cost_usd 0 (an agent cut off before its totals). With turns
+    # only, it carries num_turns and a cost (the agent ran). With neither,
+    # both are null (the case failed before the agent ran).
+    en=$(( $(cat "${CAPTURE_DIR}/execute-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$en" > "${CAPTURE_DIR}/execute-calls"
+    results_var="STUB_CASE_RESULTS_${en}"
+    results="${!results_var:-${STUB_CASE_RESULTS:-}}"
+    if [[ -n "$results" && -n "$output_arg" ]]; then
+      IFS=',' read -ra pairs <<< "${results}"
       for pair in "${pairs[@]}"; do
-        name="${pair%%:*}"
-        code="${pair##*:}"
+        IFS=':' read -r name code turns tokens <<< "$pair"
         mkdir -p "${output_arg}/cases/${name}"
-        printf '{"exit_code": %s}\n' "$code" > "${output_arg}/cases/${name}/run_result.json"
+        if [[ -n "${tokens:-}" ]]; then
+          printf '{"exit_code": %s, "num_turns": %s, "cost_usd": 0, "token_usage": {"input": %s, "output": 0}}\n' \
+            "$code" "${turns:-0}" "$tokens" > "${output_arg}/cases/${name}/run_result.json"
+        elif [[ -n "${turns:-}" ]]; then
+          printf '{"exit_code": %s, "num_turns": %s, "cost_usd": 0.05}\n' "$code" "$turns" \
+            > "${output_arg}/cases/${name}/run_result.json"
+        else
+          printf '{"exit_code": %s, "num_turns": null, "cost_usd": null}\n' "$code" \
+            > "${output_arg}/cases/${name}/run_result.json"
+        fi
+      done
+      # Run-level record, as execute.py writes it: per_case mirrors each
+      # case's run_result.json.
+      jq -n '{per_case: {}}' > "${output_arg}/run_result.json"
+      for rr in "${output_arg}"/cases/*/run_result.json; do
+        cname="$(basename "$(dirname "$rr")")"
+        jq --arg c "$cname" --slurpfile r "$rr" '.per_case[$c] = $r[0]' \
+          "${output_arg}/run_result.json" > "${output_arg}/run_result.json.tmp"
+        mv "${output_arg}/run_result.json.tmp" "${output_arg}/run_result.json"
       done
     fi
     exit "${STUB_EXECUTE_EXIT:-0}"
     ;;
+  *workspace.py)
+    wn=$(( $(cat "${CAPTURE_DIR}/workspace-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$wn" > "${CAPTURE_DIR}/workspace-calls"
+    if [[ -n "${STUB_WORKSPACE_EXITS:-}" ]]; then
+      IFS=',' read -ra wcodes <<< "${STUB_WORKSPACE_EXITS}"
+      exit "${wcodes[$((wn - 1))]:-0}"
+    fi
+    exit 0
+    ;;
   *score.py)
+    # Per-call behaviour for the judge-error tests: call N (1-based) uses
+    # STUB_SCORE_EXITS' Nth comma-separated exit code, prints
+    # STUB_SCORE_OUT_<N> and writes STUB_SUMMARY_<N> as the run's
+    # summary.yaml. Without them, exit STUB_SCORE_EXIT.
+    n=$(( $(cat "${CAPTURE_DIR}/score-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "${CAPTURE_DIR}/score-calls"
+    run_id=""
+    prev=""
+    for a in "$@"; do
+      [[ "$prev" == "--run-id" ]] && run_id="$a"
+      prev="$a"
+    done
+    summary_var="STUB_SUMMARY_${n}"
+    out_var="STUB_SCORE_OUT_${n}"
+    if [[ -n "${!summary_var:-}" ]]; then
+      for d in "${AGENT_EVAL_RUNS_DIR}"/*/"${run_id}"; do
+        printf '%b' "${!summary_var}" > "${d}/summary.yaml"
+      done
+    fi
+    [[ -n "${!out_var:-}" ]] && printf '%b' "${!out_var}"
+    if [[ -n "${STUB_SCORE_EXITS:-}" ]]; then
+      IFS=',' read -ra codes <<< "${STUB_SCORE_EXITS}"
+      exit "${codes[$((n - 1))]:-0}"
+    fi
     exit "${STUB_SCORE_EXIT:-0}"
     ;;
   *)
@@ -432,6 +493,336 @@ if [[ $RC -eq 0 && ${#LEFTOVER[@]} -eq 0 ]]; then
   pass "release tier succeeds and removes its staged release-cases dir"
 else
   fail "release tier succeeds and removes its staged release-cases dir (rc=$RC, leftover: ${LEFTOVER[*]:-none}, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
+# Cases that fail before the agent runs (no turns, no cost) are retried once;
+# if they fail again, the run is an infrastructure failure (exit 3).
+# ---------------------------------------------------------------------------
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+STAGED="$(cat "${ROOT}/capture/staged-cases.txt" 2>/dev/null || true)"
+LEFTOVER=( "${ROOT}"/eval/testagent/retry-cases-* "${ROOT}"/eval/testagent/eval-retry-*.yaml )
+if [[ $RC -eq 0 && "$CALLS" == "2" && "$STAGED" == "001-release-case" && ! -e "${LEFTOVER[0]}" && ! -e "${LEFTOVER[1]}" ]] \
+  && echo "$OUT" | grep -q "Retrying 1 case(s) that failed before the agent ran: 001-release-case" \
+  && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "a case that failed before the agent ran is retried alone, and passes when the retry does"
+else
+  fail "a case that failed before the agent ran is retried alone, and passes when the retry does (rc=$RC, calls=$CALLS, staged='$STAGED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:1" 2>&1) || RC=$?
+if [[ $RC -eq 3 ]] && echo "$OUT" | grep -q "RESULT: 1 case(s) failed before the agent ran (setup or infrastructure, not an agent result)"; then
+  pass "a case that fails before the agent ran twice exits 3 as infrastructure"
+else
+  fail "a case that fails before the agent ran twice exits 3 as infrastructure (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:1:7,002-full-only-case:0:5" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && echo "$OUT" | grep -q "RESULT: 1 case(s) failed ===" \
+  && ! echo "$OUT" | grep -q "Retrying"; then
+  pass "a case that failed after the agent ran is not retried and exits 1"
+else
+  fail "a case that failed after the agent ran is not retried and exits 1 (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:1:7" \
+  STUB_CASE_RESULTS_2="001-release-case:1" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "RESULT: 2 case(s) failed ===" \
+  && echo "$OUT" | grep -q "of which failed before the agent ran (setup or infrastructure, after one retry): 001-release-case"; then
+  pass "an agent failure alongside a setup failure exits 1 and names the setup failure"
+else
+  fail "an agent failure alongside a setup failure exits 1 and names the setup failure (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:-1,002-full-only-case:0:5" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && ! echo "$OUT" | grep -q "Retrying"; then
+  pass "a harness timeout (exit -1, no turns) is not retried as a setup failure and exits 1"
+else
+  fail "a harness timeout (exit -1, no turns) is not retried as a setup failure and exits 1 (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+for tcode in 124 137; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+    STUB_CASE_RESULTS="001-release-case:${tcode},002-full-only-case:0:5" 2>&1) || RC=$?
+  CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+  if [[ $RC -eq 1 && "$CALLS" == "1" ]] && ! echo "$OUT" | grep -q "Retrying"; then
+    pass "a script timeout (exit ${tcode}) is not retried as a setup failure and exits 1"
+  else
+    fail "a script timeout (exit ${tcode}) is not retried as a setup failure and exits 1 (rc=$RC, calls=$CALLS, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:1:0:1200,002-full-only-case:0:5" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && ! echo "$OUT" | grep -q "Retrying"; then
+  pass "a failure with recorded tokens but no final turn count is an agent failure, not retried"
+else
+  fail "a failure with recorded tokens but no final turn count is an agent failure, not retried (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_WORKSPACE_EXITS="0,1" 2>&1) || RC=$?
+if [[ $RC -eq 3 ]] && echo "$OUT" | grep -q "the retry could not start; keeping the first attempt's results" \
+  && echo "$OUT" | grep -q "RESULT: 1 case(s) failed before the agent ran"; then
+  pass "a retry that cannot start keeps the first attempt and still reports a result"
+else
+  fail "a retry that cannot start keeps the first attempt and still reports a result (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" 2>&1) || RC=$?
+RUNREC=""
+for f in "${ROOT}"/eval/runs/testagent/*/run_result.json; do
+  [[ "$f" == *-retry/run_result.json ]] && continue
+  RUNREC="$f"
+  break
+done
+MERGED="$(jq -c '{case: (.per_case["001-release-case"] | {exit_code, num_turns}), exit_code, num_turns}' "$RUNREC" 2>/dev/null || true)"
+if [[ $RC -eq 0 && "$MERGED" == '{"case":{"exit_code":0,"num_turns":4},"exit_code":0,"num_turns":9}' ]]; then
+  pass "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed"
+else
+  fail "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed (rc=$RC, merged='$MERGED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
+# Judge errors: a threshold miss caused only by judge calls that errored is
+# a judge infrastructure error (exit 3, one scoring retry), not a quality
+# regression (exit 1).
+# ---------------------------------------------------------------------------
+
+ERRORED_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 400 - prompt is too long"\n      value: null\n  002-full-only-case:\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 400 - prompt is too long"\n      value: null\n    deterministic_check:\n      value: true\n'
+MIXED_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 400 - prompt is too long"\n      value: null\n    deterministic_check:\n      value: false\n'
+CLEAN_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      value: 4\n  002-full-only-case:\n    agent_quality:\n      value: 4\n'
+QUALITY_REGRESSION_OUT='\n  REGRESSIONS: 1 detected\n    [agent_quality] mean: >= 3.0 -> n/a\n'
+MIXED_REGRESSION_OUT='\n  REGRESSIONS: 2 detected\n    [agent_quality] mean: >= 3.0 -> n/a\n    [deterministic_check] pass_rate: >= 1.0 -> 0.0\n'
+CASES_OK="001-release-case:0:5,002-full-only-case:0:5"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$ERRORED_SUMMARY" STUB_SCORE_OUT_1="$QUALITY_REGRESSION_OUT" \
+  STUB_SUMMARY_2="$ERRORED_SUMMARY" STUB_SCORE_OUT_2="$QUALITY_REGRESSION_OUT" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 3 && "$CALLS" == "2" ]] \
+  && echo "$OUT" | grep -q "RESULT: judge infrastructure error (not a quality regression)" \
+  && echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 2 case(s); first error: Error code: 400 - prompt is too long"; then
+  pass "a threshold miss caused only by judge errors exits 3 after one retry, with the error text"
+else
+  fail "a threshold miss caused only by judge errors exits 3 after one retry, with the error text (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,0" \
+  STUB_SUMMARY_1="$ERRORED_SUMMARY" STUB_SCORE_OUT_1="$QUALITY_REGRESSION_OUT" \
+  STUB_SUMMARY_2="$CLEAN_SUMMARY" STUB_SCORE_OUT_2='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 0 && "$CALLS" == "2" ]] && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "a judge error that clears on the scoring retry passes"
+else
+  fail "a judge error that clears on the scoring retry passes (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$MIXED_SUMMARY" STUB_SCORE_OUT_1="$MIXED_REGRESSION_OUT" \
+  STUB_SUMMARY_2="$MIXED_SUMMARY" STUB_SCORE_OUT_2="$MIXED_REGRESSION_OUT" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "RESULT: quality regression" \
+  && echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 1 case(s)"; then
+  pass "a regression on a scored judge stays a quality regression (exit 1) and still reports the judge error"
+else
+  fail "a regression on a scored judge stays a quality regression (exit 1) and still reports the judge error (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1" \
+  STUB_SUMMARY_1="$CLEAN_SUMMARY" STUB_SCORE_OUT_1="$QUALITY_REGRESSION_OUT" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && echo "$OUT" | grep -q "RESULT: quality regression (score.py exited 1)"; then
+  pass "a regression with no judge errors exits 1 without a scoring retry"
+else
+  fail "a regression with no judge errors exits 1 without a scoring retry (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+PARTIAL_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 529 - overloaded"\n      value: null\n  002-full-only-case:\n    agent_quality:\n      value: 1\n'
+PARTIAL_OUT='\n  REGRESSIONS: 1 detected\n    [agent_quality] mean: >= 3.0 -> 1.0\n'
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$PARTIAL_SUMMARY" STUB_SCORE_OUT_1="$PARTIAL_OUT" \
+  STUB_SUMMARY_2="$PARTIAL_SUMMARY" STUB_SCORE_OUT_2="$PARTIAL_OUT" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "RESULT: quality regression"; then
+  pass "a low mean on a judge that also errored on some cases is a quality regression"
+else
+  fail "a low mean on a judge that also errored on some cases is a quality regression (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1" STUB_SCORE_OUT_1='Traceback (most recent call last):\n  ValueError: bad judge config\n' 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "RESULT: score.py failed (exit 1) without a regression list"; then
+  pass "a score.py crash with no regression list exits 1, not as infrastructure"
+else
+  fail "a score.py crash with no regression list exits 1, not as infrastructure (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+TWO_SUMMARY='per_case:\n  001-release-case:\n    z_quality:\n      judge_type: llm\n      error: "Error code: 400 - x"\n      value: null\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 400 - x"\n      value: null\n'
+TWO_OUT='\n  REGRESSIONS: 2 detected\n    [agent_quality] mean: >= 3.0 -> n/a\n    [z_quality] error_rate: <= 0.2 -> 1.000\n'
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$TWO_SUMMARY" STUB_SCORE_OUT_1="$TWO_OUT" \
+  STUB_SUMMARY_2="$TWO_SUMMARY" STUB_SCORE_OUT_2="$TWO_OUT" 2>&1) || RC=$?
+if [[ $RC -eq 3 ]] && echo "$OUT" | grep -q "JUDGE ERROR: z_quality errored on 1 case(s)"; then
+  pass "two errored judges (unsorted in the summary) still classify as infrastructure"
+else
+  fail "two errored judges (unsorted in the summary) still classify as infrastructure (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$ERRORED_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 2 case(s)"; then
+  pass "judge errors are reported even when no threshold failed"
+else
+  fail "judge errors are reported even when no threshold failed (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:1:7,002-full-only-case:0:5" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$ERRORED_SUMMARY" STUB_SCORE_OUT_1="$QUALITY_REGRESSION_OUT" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]]; then
+  pass "scoring is not retried when a case already failed"
+else
+  fail "scoring is not retried when a case already failed (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+CHECK_SUMMARY='per_case:\n  001-release-case:\n    deterministic_check:\n      judge_type: check\n      error: "KeyError: labels"\n      value: null\n'
+CHECK_OUT='\n  REGRESSIONS: 1 detected\n    [deterministic_check] pass_rate: >= 1.0 -> n/a\n'
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1" STUB_SUMMARY_1="$CHECK_SUMMARY" STUB_SCORE_OUT_1="$CHECK_OUT" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && echo "$OUT" | grep -q "RESULT: quality regression"; then
+  pass "a check judge that raises is an eval bug (exit 1), not a judge infrastructure error"
+else
+  fail "a check judge that raises is an eval bug (exit 1), not a judge infrastructure error (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+INJ_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: "bad\\n::add-mask::secret\\r\\n::set-env name=X::y"\n      value: null\n'
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" GITHUB_ACTIONS=true \
+  STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$INJ_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+if echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 1 case(s)" \
+  && ! echo "$OUT" | grep -qE '^::(add-mask|set-env)'; then
+  pass "judge error text cannot start a workflow command line"
+else
+  fail "judge error text cannot start a workflow command line (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+# 100,000 characters: past the 64 KiB pipe buffer, under Linux's 128 KiB
+# limit on a single environment string.
+BIG_ERR="$(head -c 100000 /dev/zero | tr '\0' 'x')"
+BIG_SUMMARY="per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: \"${BIG_ERR}\"\n      value: null\n"
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$BIG_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 1 case(s)" \
+  && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "a very long judge error is truncated without ending the run"
+else
+  fail "a very long judge error is truncated without ending the run (rc=$RC, output tail: $(echo "$OUT" | tail -3))"
 fi
 rm -rf "$ROOT"
 

@@ -30,21 +30,16 @@ instead — this skill is the authoring procedure, not the evaluation lens.
 | `schemas/<name>-result.schema.json` | Only alongside the prompt and post-script |
 | `scripts/post-<name>.sh` | Only if the result shape changes |
 | `harness/<name>.yaml` (how it runs: image, timeout, trigger) | Only to change how it runs, not what it does |
-| `policies/`, `providers/`, `profiles/` | No — shared by every agent here, with one exception below |
+| `policies/` | No — shared by every agent here |
 
-Until fullsend-ai/fullsend#7883 ships, the generated GitHub provider and
-profile do not declare the token and the harness passes the real `GH_TOKEN`
-into the sandbox. Copy the `credentials:` blocks from
-`examples/link-check/providers/github-ro.yaml` and
-`examples/link-check/profiles/fullsend-github-ro.yaml`, and remove `GH_TOKEN`
-from `env.sandbox` (keep it in `env.runner`). Make both changes, not one.
+The harness names its providers by bare name (`vertex-ai`, `github-ro`, ...).
+`fullsend run` resolves each one to the definition and profile built into the
+fullsend binary, so there are no `providers/` or `profiles/` files to edit or
+keep in sync.
 
-`gh pr` and `gh issue` go through GraphQL, which the generated profile blocks
-(fullsend-ai/fullsend#7014), so use REST via `gh api` — starting with the
-generated first step: replace its `gh issue view` with
-`gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}"`. Build API paths
-from those variables, never from a URL: the sandbox's SSRF hook checks every
-URL in a command and refuses one it cannot resolve or parse.
+Build API paths from `REPO_FULL_NAME` and `ISSUE_NUMBER`, never from a URL:
+the sandbox's SSRF hook checks every URL in a command and refuses one it
+cannot resolve or parse.
 
 ## Procedure
 
