@@ -1064,6 +1064,18 @@ budget section), skip the challenger: keep the merged finding set from
      A `removal_reason` must cite evidence. Missing, incomplete,
      duplicated, ambiguous, unmatched, or evidence-free accounting is a
      failure.
+   - Validate severity and category against the inputs, looked up in the
+     6a–6c set. A `kept` finding's `severity` and `category` must equal its
+     `original_identity` input's. A `downgraded` finding's `severity` must be
+     strictly lower than its input's (critical > high > medium > low > info),
+     its `category` unchanged, and its `challenger_reason` must cite evidence.
+     A `merged` finding's `severity` and `category` must equal those of the
+     highest-severity input among its `merged_from` inputs (ties broken on
+     the more specific remediation), and its `merged_from` must never combine
+     a `correctness`-dimension input with a `security`-dimension input
+     (resolve the dimension from the input's `category` via the mapping in
+     `references/re-review.md`). Any violation is invalid adjudication
+     accounting, so the step 4 fallback applies.
    - Strip `challenger_action`, `challenger_reason`, `original_identity`,
      and `merged_from` from `adjudicated_findings` after accounting; log but
      do not emit them.

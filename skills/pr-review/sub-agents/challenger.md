@@ -40,7 +40,11 @@ For each finding:
    relative to the codebase context.
 3. **Identify duplicates.** Findings from different dimensions that
    describe the same underlying issue should be merged. Keep the
-   higher severity and the more specific remediation.
+   higher severity and the more specific remediation. Exception: never
+   merge a correctness-category finding with a security-category finding
+   (the categories are listed in Constraints) — step 6c keeps them
+   distinct (a logic error and an auth bypass on the same line are two
+   findings).
 4. **Challenge weak reasoning.** If a finding's description is vague,
    speculative, or not supported by the diff, mark it for removal.
 5. **Challenge verification claims.** If the aggregated output contains
@@ -102,10 +106,10 @@ records the single input this entry retains; its `description` is the
 verbatim original, so a line-less input matches on it even when the emitted
 `description` is amended. `merged_from` is required for `merged` findings and
 lists every input the merge consolidates (`original_identity` is omitted);
-the entry's top-level `category`, `file`, `line`, and `description` are those
-of the input with the highest severity, breaking ties on the more specific
-remediation. Together with `removed_findings`, these fields must account for
-every challenged input exactly once.
+the entry's top-level `severity`, `category`, `file`, `line`, and `description`
+are those of the input with the highest severity, breaking ties on the more
+specific remediation. Together with `removed_findings`, these fields must
+account for every challenged input exactly once.
 
 ## Constraints
 
@@ -116,6 +120,25 @@ every challenged input exactly once.
 - Read changed files from `/sandbox/workspace/pr-head/` (the PR head), not
   from the repository checkout — that is base-branch code
 - Every removal or downgrade must cite specific evidence from the code
+- A `kept` finding's `severity` and `category` must equal its
+  `original_identity` input's. A `downgraded` finding's `severity` must be
+  strictly lower than its input's (critical > high > medium > low > info), its
+  `category` unchanged, and its `challenger_reason` must cite evidence. A
+  `merged` finding's `severity` and `category` must equal those of the
+  highest-severity input among its `merged_from` inputs (ties broken on the
+  more specific remediation), and its `merged_from` must never combine a
+  correctness-category input with a security-category input. Resolve the
+  dimension from `category`: correctness = `logic-error`, `nil-deref`,
+  `off-by-one`, `edge-case`, `api-contract`, `missing-test`,
+  `test-inadequate`, `pattern-violation`, `test-weakened`, `test-removed`,
+  `mock-loosened`, `assertion-weakened`, `coverage-reduced`,
+  `test-poisoning`, `split-payload`, `stale-reference`; security =
+  `auth-bypass`, `rbac-violation`, `data-exposure`, `privilege-escalation`,
+  `injection-vuln`, `sandbox-escape`, `xss`, `ssrf`,
+  `insecure-deserialization`, `prompt-injection`, `unicode-steganography`,
+  `bidi-override`, `homoglyph-attack`, `instruction-smuggling`, `fail-open`,
+  `permission-expansion`, `permission-reduction`, `role-escalation`,
+  `workflow-permission`, `secret-exposure`.
 - Do not add new findings — only adjudicate existing ones
 - Do not write any files
 - Err on the side of keeping findings when evidence is ambiguous
