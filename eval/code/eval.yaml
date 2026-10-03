@@ -114,9 +114,12 @@ runner:
 # same "advisory / not enforced" class of limitation as max_budget_usd above.
 models:
   skill: claude-sonnet-5-5
-  # The harness forces tool_choice to get a structured judge verdict;
-  # claude-sonnet-5-5 rejects forced tool_choice (400), so the judge
-  # stays on the newest Sonnet that accepts it.
+  # The harness forces tool_choice to get a structured judge verdict.
+  # The eval Vertex project's org policy
+  # (constraints/vertexai.allowedPartnerModelFeatures) does not yet
+  # allow structured outputs for claude-sonnet-5-5, so it returns 400
+  # on forced tool_choice. Move the judge to claude-sonnet-5-5 once
+  # the policy lists claude-sonnet-5-5:structured_outputs.
   judge: claude-sonnet-4-6
 
 dataset:
