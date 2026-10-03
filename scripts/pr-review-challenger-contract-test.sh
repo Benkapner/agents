@@ -79,26 +79,12 @@ assert_contains "sub-agent-failure findings are never challenged" \
 
 assert_contains "ambiguous or incomplete accounting is a failure" \
   "Missing, incomplete, duplicated, ambiguous, unmatched, or evidence-free accounting is a failure."
-assert_contains "kept severity and category match the input" \
-  '`severity` and `category` must equal its `original_identity` input'
-assert_contains "downgraded severity is strictly lower" \
-  '`severity` must be strictly lower than its input'
-assert_contains "severity ordering is defined" \
-  '(critical > high > medium > low > info)'
-assert_contains "downgrade preserves category" \
-  'its `category` unchanged'
-assert_contains "downgrade reason cites evidence" \
-  'its `challenger_reason` must cite evidence'
-assert_contains "merged severity and category equal the highest input" \
-  '`severity` and `category` must equal those of the highest-severity input'
 assert_contains "merge forbids correctness plus security" \
   'never combine a `correctness`-dimension input with a `security`-dimension input'
 assert_contains "severity violation is invalid accounting" \
   'Any violation is invalid adjudication accounting'
 assert_contains "severity and category lookups anchor to the input set" \
   'looked up in the 6a–6c set'
-assert_contains "merged severity tie-break is specified" \
-  '(ties broken on the more specific remediation)'
 assert_contains "merged dimension resolved via category mapping" \
   'resolve the dimension from the input'
 assert_not_contains "empty adjudication is no longer an unconditional failure" \
@@ -175,6 +161,16 @@ assert_contains "constraints inline correctness categories" \
   'correctness = `logic-error`, `nil-deref`'
 assert_contains "constraints inline security categories" \
   'security = `auth-bypass`, `rbac-violation`'
+assert_contains "constraints mirror downgrade strictly lower" \
+  '`severity` must be strictly lower than its input'
+assert_contains "constraints mirror severity ordering" \
+  '(critical > high > medium > low > info)'
+assert_contains "constraints mirror downgrade category unchanged" \
+  'its `category` unchanged'
+assert_contains "constraints mirror downgrade reason evidence" \
+  'its `challenger_reason` must cite evidence'
+assert_contains "constraints mirror merged tie-break" \
+  '(ties broken on the more specific remediation)'
 assert_not_contains "merged entry no longer omits severity" \
   'top-level `category`, `file`, `line`, and `description`'
 

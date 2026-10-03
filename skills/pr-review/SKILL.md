@@ -12,21 +12,13 @@ description: >-
 
 # PR Review (Orchestrator)
 
-(This skill's design departs from ADR-0018 "scripted pipelines for
-multi-agent orchestration". ADR-0018 decided against LLM-based
-orchestration due to non-determinism observed in PR #123 experiments.
-This orchestrator re-introduces LLM-based dispatch with mitigations
-— a fixed sub-agent roster, structured context packages, and
-deterministic post-processing. A superseding ADR is needed to
-formally retire ADR-0018's prohibition.)
+(Departs from ADR-0018's LLM-orchestration prohibition; re-introduces
+LLM dispatch with mitigations — a fixed roster, structured context
+packages, deterministic post-processing. A superseding ADR is needed.)
 
-This skill orchestrates a pull request review by triaging the change,
-dispatching specialized sub-agents in parallel, collecting and
-synthesizing their findings, and producing a structured result. The
-orchestrator does not evaluate code directly — sub-agents handle each
-review dimension independently. It does not evaluate documentation
-directly — the `docs-currency` sub-agent follows the `docs-review`
-skill inline.
+This skill orchestrates a PR review: it triages the change, dispatches
+sub-agents in parallel, and synthesizes their findings. It does not
+evaluate code directly — sub-agents handle each dimension.
 
 In pipeline mode (`$FULLSEND_OUTPUT_DIR` set), it writes JSON for the
 post-script to post. In interactive mode, it posts directly via the
@@ -1065,17 +1057,11 @@ budget section), skip the challenger: keep the merged finding set from
      duplicated, ambiguous, unmatched, or evidence-free accounting is a
      failure.
    - Validate severity and category against the inputs, looked up in the
-     6a–6c set. A `kept` finding's `severity` and `category` must equal its
-     `original_identity` input's. A `downgraded` finding's `severity` must be
-     strictly lower than its input's (critical > high > medium > low > info),
-     its `category` unchanged, and its `challenger_reason` must cite evidence.
-     A `merged` finding's `severity` and `category` must equal those of the
-     highest-severity input among its `merged_from` inputs (ties broken on
-     the more specific remediation), and its `merged_from` must never combine
-     a `correctness`-dimension input with a `security`-dimension input
-     (resolve the dimension from the input's `category` via the mapping in
-     `references/re-review.md`). Any violation is invalid adjudication
-     accounting, so the step 4 fallback applies.
+     6a–6c set (invariants in `challenger.md` Constraints); `merged_from`
+     must never combine a `correctness`-dimension input with a
+     `security`-dimension input (resolve the dimension from the input's
+     `category` per `references/re-review.md`). Any violation is invalid
+     adjudication accounting, so the step 4 fallback applies.
    - Strip `challenger_action`, `challenger_reason`, `original_identity`,
      and `merged_from` from `adjudicated_findings` after accounting; log but
      do not emit them.
@@ -1342,9 +1328,6 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 
 **Formatting rules:**
 
-- **Head SHA** is embedded in a hidden HTML comment on the first line.
-  It is not shown to reviewers but is required for re-review anchoring
-  (the `pre-fetch-prior-review.sh` script extracts it).
 - **No visible SHA, timestamp, or outcome lines.** These are implicit
   in the PR review process (the SHA is pinned via the formal
   review API, the timestamp is on the comment, and the outcome is
@@ -1454,9 +1437,3 @@ wins.
 - **In pipeline mode, review posting is reserved for the post-script.**
   The sandbox token is read-only. Write JSON to
   `$FULLSEND_OUTPUT_DIR/agent-result.json` and exit.
-- **Do not re-execute subagent investigation commands during
-  synthesis.** Subagent tool call outputs are authoritative evidence.
-  The orchestrator must not re-run the same external commands (npm
-  view, forge API calls, etc.) that a subagent already executed unless
-  resolving a specific conflict between subagent findings. See step 6
-  for details.
