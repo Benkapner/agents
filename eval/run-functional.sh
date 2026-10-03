@@ -299,7 +299,7 @@ pre_agent_failures() {
   done
 }
 
-execute_run "$EVAL_YAML" "$RUN_ID" "$RUN_DIR"
+execute_run "$EVAL_YAML" "$RUN_ID" "$RUN_DIR" || exit 1
 
 if [[ $exec_exit -ne 0 ]]; then
   echo "WARNING: execute.py exited $exec_exit" >&2

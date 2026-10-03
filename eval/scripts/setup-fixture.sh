@@ -120,8 +120,9 @@ case "${FORGE}:${FIXTURE_TYPE}" in
     # Optional fixture.labels: labels the issue already carries when the
     # agent starts, e.g. ready-to-code for a code case (the code agent is
     # dispatched only after triage applies it).
-    if ! yq -e '(.fixture.labels // []) | type == "!!seq"' "$INPUT" >/dev/null; then
-      echo "ERROR: fixture.labels must be a list" >&2
+    if [[ "$(yq -r '(.fixture.labels // []) | type' "$INPUT")" != "!!seq" ]] \
+      || [[ "$(yq -r '[(.fixture.labels // [])[] | select(type != "!!str")] | length' "$INPUT")" != "0" ]]; then
+      echo "ERROR: fixture.labels must be a list of label names" >&2
       exit 1
     fi
     mapfile -t fixture_labels < <(yq -r '.fixture.labels // [] | .[]' "$INPUT")

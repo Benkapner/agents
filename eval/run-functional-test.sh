@@ -113,9 +113,11 @@ case "${1:-}" in
       fi
     fi
     # Call N (1-based) uses STUB_CASE_RESULTS_<N> when set, else
-    # STUB_CASE_RESULTS: comma-separated name:exit[:turns]. With turns, the
-    # record carries num_turns and a cost (the agent ran); without, both are
-    # null (the case failed before the agent ran).
+    # STUB_CASE_RESULTS: comma-separated name:exit[:turns[:tokens]]. With
+    # tokens, the record carries token_usage.input, the given turns (default
+    # 0) and cost_usd 0 (an agent cut off before its totals). With turns
+    # only, it carries num_turns and a cost (the agent ran). With neither,
+    # both are null (the case failed before the agent ran).
     en=$(( $(cat "${CAPTURE_DIR}/execute-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$en" > "${CAPTURE_DIR}/execute-calls"
     results_var="STUB_CASE_RESULTS_${en}"
