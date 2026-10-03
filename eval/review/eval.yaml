@@ -66,7 +66,10 @@ runner:
 
 models:
   skill: claude-sonnet-5-5
-  judge: claude-sonnet-5-5
+  # The harness forces tool_choice to get a structured judge verdict;
+  # claude-sonnet-5-5 rejects forced tool_choice (400), so the judge
+  # stays on the newest Sonnet that accepts it.
+  judge: claude-sonnet-4-6
 
 dataset:
   path: cases
