@@ -45,10 +45,11 @@
 #       scored cases (a quality regression), or score.py failed without a
 #       regression list (a crash or a config error)
 #   3 — infrastructure, not an agent or quality result: every failed case
-#       failed before the agent ran (no turns, no cost) on its first run
-#       and on one retry, or every failing threshold is explained by judge
-#       calls that errored (an error_rate gate, or a judge left with no
-#       score), after one scoring retry
+#       failed before the agent ran (non-zero exit other than the harness
+#       timeout, no turns, no cost) on its first run and on one retry, or
+#       every failing threshold is explained by LLM judge calls that errored
+#       (an error_rate gate, or a judge left with no score), after one
+#       scoring retry
 set -euo pipefail
 
 AGENT="${1:?agent name required}"
@@ -237,9 +238,12 @@ execute_run() {
   local config="$1" run_id="$2" run_dir="$3"
   mkdir -p "$run_dir"
   echo "=== Creating workspaces ==="
-  python3 "$WORKSPACE_PY" \
+  if ! python3 "$WORKSPACE_PY" \
     --config "$config" \
-    --run-id "$run_id"
+    --run-id "$run_id"; then
+    echo "ERROR: workspace.py failed for run ${run_id}" >&2
+    return 1
+  fi
 
   echo ""
   echo "=== Executing ==="
@@ -270,8 +274,10 @@ execute_run() {
 
 # A case that exited non-zero with no agent turns and no cost never reached
 # the agent: a fixture, sandbox, provider or profile setup failure (e.g. a
-# provider profile reported missing right after import). Prints one case
-# name per line.
+# provider profile reported missing right after import). Exit -1 is the
+# harness's own timeout, which kills the run before metrics are copied and
+# so also records no turns or cost; it is an agent that ran too long, not a
+# setup failure, so it is left out. Prints one case name per line.
 pre_agent_failures() {
   local case_dir case_name run_result
   for case_dir in "${case_dirs[@]}"; do
@@ -279,6 +285,7 @@ pre_agent_failures() {
     run_result="$RUN_DIR/cases/${case_name}/run_result.json"
     [[ -f "$run_result" ]] || continue
     if jq -e '(.exit_code // 0) != 0
+              and (.exit_code // 0) != -1
               and ((.num_turns // 0) == 0)
               and ((.cost_usd // 0) == 0)' "$run_result" >/dev/null 2>&1; then
       echo "$case_name"
@@ -314,13 +321,24 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
   RETRY_RUN_ID="${RUN_ID}-retry"
   RETRY_RUN_DIR="${RUNS_DIR}/${RETRY_RUN_ID}"
   first_exec_exit=$exec_exit
-  execute_run "$RETRY_YAML" "$RETRY_RUN_ID" "$RETRY_RUN_DIR"
-  for case_name in "${retry_cases[@]}"; do
-    if [[ -d "${RETRY_RUN_DIR}/cases/${case_name}" ]]; then
+  if execute_run "$RETRY_YAML" "$RETRY_RUN_ID" "$RETRY_RUN_DIR"; then
+    for case_name in "${retry_cases[@]}"; do
+      retried="${RETRY_RUN_DIR}/cases/${case_name}"
+      [[ -d "$retried" ]] || continue
       rm -rf "${RUN_DIR}/cases/${case_name}"
-      cp -a "${RETRY_RUN_DIR}/cases/${case_name}" "${RUN_DIR}/cases/${case_name}"
-    fi
-  done
+      cp -a "$retried" "${RUN_DIR}/cases/${case_name}"
+      # score.py also reads each case's record from the run-level
+      # run_result.json; point it at the retry's.
+      if [[ -f "${RUN_DIR}/run_result.json" && -f "${retried}/run_result.json" ]]; then
+        jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" \
+          '.per_case[$c] = $r[0]' "${RUN_DIR}/run_result.json" > "${RUN_DIR}/run_result.json.tmp" \
+          && mv "${RUN_DIR}/run_result.json.tmp" "${RUN_DIR}/run_result.json"
+      fi
+    done
+  else
+    echo "WARNING: the retry could not start; keeping the first attempt's results" >&2
+    exec_exit=$first_exec_exit
+  fi
   # The retry's own exit replaces the first attempt's only when every
   # first-attempt failure was one of the retried cases.
   if [[ $first_exec_exit -ne 0 && $exec_exit -eq 0 ]]; then
@@ -391,13 +409,16 @@ run_score() {
   return "$rc"
 }
 
-# Judges whose call errored on at least one case, sorted, one per line. A
-# judge's own `if:` condition raising is a config bug, not a failed call,
-# so "Condition error" entries are left out.
+# LLM judges whose model call errored on at least one case, sorted, one per
+# line. A check judge that raises, or a judge's own `if:` condition raising,
+# is a bug in the eval (possibly in the change under test), not a failed
+# call, so only judge_type llm counts and "Condition error" entries are
+# left out.
 errored_judges() {
   [[ -f "$SUMMARY_YAML" ]] || return 0
   yq -r '[.per_case[] | to_entries[]
-          | select(.value.error != null and (.value.error | test("^Condition error") | not))
+          | select(.value.judge_type == "llm" and .value.error != null
+                   and (.value.error | test("^Condition error") | not))
           | .key] | .[]' "$SUMMARY_YAML" 2>/dev/null | sort -u || true
 }
 
@@ -407,9 +428,9 @@ errored_judges() {
 # value is n/a and the judge errored. Anything else (including a low mean
 # on a judge that also errored on some cases) is a quality regression.
 unexplained_regressions() {
-  local errored="$1"
-  awk -v errored="$errored" '
-    BEGIN { n = split(errored, e, "\n"); for (i = 1; i <= n; i++) if (e[i] != "") err[e[i]] = 1 }
+  # Through the environment: BSD awk rejects a newline in a -v value.
+  ERRORED_JUDGES="$1" awk '
+    BEGIN { n = split(ENVIRON["ERRORED_JUDGES"], e, "\n"); for (i = 1; i <= n; i++) if (e[i] != "") err[e[i]] = 1 }
     /REGRESSIONS: [0-9]+ detected/ { in_list = 1; next }
     in_list && match($0, /^ +\[[A-Za-z0-9_.-]+\] /) {
       judge = substr($0, RSTART, RLENGTH); gsub(/[][ ]/, "", judge)

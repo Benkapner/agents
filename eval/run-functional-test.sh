@@ -133,8 +133,26 @@ case "${1:-}" in
             > "${output_arg}/cases/${name}/run_result.json"
         fi
       done
+      # Run-level record, as execute.py writes it: per_case mirrors each
+      # case's run_result.json.
+      jq -n --arg d "${output_arg}/cases" '{per_case: {}}' > "${output_arg}/run_result.json"
+      for rr in "${output_arg}"/cases/*/run_result.json; do
+        cname="$(basename "$(dirname "$rr")")"
+        jq --arg c "$cname" --slurpfile r "$rr" '.per_case[$c] = $r[0]' \
+          "${output_arg}/run_result.json" > "${output_arg}/run_result.json.tmp"
+        mv "${output_arg}/run_result.json.tmp" "${output_arg}/run_result.json"
+      done
     fi
     exit "${STUB_EXECUTE_EXIT:-0}"
+    ;;
+  *workspace.py)
+    wn=$(( $(cat "${CAPTURE_DIR}/workspace-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$wn" > "${CAPTURE_DIR}/workspace-calls"
+    if [[ -n "${STUB_WORKSPACE_EXITS:-}" ]]; then
+      IFS=',' read -ra wcodes <<< "${STUB_WORKSPACE_EXITS}"
+      exit "${wcodes[$((wn - 1))]:-0}"
+    fi
+    exit 0
     ;;
   *score.py)
     # Per-call behaviour for the judge-error tests: call N (1-based) uses
@@ -537,14 +555,56 @@ else
 fi
 rm -rf "$ROOT"
 
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:-1,002-full-only-case:0:5" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && ! echo "$OUT" | grep -q "Retrying"; then
+  pass "a harness timeout (exit -1, no turns) is not retried as a setup failure and exits 1"
+else
+  fail "a harness timeout (exit -1, no turns) is not retried as a setup failure and exits 1 (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_WORKSPACE_EXITS="0,1" 2>&1) || RC=$?
+if [[ $RC -eq 3 ]] && echo "$OUT" | grep -q "the retry could not start; keeping the first attempt's results" \
+  && echo "$OUT" | grep -q "RESULT: 1 case(s) failed before the agent ran"; then
+  pass "a retry that cannot start keeps the first attempt and still reports a result"
+else
+  fail "a retry that cannot start keeps the first attempt and still reports a result (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" 2>&1) || RC=$?
+RUNREC="$(ls "${ROOT}"/eval/runs/testagent/*/run_result.json 2>/dev/null | grep -v -- '-retry/' | head -1)"
+MERGED="$(jq -c '.per_case["001-release-case"] | {exit_code, num_turns}' "$RUNREC" 2>/dev/null || true)"
+if [[ $RC -eq 0 && "$MERGED" == '{"exit_code":0,"num_turns":4}' ]]; then
+  pass "a retried case's record replaces the first attempt in the run-level run_result.json"
+else
+  fail "a retried case's record replaces the first attempt in the run-level run_result.json (rc=$RC, merged='$MERGED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
 # ---------------------------------------------------------------------------
 # Judge errors: a threshold miss caused only by judge calls that errored is
 # a judge infrastructure error (exit 3, one scoring retry), not a quality
 # regression (exit 1).
 # ---------------------------------------------------------------------------
 
-ERRORED_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      error: "Error code: 400 - prompt is too long"\n      value: null\n  002-full-only-case:\n    agent_quality:\n      error: "Error code: 400 - prompt is too long"\n      value: null\n    deterministic_check:\n      value: true\n'
-MIXED_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      error: "Error code: 400 - prompt is too long"\n      value: null\n    deterministic_check:\n      value: false\n'
+ERRORED_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 400 - prompt is too long"\n      value: null\n  002-full-only-case:\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 400 - prompt is too long"\n      value: null\n    deterministic_check:\n      value: true\n'
+MIXED_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 400 - prompt is too long"\n      value: null\n    deterministic_check:\n      value: false\n'
 CLEAN_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      value: 4\n  002-full-only-case:\n    agent_quality:\n      value: 4\n'
 QUALITY_REGRESSION_OUT='\n  REGRESSIONS: 1 detected\n    [agent_quality] mean: >= 3.0 -> n/a\n'
 MIXED_REGRESSION_OUT='\n  REGRESSIONS: 2 detected\n    [agent_quality] mean: >= 3.0 -> n/a\n    [deterministic_check] pass_rate: >= 1.0 -> 0.0\n'
@@ -614,7 +674,7 @@ rm -rf "$ROOT"
 run_test
 ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
 RC=0
-PARTIAL_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      error: "Error code: 529 - overloaded"\n      value: null\n  002-full-only-case:\n    agent_quality:\n      value: 1\n'
+PARTIAL_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 529 - overloaded"\n      value: null\n  002-full-only-case:\n    agent_quality:\n      value: 1\n'
 PARTIAL_OUT='\n  REGRESSIONS: 1 detected\n    [agent_quality] mean: >= 3.0 -> 1.0\n'
 OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
   STUB_SCORE_EXITS="1,1" \
@@ -642,7 +702,7 @@ rm -rf "$ROOT"
 run_test
 ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
 RC=0
-TWO_SUMMARY='per_case:\n  001-release-case:\n    z_quality:\n      error: "Error code: 400 - x"\n      value: null\n    agent_quality:\n      error: "Error code: 400 - x"\n      value: null\n'
+TWO_SUMMARY='per_case:\n  001-release-case:\n    z_quality:\n      judge_type: llm\n      error: "Error code: 400 - x"\n      value: null\n    agent_quality:\n      judge_type: llm\n      error: "Error code: 400 - x"\n      value: null\n'
 TWO_OUT='\n  REGRESSIONS: 2 detected\n    [agent_quality] mean: >= 3.0 -> n/a\n    [z_quality] error_rate: <= 0.2 -> 1.000\n'
 OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
   STUB_SCORE_EXITS="1,1" \
@@ -679,6 +739,21 @@ if [[ $RC -eq 1 && "$CALLS" == "1" ]]; then
   pass "scoring is not retried when a case already failed"
 else
   fail "scoring is not retried when a case already failed (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+CHECK_SUMMARY='per_case:\n  001-release-case:\n    deterministic_check:\n      judge_type: check\n      error: "KeyError: labels"\n      value: null\n'
+CHECK_OUT='\n  REGRESSIONS: 1 detected\n    [deterministic_check] pass_rate: >= 1.0 -> n/a\n'
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1" STUB_SUMMARY_1="$CHECK_SUMMARY" STUB_SCORE_OUT_1="$CHECK_OUT" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 1 && "$CALLS" == "1" ]] && echo "$OUT" | grep -q "RESULT: quality regression"; then
+  pass "a check judge that raises is an eval bug (exit 1), not a judge infrastructure error"
+else
+  fail "a check judge that raises is an eval bug (exit 1), not a judge infrastructure error (rc=$RC, calls=$CALLS, output: $OUT)"
 fi
 rm -rf "$ROOT"
 
