@@ -101,6 +101,9 @@ outputs:
 # ---------------------------------------------------------------------------
 judges:
   - name: review_quality
+    # The rubric's scale. Declared, an off-scale score is recorded as a
+    # judge error (counted by max_error_rate) instead of being accepted.
+    score_range: [1, 5]
     description: |
       Evaluate the overall quality of the review — did the agent understand the
       change and produce a well-reasoned verdict?

@@ -86,6 +86,9 @@ outputs:
 # ---------------------------------------------------------------------------
 judges:
   - name: triage_quality
+    # The rubric's scale. Declared, an off-scale score is recorded as a
+    # judge error (counted by max_error_rate) instead of being accepted.
+    score_range: [1, 5]
     description: |
       Evaluate the overall quality of the triage — not just whether labels
       were applied, but whether the agent's comment demonstrates understanding
@@ -97,8 +100,10 @@ judges:
       triage pipeline: it read the source code, analyzed the issue, posted
       a comment, and applied labels.
 
-      Here is the captured state of the issue after the agent ran:
-      {{ outputs }}
+      Here is the captured state of the issue after the agent ran (fixture
+      state capped at 50,000 characters, well under the judge model's
+      input limit; a trailing marker appears if truncation happened):
+      {{ outputs.files.get("output/fixture-state.json", "") | truncate(50000, True, "\n\n...[TRUNCATED: fixture state exceeded 50,000 characters]") }}
 
       Here is what the test case author expects from a good triage of this
       specific issue, including what the agent should have noticed in the
@@ -194,6 +199,9 @@ thresholds:
     # TODO: raise to 3.5 once the triage agent critically examines source
     # code instead of accepting issue descriptions at face value.
     min_mean: 2.5
+    # Coverage gate, as on review_quality: fail when the judge errored on
+    # more than a fifth of the cases instead of averaging the survivors.
+    max_error_rate: 0.2
   required_labels:
     min_pass_rate: 0.9
   forbidden_labels:
