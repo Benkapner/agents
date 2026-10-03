@@ -338,13 +338,21 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
       # score.py also reads each case's record from the run-level
       # run_result.json; point it at the retry's.
       if [[ -f "${RUN_DIR}/run_result.json" && -f "${retried}/run_result.json" ]]; then
-        # Only per_case is updated; the run-level totals (cost, turns,
-        # tokens) still describe the first attempt and leave out the
-        # retry's spend, which the retry's own run directory records.
-        if ! { jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" \
-                 '.per_case[$c] = $r[0]' "${RUN_DIR}/run_result.json" > "${RUN_DIR}/run_result.json.tmp" \
+        # Replace the case's record, then recompute the run-level totals
+        # from per_case so they describe the attempts that count: exit_code
+        # as execute.py derives it (the max), and summed cost, turns and
+        # tokens. The first attempt's spend stays in its own case dirs.
+        if ! { jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" '
+                 .per_case[$c] = $r[0]
+                 | [.per_case[]] as $cs
+                 | .exit_code = ([$cs[] | .exit_code // 0] | max)
+                 | .cost_usd = ([$cs[] | .cost_usd // 0] | add)
+                 | .num_turns = ([$cs[] | .num_turns // 0] | add)
+                 | .token_usage = (reduce ($cs[] | .token_usage // {} | to_entries[]) as $t
+                                     ({}; .[$t.key] = ((.[$t.key] // 0) + ($t.value // 0))))
+               ' "${RUN_DIR}/run_result.json" > "${RUN_DIR}/run_result.json.tmp" \
                && mv "${RUN_DIR}/run_result.json.tmp" "${RUN_DIR}/run_result.json"; }; then
-          echo "WARNING: could not update run_result.json per_case for ${case_name}" >&2
+          echo "WARNING: could not update run_result.json for ${case_name}" >&2
         fi
       fi
     done
@@ -459,13 +467,20 @@ unexplained_regressions() {
     in_list { in_list = 0 }' "$SCORE_LOG"
 }
 
+# One line of untrusted text that Actions cannot read as a workflow
+# command: CR/LF become spaces and every "::" is broken up. Judge error
+# text comes from model API responses and eval config.
+log_safe() {
+  printf '%s' "$1" | tr '\r\n' '  ' | sed 's/::/: :/g'
+}
+
 print_judge_errors() {
   local judge count first_error
   while IFS= read -r judge; do
     [[ -n "$judge" ]] || continue
     count="$(yq -r "[.per_case[] | select(.[\"${judge}\"].error != null)] | length" "$SUMMARY_YAML")"
     first_error="$(yq -r "[.per_case[] | .[\"${judge}\"].error | select(. != null)] | .[0]" "$SUMMARY_YAML" | head -c 300)"
-    echo "JUDGE ERROR: ${judge} errored on ${count} case(s); first error: ${first_error}" >&2
+    echo "JUDGE ERROR: $(log_safe "$judge") errored on ${count} case(s); first error: $(log_safe "$first_error")" >&2
   done <<< "$1"
 }
 
@@ -502,8 +517,10 @@ fi
 # RESULT lines also go out as an Actions error annotation, so the class of
 # failure shows on the check without opening the log.
 result() {
-  echo "=== RESULT: $1 ===" >&2
-  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && echo "::error::$1"
+  local msg
+  msg="$(log_safe "$1")"
+  echo "=== RESULT: ${msg} ===" >&2
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && echo "::error::${msg}"
   return 0
 }
 

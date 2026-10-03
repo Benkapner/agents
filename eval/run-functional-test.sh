@@ -625,11 +625,11 @@ for f in "${ROOT}"/eval/runs/testagent/*/run_result.json; do
   RUNREC="$f"
   break
 done
-MERGED="$(jq -c '.per_case["001-release-case"] | {exit_code, num_turns}' "$RUNREC" 2>/dev/null || true)"
-if [[ $RC -eq 0 && "$MERGED" == '{"exit_code":0,"num_turns":4}' ]]; then
-  pass "a retried case's record replaces the first attempt in the run-level run_result.json"
+MERGED="$(jq -c '{case: (.per_case["001-release-case"] | {exit_code, num_turns}), exit_code, num_turns}' "$RUNREC" 2>/dev/null || true)"
+if [[ $RC -eq 0 && "$MERGED" == '{"case":{"exit_code":0,"num_turns":4},"exit_code":0,"num_turns":9}' ]]; then
+  pass "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed"
 else
-  fail "a retried case's record replaces the first attempt in the run-level run_result.json (rc=$RC, merged='$MERGED', output: $OUT)"
+  fail "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed (rc=$RC, merged='$MERGED', output: $OUT)"
 fi
 rm -rf "$ROOT"
 
@@ -790,6 +790,20 @@ if [[ $RC -eq 1 && "$CALLS" == "1" ]] && echo "$OUT" | grep -q "RESULT: quality 
   pass "a check judge that raises is an eval bug (exit 1), not a judge infrastructure error"
 else
   fail "a check judge that raises is an eval bug (exit 1), not a judge infrastructure error (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+INJ_SUMMARY='per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: "bad\\n::add-mask::secret\\r\\n::set-env name=X::y"\n      value: null\n'
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" GITHUB_ACTIONS=true \
+  STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$INJ_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+if echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 1 case(s)" \
+  && ! echo "$OUT" | grep -qE '^::(add-mask|set-env)'; then
+  pass "judge error text cannot start a workflow command line"
+else
+  fail "judge error text cannot start a workflow command line (rc=$RC, output: $OUT)"
 fi
 rm -rf "$ROOT"
 
