@@ -588,7 +588,12 @@ RC=0
 OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
   STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
   STUB_CASE_RESULTS_2="001-release-case:0:4" 2>&1) || RC=$?
-RUNREC="$(ls "${ROOT}"/eval/runs/testagent/*/run_result.json 2>/dev/null | grep -v -- '-retry/' | head -1)"
+RUNREC=""
+for f in "${ROOT}"/eval/runs/testagent/*/run_result.json; do
+  [[ "$f" == *-retry/run_result.json ]] && continue
+  RUNREC="$f"
+  break
+done
 MERGED="$(jq -c '.per_case["001-release-case"] | {exit_code, num_turns}' "$RUNREC" 2>/dev/null || true)"
 if [[ $RC -eq 0 && "$MERGED" == '{"exit_code":0,"num_turns":4}' ]]; then
   pass "a retried case's record replaces the first attempt in the run-level run_result.json"
