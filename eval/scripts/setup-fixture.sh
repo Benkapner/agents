@@ -115,6 +115,15 @@ case "${FORGE}:${FIXTURE_TYPE}" in
       --body "$FIXTURE_BODY")
     FIXTURE_NUMBER="${FIXTURE_URL##*/}"
     echo "Created issue: $FIXTURE_URL"
+    # Optional fixture.labels: labels the issue already carries when the
+    # agent starts, e.g. ready-to-code for a code case (the code agent is
+    # dispatched only after triage applies it).
+    while IFS= read -r label; do
+      [[ -n "$label" ]] || continue
+      gh label create "$label" --repo "$EPHEMERAL_REPO" --force >/dev/null
+      gh issue edit "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --add-label "$label" >/dev/null
+      echo "Labeled issue: $label"
+    done < <(yq -r '.fixture.labels // [] | .[]' "$INPUT")
     ;;
   github:pull_request)
     PR_BRANCH="${FIXTURE_HEAD:-eval-pr-$(date +%s)-$$}"
