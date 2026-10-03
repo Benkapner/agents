@@ -20,15 +20,10 @@ model: opus
 effort: high
 image: ghcr.io/fullsend-ai/fullsend-code@sha256:d681249e95e6a26e31cf4f5192ee7ed7c9ed050d03bb4d80b40a3bf252238103
 policy: policies/base.yaml
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml
-    - profiles/fullsend-package-registries.yaml
-    - profiles/fullsend-gitleaks.yaml
 providers:
-  - providers/vertex-ai.yaml
-  - providers/package-registries.yaml
-  - providers/gitleaks.yaml
+  - vertex-ai
+  - package-registries
+  - gitleaks
   - openai
 
 role: coder
@@ -106,11 +101,10 @@ forge:
   github:
     providers:
       - providers/github-code.yaml
-      - providers/github-artifacts.yaml
+      - github-artifacts
     openshell:
       profiles:
         - profiles/fullsend-github-code.yaml
-        - profiles/fullsend-github-artifacts.yaml
     skills:
       - skills/github-forge
       - skills/fix-review/github

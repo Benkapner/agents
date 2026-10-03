@@ -11,11 +11,8 @@ model: opus
 effort: high
 image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:61787695ada71876324447979ac26a16bc64dc7139b819151cda817937be1276
 policy: policies/base.yaml
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml
 providers:
-  - providers/vertex-ai.yaml
+  - vertex-ai
   - openai
 
 role: retro
@@ -61,12 +58,8 @@ timeout_minutes: 30
 forge:
   github:
     providers:
-      - providers/github-ro.yaml
-      - providers/github-artifacts.yaml
-    openshell:
-      profiles:
-        - profiles/fullsend-github-ro.yaml
-        - profiles/fullsend-github-artifacts.yaml
+      - github-ro
+      - github-artifacts
     skills:
       - skills/github-forge
       - skills/retro-analysis/github

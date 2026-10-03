@@ -15,12 +15,9 @@ slug: fullsend-ai-link-check
 image: ghcr.io/fullsend-ai/fullsend-code@sha256:ea2a31f38ee80e2a9a898a898a289fe432aa882fa5a4046c3236ab8e2627d7e7
 policy: policies/base.yaml
 providers:
-  - providers/vertex-ai.yaml
-  - providers/github-ro.yaml
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml
-    - profiles/fullsend-github-ro.yaml
+  - vertex-ai
+  - github-ro
+  - openai
 host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
