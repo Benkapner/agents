@@ -108,18 +108,15 @@ runner:
     - "{workspace}"
     - "{output_dir}"
 # Unused for this CLI-runner type: runner.command has no {model} placeholder.
-# The real model is harness/code.yaml's `model:` unless EVAL_MODEL is set,
-# which run-fullsend.sh passes to `fullsend run --model` (see run-functional.sh).
+# The real model is the code entry's `model:` in the repo-root config.yaml
+# (resolved through its models.aliases) unless EVAL_MODEL is set, which
+# run-fullsend.sh passes to `fullsend run --model` (see run-functional.sh).
 # Declared here for harness reporting / parity with sibling evals only —
 # same "advisory / not enforced" class of limitation as max_budget_usd above.
 models:
   skill: claude-sonnet-5-5
-  # The harness forces tool_choice to get a structured judge verdict.
-  # The eval Vertex project's org policy
-  # (constraints/vertexai.allowedPartnerModelFeatures) does not yet
-  # allow structured outputs for claude-sonnet-5-5, so it returns 400
-  # on forced tool_choice. Move the judge to claude-sonnet-5-5 once
-  # the policy lists claude-sonnet-5-5:structured_outputs.
+  # No LLM judge in this eval; kept equal to the review and triage evals,
+  # whose comment says why the judge is not on claude-sonnet-5-5 yet.
   judge: claude-sonnet-4-6
 
 dataset:

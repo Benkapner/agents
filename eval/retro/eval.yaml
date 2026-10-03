@@ -47,12 +47,8 @@ runner:
 
 models:
   skill: claude-sonnet-5-5
-  # The harness forces tool_choice to get a structured judge verdict.
-  # The eval Vertex project's org policy
-  # (constraints/vertexai.allowedPartnerModelFeatures) does not yet
-  # allow structured outputs for claude-sonnet-5-5, so it returns 400
-  # on forced tool_choice. Move the judge to claude-sonnet-5-5 once
-  # the policy lists claude-sonnet-5-5:structured_outputs.
+  # No LLM judge in this eval; kept equal to the review and triage evals,
+  # whose comment says why the judge is not on claude-sonnet-5-5 yet.
   judge: claude-sonnet-4-6
 
 dataset:

@@ -1,7 +1,7 @@
 # Eval-only overlay of the review harness. The repo-root config.yaml
-# registers this file instead of harness/review.yaml, so it applies to
-# the functional evals and behaviour tests only; consumers compose
-# harness/review.yaml and never see it.
+# registers this file instead of harness/review.yaml, so it applies to the
+# functional evals and to local `--fullsend-dir .` runs only; consumers
+# compose harness/review.yaml and never see it.
 #
 # The parent run is already on Sonnet 5.5 through config.yaml's `sonnet`
 # alias. The review sub-agent personas name their own model, and on the
