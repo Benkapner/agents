@@ -105,8 +105,10 @@ judges:
       it read the diff and source code, analyzed the change, and posted a
       review with a verdict.
 
-      Here is the captured state of the PR after the agent ran:
-      {{ outputs }}
+      Here is the captured state of the PR after the agent ran (fixture
+      state capped at 50,000 characters, well under the judge model's
+      input limit; a trailing marker appears if truncation happened):
+      {{ outputs.files.get("output/fixture-state.json", "") | truncate(50000, True, "\n\n...[TRUNCATED: fixture state exceeded 50,000 characters]") }}
 
       Here is what the test case author expects from a good review of this
       specific PR:
@@ -244,6 +246,11 @@ judges:
 thresholds:
   review_quality:
     min_mean: 3.0
+    # Coverage gate: fail loudly if the judge errored on a chunk of the
+    # dataset instead of letting min_mean silently average over survivors.
+    # Off by default upstream; declared here since a too-large judge
+    # prompt is exactly the kind of per-case error this guards against.
+    max_error_rate: 0.2
   required_labels:
     min_pass_rate: 1.0
   risk_label_present:
