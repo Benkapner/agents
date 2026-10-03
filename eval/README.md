@@ -28,7 +28,8 @@ Results are written to `eval/runs/<agent>/<run-id>/`.
 `EVAL_TIER` selects how many cases run and what gates the result:
 
 - **`full`** (default) — runs every case in `cases/`, as described above.
-  This is what agents PR/push/merge-queue/dispatch runs and local runs use.
+  This is what local runs, merge-queue runs, the nightly run and PRs with
+  the `eval-full` label use.
 - **`release`** — runs only this agent's case(s) whose `annotations.yaml`
   sets `release: true`, and fails only on a non-zero case exit or a
   deterministic judge (e.g. `required_labels`, `forbidden_labels`). LLM
@@ -46,6 +47,19 @@ wins over the default.
 ```bash
 EVAL_ORG=my-org EVAL_TIER=release ./eval/run-functional.sh review
 ```
+
+In CI (`.github/workflows/functional-tests.yml`), each change runs the
+full tier once:
+
+| Event | Tier |
+|---|---|
+| Pull request | `release`. Add the `eval-full` label to run `full` on the PR. |
+| Merge queue | `full`, on the commit that lands |
+| Nightly (`functional-tests-nightly.yml`) | `full`, every agent, report-only |
+| Manual dispatch, cross-repo `workflow_call` | the `tier` input, or the script default |
+
+There is no run on push to `main`: the merge queue already tested that
+commit.
 
 ### Linting cases
 
