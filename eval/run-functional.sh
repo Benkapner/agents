@@ -38,6 +38,18 @@
 #                   "full". Any other value is an error.
 #   GOOGLE_APPLICATION_CREDENTIALS, ANTHROPIC_VERTEX_PROJECT_ID, etc.
 #   AGENT_EVAL_HARNESS_DIR — path to agent-eval-harness
+#
+# Exit status:
+#   0 — every phase passed
+#   1 — a case failed after the agent ran, a judge threshold failed on
+#       scored cases (a quality regression), or score.py failed without a
+#       regression list (a crash or a config error)
+#   3 — infrastructure, not an agent or quality result: every failed case
+#       failed before the agent ran (non-zero exit other than a timeout,
+#       no turns, cost or tokens) on its first run and on one retry, or
+#       every failing threshold is explained by LLM judge calls that errored
+#       (an error_rate gate, or a judge left with no score), after one
+#       scoring retry
 set -euo pipefail
 
 AGENT="${1:?agent name required}"
@@ -97,6 +109,8 @@ notice "EVAL_TIER=${EVAL_TIER} (${TIER_REASON})"
 # ---------------------------------------------------------------------------
 EVAL_YAML=""
 RELEASE_STAGE_DIR=""
+RETRY_STAGE_DIR=""
+RETRY_YAML=""
 cleanup_runtime_config() {
   # Trailing `true` is load-bearing: an EXIT trap's own exit status
   # replaces an already-issued `exit N` when the trap's last command is
@@ -105,6 +119,8 @@ cleanup_runtime_config() {
   # reported to the caller as exit 1.
   [[ -n "$EVAL_YAML" ]] && rm -f "$EVAL_YAML"
   [[ -n "$RELEASE_STAGE_DIR" ]] && rm -rf "$RELEASE_STAGE_DIR"
+  [[ -n "$RETRY_STAGE_DIR" ]] && rm -rf "$RETRY_STAGE_DIR"
+  [[ -n "$RETRY_YAML" ]] && rm -f "$RETRY_YAML"
   true
 }
 # Armed before either temp path is created, so a failure while staging
@@ -213,27 +229,77 @@ if [[ ${#case_dirs[@]} -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Phase 1: Create workspaces
+# Phases 1-2: create workspaces and execute — the harness drives case
+# iteration with hooks. execute_run is called once, plus once more for any
+# case that failed before the agent ran (see below).
 # ---------------------------------------------------------------------------
-echo "=== Creating workspaces ==="
-python3 "$WORKSPACE_PY" \
-  --config "$EVAL_YAML" \
-  --run-id "$RUN_ID"
+# execute_run <config> <run-id> <run-dir>: sets exec_exit.
+execute_run() {
+  local config="$1" run_id="$2" run_dir="$3"
+  mkdir -p "$run_dir"
+  echo "=== Creating workspaces ==="
+  if ! python3 "$WORKSPACE_PY" \
+    --config "$config" \
+    --run-id "$run_id"; then
+    echo "ERROR: workspace.py failed for run ${run_id}" >&2
+    return 1
+  fi
 
-# ---------------------------------------------------------------------------
-# Phase 2: Execute — harness drives case iteration with hooks
-# ---------------------------------------------------------------------------
-echo ""
-echo "=== Executing ==="
-exec_exit=0
-AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
-  python3 "$EXECUTE_PY" \
-    --workspace "/tmp/agent-eval/${RUN_ID}" \
-    --skill "$AGENT" \
-    --config "$EVAL_YAML" \
-    --output "$RUN_DIR" \
-    --run-id "$RUN_ID" \
-  || exec_exit=$?
+  echo ""
+  echo "=== Executing ==="
+  exec_exit=0
+  AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
+    python3 "$EXECUTE_PY" \
+      --workspace "/tmp/agent-eval/${run_id}" \
+      --skill "$AGENT" \
+      --config "$config" \
+      --output "$run_dir" \
+      --run-id "$run_id" \
+    || exec_exit=$?
+
+  # Copy output artifacts from harness workspace to runs directory.
+  # execute.py copies stdout/stderr/input but not the output/ subdirectory
+  # that after_each hooks populate (e.g., fixture-state.json).
+  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name
+  if [[ -d "$ws_cases" ]]; then
+    for ws_case in "$ws_cases"/*/; do
+      case_name=$(basename "$ws_case")
+      if [[ -d "$ws_case/output" ]]; then
+        mkdir -p "$run_dir/cases/${case_name}/output"
+        if ! cp -a "$ws_case/output/." "$run_dir/cases/${case_name}/output/"; then
+          echo "ERROR: copying ${case_name} output into ${run_dir} failed" >&2
+          return 2
+        fi
+      fi
+    done
+  fi
+}
+
+# A case that exited non-zero with no agent turns, no cost and no tokens
+# never reached the agent: a fixture, sandbox, provider or profile setup
+# failure (e.g. a provider profile reported missing right after import), or
+# a runner that could not start. A timed-out agent is left out: the
+# script's own `timeout` (exit 124, or 137 after SIGKILL) and the harness
+# timeout (exit -1) cut the run before its final turn and cost totals, so
+# those can read 0, but the agent ran (tokens are recorded as it goes).
+# Prints one case name per line.
+pre_agent_failures() {
+  local case_dir case_name run_result
+  for case_dir in "${case_dirs[@]}"; do
+    case_name="$(basename "$case_dir")"
+    run_result="$RUN_DIR/cases/${case_name}/run_result.json"
+    [[ -f "$run_result" ]] || continue
+    if jq -e '(.exit_code // 0) as $e
+              | $e != 0 and ([-1, 124, 137] | index($e) | not)
+              and ((.num_turns // 0) == 0)
+              and ((.cost_usd // 0) == 0)
+              and (([(.token_usage // {})[]?] | add // 0) == 0)' "$run_result" >/dev/null 2>&1; then
+      echo "$case_name"
+    fi
+  done
+}
+
+execute_run "$EVAL_YAML" "$RUN_ID" "$RUN_DIR" || exit 1
 
 if [[ $exec_exit -ne 0 ]]; then
   echo "WARNING: execute.py exited $exec_exit" >&2
@@ -241,6 +307,75 @@ if [[ $exec_exit -ne 0 ]]; then
   if [[ ! -d "$RUN_DIR/cases" ]] || [[ -z "$(ls "$RUN_DIR/cases/" 2>/dev/null)" ]]; then
     echo "ERROR: no case output produced — infrastructure failure" >&2
     exit 1
+  fi
+fi
+
+# Retry, once, the cases that failed before the agent ran. They are staged
+# like release-tier cases (a sibling of cases/, so relative symlinks still
+# resolve), run under their own run id, and each retried case's results
+# replace its first attempt in RUN_DIR.
+mapfile -t retry_cases < <(pre_agent_failures)
+if [[ ${#retry_cases[@]} -gt 0 ]]; then
+  echo ""
+  echo "Retrying ${#retry_cases[@]} case(s) that failed before the agent ran: ${retry_cases[*]}" >&2
+  RETRY_STAGE_DIR="$(mktemp -d "${EVAL_DIR}/${AGENT}/retry-cases-XXXXXX")"
+  for case_name in "${retry_cases[@]}"; do
+    cp -a "${CASES_DIR}/${case_name}" "${RETRY_STAGE_DIR}/${case_name}"
+  done
+  RETRY_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX.yaml")"
+  yq ".dataset.path = \"${RETRY_STAGE_DIR}\"" "$EVAL_YAML" > "$RETRY_YAML"
+  RETRY_RUN_ID="${RUN_ID}-retry"
+  RETRY_RUN_DIR="${RUNS_DIR}/${RETRY_RUN_ID}"
+  first_exec_exit=$exec_exit
+  retry_rc=0
+  execute_run "$RETRY_YAML" "$RETRY_RUN_ID" "$RETRY_RUN_DIR" || retry_rc=$?
+  if [[ $retry_rc -eq 0 ]]; then
+    for case_name in "${retry_cases[@]}"; do
+      retried="${RETRY_RUN_DIR}/cases/${case_name}"
+      [[ -d "$retried" ]] || continue
+      rm -rf "${RUN_DIR}/cases/${case_name}"
+      cp -a "$retried" "${RUN_DIR}/cases/${case_name}"
+      # score.py also reads each case's record from the run-level
+      # run_result.json; point it at the retry's.
+      if [[ -f "${RUN_DIR}/run_result.json" && -f "${retried}/run_result.json" ]]; then
+        # Replace the case's record, then recompute the run-level totals
+        # from per_case so they describe the attempts that count: exit_code
+        # as execute.py derives it (the max), and summed cost, turns and
+        # tokens. The first attempt's spend stays in its own case dirs.
+        if ! { jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" '
+                 .per_case[$c] = $r[0]
+                 | [.per_case[]] as $cs
+                 | .exit_code = ([$cs[] | .exit_code // 0] | max)
+                 | .cost_usd = ([$cs[] | .cost_usd // 0] | add)
+                 | .num_turns = ([$cs[] | .num_turns // 0] | add)
+                 | .token_usage = (reduce ($cs[] | .token_usage // {} | to_entries[]) as $t
+                                     ({}; .[$t.key] = ((.[$t.key] // 0) + ($t.value // 0))))
+               ' "${RUN_DIR}/run_result.json" > "${RUN_DIR}/run_result.json.tmp" \
+               && mv "${RUN_DIR}/run_result.json.tmp" "${RUN_DIR}/run_result.json"; }; then
+          echo "WARNING: could not update run_result.json for ${case_name}" >&2
+        fi
+      fi
+    done
+  elif [[ $retry_rc -eq 2 ]]; then
+    echo "WARNING: the retry ran but its output could not be copied; keeping the first attempt's results" >&2
+    exec_exit=$first_exec_exit
+  else
+    echo "WARNING: the retry could not start; keeping the first attempt's results" >&2
+    exec_exit=$first_exec_exit
+  fi
+  # The retry's own exit replaces the first attempt's only when every
+  # first-attempt failure was one of the retried cases.
+  if [[ $first_exec_exit -ne 0 && $exec_exit -eq 0 ]]; then
+    other_failure=false
+    for case_dir in "${case_dirs[@]}"; do
+      case_name="$(basename "$case_dir")"
+      [[ " ${retry_cases[*]} " == *" ${case_name} "* ]] && continue
+      jq -e '(.exit_code // 1) == 0' "$RUN_DIR/cases/${case_name}/run_result.json" >/dev/null 2>&1 \
+        || other_failure=true
+    done
+    [[ "$other_failure" == true ]] && exec_exit=$first_exec_exit
+  elif [[ $first_exec_exit -ne 0 ]]; then
+    exec_exit=$first_exec_exit
   fi
 fi
 
@@ -262,25 +397,13 @@ for case_dir in "${case_dirs[@]}"; do
     case_failures+=("${case_name} (exit ${case_exit})")
   fi
 done
+mapfile -t setup_failures < <(pre_agent_failures)
 if [[ ${#case_failures[@]} -gt 0 ]]; then
   echo "ERROR: ${#case_failures[@]} case(s) failed to run cleanly:" >&2
   printf '  %s\n' "${case_failures[@]}" >&2
-fi
-
-# Copy output artifacts from harness workspace to runs directory.
-# execute.py copies stdout/stderr/input but not the output/ subdirectory
-# that after_each hooks populate (e.g., fixture-state.json).
-WORKSPACE_CASES="/tmp/agent-eval/${RUN_ID}/cases"
-if [[ -d "$WORKSPACE_CASES" ]]; then
-  for ws_case in "$WORKSPACE_CASES"/*/; do
-    case_name=$(basename "$ws_case")
-    ws_output="$ws_case/output"
-    run_output="$RUN_DIR/cases/${case_name}/output"
-    if [[ -d "$ws_output" ]]; then
-      mkdir -p "$run_output"
-      cp -a "$ws_output/." "$run_output/"
-    fi
-  done
+  if [[ ${#setup_failures[@]} -gt 0 ]]; then
+    echo "  of which failed before the agent ran (setup or infrastructure, after one retry): ${setup_failures[*]}" >&2
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -293,18 +416,143 @@ echo "=== Scoring ==="
 if [[ -n "${EVALS_HOST_CREDENTIALS:-}" ]]; then
   export GOOGLE_APPLICATION_CREDENTIALS="$EVALS_HOST_CREDENTIALS"
 fi
-AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
-  python3 "$SCORE_PY" judges \
-    --run-id "$RUN_ID" \
-    --config "$EVAL_YAML"
+SCORE_LOG="${RUN_DIR}/score.log"
+SUMMARY_YAML="${RUN_DIR}/summary.yaml"
+
+# score.py exits 1 for any threshold miss, including one caused only by
+# judge calls that errored (a 400 from the model API, an unparseable
+# reply): those cases carry an `error:` entry and a null score. Capture
+# its output instead of letting set -e end the script, so a judge error is
+# reported as infrastructure, not as a quality regression.
+run_score() {
+  local rc=0
+  AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
+    python3 "$SCORE_PY" judges \
+      --run-id "$RUN_ID" \
+      --config "$EVAL_YAML" 2>&1 | tee "$SCORE_LOG" || rc=$?
+  return "$rc"
+}
+
+# Model-backed judges (judge_type llm or agent) whose call errored on at
+# least one case, sorted, one per line. A check judge that raises, or a
+# judge's own `if:` condition raising, is a bug in the eval (possibly in the
+# change under test), not a failed call, so other judge types and
+# "Condition error" entries are left out.
+errored_judges() {
+  [[ -f "$SUMMARY_YAML" ]] || return 0
+  yq -r '[.per_case[] | to_entries[]
+          | select((.value.judge_type == "llm" or .value.judge_type == "agent") and .value.error != null
+                   and (.value.error | test("^Condition error") | not))
+          | .key] | .[]' "$SUMMARY_YAML" 2>/dev/null | sort -u || true
+}
+
+# score.py's regression lines ("    [judge] metric: baseline -> current")
+# that a judge error does NOT explain, one per line. A line is explained
+# when its metric is error_rate (the max_error_rate gate), or its current
+# value is n/a and the judge errored. Anything else (including a low mean
+# on a judge that also errored on some cases) is a quality regression.
+unexplained_regressions() {
+  # Through the environment: BSD awk rejects a newline in a -v value.
+  ERRORED_JUDGES="$1" awk '
+    BEGIN { n = split(ENVIRON["ERRORED_JUDGES"], e, "\n"); for (i = 1; i <= n; i++) if (e[i] != "") err[e[i]] = 1 }
+    /REGRESSIONS: [0-9]+ detected/ { in_list = 1; next }
+    in_list && match($0, /^ +\[[A-Za-z0-9_.-]+\] /) {
+      judge = substr($0, RSTART, RLENGTH); gsub(/[][ ]/, "", judge)
+      rest = substr($0, RSTART + RLENGTH)
+      metric = rest; sub(/:.*/, "", metric)
+      current = rest; sub(/.*-> */, "", current)
+      if (metric == "error_rate" || (current == "n/a" && (judge in err))) next
+      print; next
+    }
+    in_list { in_list = 0 }' "$SCORE_LOG"
+}
+
+# One line of untrusted text that Actions cannot read as a workflow
+# command: CR/LF become spaces and every "::" is broken up. Judge error
+# text comes from model API responses and eval config.
+log_safe() {
+  printf '%s' "$1" | tr '\r\n' '  ' | sed 's/::/: :/g'
+}
+
+print_judge_errors() {
+  local judge count first_error
+  while IFS= read -r judge; do
+    [[ -n "$judge" ]] || continue
+    count="$(yq -r "[.per_case[] | select(.[\"${judge}\"].error != null)] | length" "$SUMMARY_YAML" 2>/dev/null || echo "?")"
+    # Read the whole value, then cut it in bash: piping into `head -c`
+    # can SIGPIPE yq on a long error and, under pipefail, end the script
+    # before it reports a result.
+    first_error="$(yq -r "[.per_case[] | .[\"${judge}\"].error | select(. != null)] | .[0]" "$SUMMARY_YAML" 2>/dev/null || true)"
+    first_error="${first_error:0:300}"
+    echo "JUDGE ERROR: $(log_safe "$judge") errored on ${count} case(s); first error: $(log_safe "$first_error")" >&2
+  done <<< "$1"
+}
+
+score_exit=0
+run_score || score_exit=$?
+# One retry when a judge errored and nothing else has already decided the
+# result: a transient API failure that outlived the SDK's own retries often
+# clears on a second pass; a deterministic error (such as a prompt over the
+# model's input limit) fails the same way twice.
+if [[ $score_exit -ne 0 && ${#case_failures[@]} -eq 0 && -n "$(errored_judges)" ]]; then
+  echo "Judge call(s) errored ($(errored_judges | paste -sd, -)); retrying scoring once" >&2
+  score_exit=0
+  run_score || score_exit=$?
+fi
+
+errored="$(errored_judges)"
+# Report judge errors even when no threshold failed (e.g. the release tier,
+# which drops the *_quality thresholds), so an unscored judge is never silent.
+print_judge_errors "$errored"
+
+score_verdict="pass"
+if [[ $score_exit -ne 0 ]]; then
+  if ! grep -qE 'REGRESSIONS: [0-9]+ detected' "$SCORE_LOG"; then
+    # score.py failed without a regression list: a crash or a config error,
+    # e.g. a broken eval.yaml in the change under test.
+    score_verdict="crash"
+  elif [[ -n "$errored" && -z "$(unexplained_regressions "$errored")" ]]; then
+    score_verdict="judge-infra"
+  else
+    score_verdict="regression"
+  fi
+fi
+
+# RESULT lines also go out as an Actions error annotation, so the class of
+# failure shows on the check without opening the log.
+result() {
+  local msg
+  msg="$(log_safe "$1")"
+  echo "=== RESULT: ${msg} ===" >&2
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && echo "::error::${msg}"
+  return 0
+}
 
 echo ""
+if [[ ${#case_failures[@]} -gt 0 && ${#case_failures[@]} -eq ${#setup_failures[@]} ]]; then
+  result "${#case_failures[@]} case(s) failed before the agent ran (setup or infrastructure, not an agent result)"
+  exit 3
+fi
 if [[ ${#case_failures[@]} -gt 0 ]]; then
-  echo "=== RESULT: ${#case_failures[@]} case(s) failed ===" >&2
+  result "${#case_failures[@]} case(s) failed"
   exit 1
 fi
 if [[ $exec_exit -ne 0 ]]; then
-  echo "=== RESULT: execute.py exited ${exec_exit} ===" >&2
+  result "execute.py exited ${exec_exit}"
   exit 1
 fi
+case "$score_verdict" in
+  judge-infra)
+    result "judge infrastructure error (not a quality regression)"
+    exit 3
+    ;;
+  crash)
+    result "score.py failed (exit ${score_exit}) without a regression list"
+    exit 1
+    ;;
+  regression)
+    result "quality regression (score.py exited ${score_exit})"
+    exit 1
+    ;;
+esac
 echo "=== RESULT: All phases complete ==="

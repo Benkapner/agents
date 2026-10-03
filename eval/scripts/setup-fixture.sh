@@ -15,6 +15,8 @@
 #   $CASE_WORKSPACE/.hook-outputs.yaml — env vars for the runner
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 CASE_WORKSPACE="${CASE_WORKSPACE:?CASE_WORKSPACE is required}"
 EVAL_ORG="${EVAL_ORG:?EVAL_ORG is required}"
 
@@ -115,6 +117,29 @@ case "${FORGE}:${FIXTURE_TYPE}" in
       --body "$FIXTURE_BODY")
     FIXTURE_NUMBER="${FIXTURE_URL##*/}"
     echo "Created issue: $FIXTURE_URL"
+    # Optional fixture.labels: labels the issue already carries when the
+    # agent starts, e.g. ready-to-code for a code case (the code agent is
+    # dispatched only after triage applies it).
+    if [[ "$(yq -r '(.fixture.labels // []) | type' "$INPUT")" != "!!seq" ]] \
+      || [[ "$(yq -r '[(.fixture.labels // [])[] | select(type != "!!str")] | length' "$INPUT")" != "0" ]]; then
+      echo "ERROR: fixture.labels must be a list of label names" >&2
+      exit 1
+    fi
+    mapfile -t fixture_labels < <(yq -r '.fixture.labels // [] | .[]' "$INPUT")
+    for label in "${fixture_labels[@]}"; do
+      [[ -n "$label" ]] || continue
+      # Logged on one line with every "::" broken up, so a label cannot
+      # be read as an Actions workflow command.
+      label_log="$(printf '%s' "$label" | tr '\r\n' '  ' | sed 's/::/: :/g')"
+      # gh issue edit --add-label splits its value on commas.
+      if [[ "$label" == *,* ]]; then
+        echo "ERROR: fixture label '${label_log}' contains a comma" >&2
+        exit 1
+      fi
+      gh label create "$label" --repo "$EPHEMERAL_REPO" --force >/dev/null
+      gh issue edit "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --add-label "$label" >/dev/null
+      echo "Labeled issue: ${label_log}"
+    done
     ;;
   github:pull_request)
     PR_BRANCH="${FIXTURE_HEAD:-eval-pr-$(date +%s)-$$}"
@@ -123,7 +148,7 @@ case "${FORGE}:${FIXTURE_TYPE}" in
     for i in $(seq 0 $((file_count - 1))); do
       path=$(echo "$FIXTURE_FILES" | yq -r ".[$i].path")
       mkdir -p "$TARGET_DIR/$(dirname "$path")"
-      echo "$FIXTURE_FILES" | yq -r ".[$i].content" > "$TARGET_DIR/$path"
+      echo "$FIXTURE_FILES" | yq -r ".[$i].content" | "$SCRIPT_DIR/write-fixture-file.sh" "$TARGET_DIR/$path"
     done
     git -C "$TARGET_DIR" add -A
     git -C "$TARGET_DIR" commit -m "eval: fixture changes"
@@ -134,7 +159,7 @@ case "${FORGE}:${FIXTURE_TYPE}" in
       for i in $(seq 0 $((followup_count - 1))); do
         path=$(echo "$FOLLOWUP_FILES" | yq -r ".[$i].path")
         mkdir -p "$TARGET_DIR/$(dirname "$path")"
-        echo "$FOLLOWUP_FILES" | yq -r ".[$i].content" > "$TARGET_DIR/$path"
+        echo "$FOLLOWUP_FILES" | yq -r ".[$i].content" | "$SCRIPT_DIR/write-fixture-file.sh" "$TARGET_DIR/$path"
       done
       git -C "$TARGET_DIR" add -A
       git -C "$TARGET_DIR" commit -m "eval: re-review follow-up"

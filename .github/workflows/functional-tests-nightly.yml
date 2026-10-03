@@ -6,7 +6,7 @@ name: Functional Tests (nightly)
 # workflow's callers must grant every permission any of its jobs requests,
 # so an issues: write job there would break fullsend's release gate at its
 # next pin bump. Calling it from here also gives the nightly its own
-# concurrency group, apart from push-to-main runs.
+# concurrency group.
 
 on:
   schedule:

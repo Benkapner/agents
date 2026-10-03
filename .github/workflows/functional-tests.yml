@@ -3,27 +3,19 @@ name: Functional Tests
 # PR-triggered functional tests use pull_request_target so fork PRs receive
 # secrets.  Authorization runs in a separate gate job (base checkout only)
 # before the test job checks out the PR head — same pattern as fullsend e2e.
+#
+# Each change runs the full tier once, in the merge queue, on the commit that
+# lands. PR runs use the release tier (one release:true case per agent)
+# unless the PR carries the eval-full label. Applying eval-full does not
+# start a run by itself (only ok-to-test does, so authorization stays
+# tied to a fresh ok-to-test); it applies from the next push or
+# ok-to-test run. There is no push-to-main run:
+# the merge queue already tested that merge commit, and the nightly
+# (functional-tests-nightly.yml) runs the full tier for every agent.
 
 permissions: {}
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'eval/**'
-      - 'agents/**'
-      - 'harness/**'
-      - 'scripts/**'
-      - 'schemas/**'
-      - 'env/**'
-      - 'common/**'
-      - 'policies/**'
-      - 'skills/**'
-      - 'plugins/**'
-      - 'docs/**'
-      - '.github/workflows/functional-tests.yml'
-      - '.github/scripts/**'
-      - 'config.yaml'
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
   merge_group:
@@ -129,7 +121,6 @@ jobs:
         if: >-
           github.repository == 'fullsend-ai/agents' &&
           (github.event_name == 'pull_request_target' ||
-           github.event_name == 'push' ||
            github.event_name == 'merge_group')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -138,8 +129,6 @@ jobs:
           REPO: ${{ github.repository }}
           MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_AFTER: ${{ github.event.after }}
         run: |
           if [ "$EVENT_NAME" = "merge_group" ]; then
             FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
@@ -149,16 +138,6 @@ jobs:
             FILE_COUNT=$(echo "$FILES" | wc -l)
             if [ "$FILE_COUNT" -ge 300 ]; then
               echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
-              exit 0
-            fi
-          elif [ "$EVENT_NAME" = "push" ]; then
-            FILES=$(gh api "repos/${REPO}/compare/${PUSH_BEFORE}...${PUSH_AFTER}" --jq '.files[].filename') || {
-              echo "::warning::Failed to fetch push diff — running all functional tests as a precaution"
-              exit 0
-            }
-            FILE_COUNT=$(echo "$FILES" | wc -l)
-            if [ "$FILE_COUNT" -ge 300 ]; then
-              echo "::warning::Push diff returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
               exit 0
             fi
           else
@@ -404,8 +383,18 @@ jobs:
           EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
           FULLSEND_DIR: ${{ github.workspace }}
           AGENT: ${{ matrix.agent }}
-          # '' and 'auto' leave EVAL_TIER empty, i.e. the script's default.
-          EVAL_TIER: ${{ inputs.tier != 'auto' && inputs.tier || '' }}
+          # An explicit tier input (dispatch, workflow_call) wins; a
+          # workflow_call sees its caller's event_name, so the input must
+          # be checked first. Otherwise merge_group runs full, and
+          # pull_request_target runs release, or full with the eval-full
+          # label. Anything else leaves EVAL_TIER empty, i.e. the script's
+          # default.
+          EVAL_TIER: >-
+            ${{ (inputs.tier != '' && inputs.tier != 'auto') && inputs.tier
+                || github.event_name == 'merge_group' && 'full'
+                || github.event_name == 'pull_request_target'
+                   && (contains(github.event.pull_request.labels.*.name, 'eval-full') && 'full' || 'release')
+                || '' }}
         run: ./eval/run-functional.sh "$AGENT"
 
       # Protected-path change (human review required): scrub eval artifacts before
