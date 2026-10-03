@@ -812,7 +812,9 @@ rm -rf "$ROOT"
 run_test
 ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
 RC=0
-BIG_ERR="$(head -c 300000 /dev/zero | tr '\0' 'x')"
+# 100,000 characters: past the 64 KiB pipe buffer, under Linux's 128 KiB
+# limit on a single environment string.
+BIG_ERR="$(head -c 100000 /dev/zero | tr '\0' 'x')"
 BIG_SUMMARY="per_case:\n  001-release-case:\n    agent_quality:\n      judge_type: llm\n      error: \"${BIG_ERR}\"\n      value: null\n"
 OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
   STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$BIG_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
