@@ -50,33 +50,49 @@ assert_not_contains() {
 
 assert_contains "structured response requires both arrays" \
   "Require a parsed object with both arrays."
-assert_contains "full removal requires complete evidence-backed accounting" \
-  "has one distinct, evidence-backed"
-assert_contains "full removal requires one-to-one correspondence" \
-  "matched one-to-one using"
-assert_contains "full removal records match on identity fields including line" \
+assert_contains "challenged findings are accounted exactly once" \
+  "Account for every challenged finding exactly once"
+assert_contains "accounting applies regardless of empty adjudication" \
+  'whether or not `adjudicated_findings` is empty'
+assert_contains "accounting matches one-to-one" \
+  "Match one-to-one on identity:"
+assert_contains "removed findings match on original identity fields" \
   '`original_category` + `original_file` + `original_line`'
-assert_contains "same-category same-file records disambiguated by line" \
-  '`original_line` when the finding has a line'
-assert_contains "line-less removal records require exact description match" \
-  'require an exact `original_description` match'
-assert_contains "full removal reasons cite specific evidence" \
+assert_contains "line-less removals match on original description" \
+  '`original_description` when line-less'
+assert_contains "adjudicated findings match on category file line" \
+  '`category` + `file` + `line`'
+assert_contains "line-less findings match on verbatim original description" \
+  'Match line-less inputs on the verbatim original description'
+assert_contains "merged findings list consolidated inputs in merged_from" \
+  '`merged_from` list'
+assert_contains "removed findings never apply to withheld findings" \
+  'never apply to withheld findings'
+assert_contains "removal reasons cite specific evidence" \
   '`removal_reason` must cite evidence.'
-assert_contains "full removal is gated on empty adjudication" \
-  'non-empty challenged subset with empty `adjudicated_findings`'
-assert_contains "full removal replaces the challenged subset" \
-  'Replace the challenged subset with the empty array'
-assert_contains "successful full removal restores withheld findings" \
-  'the empty array, then re-append withheld findings.'
+assert_contains "adjudicated findings replace the challenged subset" \
+  'Replace the challenged subset with `adjudicated_findings`'
+assert_contains "withheld findings are re-appended" \
+  're-append withheld findings'
+assert_contains "sub-agent-failure findings are never challenged" \
+  'the `sub-agent-failure` findings, never challenged'
 
-assert_contains "ambiguous or incomplete empty accounting is a failure" \
+assert_contains "ambiguous or incomplete accounting is a failure" \
   "Missing, incomplete, duplicated, ambiguous, unmatched, or evidence-free accounting is a failure."
+assert_contains "merge forbids correctness plus security" \
+  'never combine a `correctness`-dimension input with a `security`-dimension input'
+assert_contains "severity violation is invalid accounting" \
+  'Any violation is invalid adjudication accounting'
+assert_contains "severity and category lookups anchor to the input set" \
+  'looked up in the 6a–6c set'
+assert_contains "merged dimension resolved via category mapping" \
+  'resolve the dimension from the input'
 assert_not_contains "empty adjudication is no longer an unconditional failure" \
   "treat this as a challenger failure"
 assert_contains "genuine challenger failures use fallback" \
-  "has a timeout or tool error, returns malformed or empty"
-assert_contains "invalid empty accounting uses fallback" \
-  "invalid empty-adjudication accounting"
+  "has a timeout or tool error, returns malformed output"
+assert_contains "invalid adjudication accounting uses fallback" \
+  "invalid adjudication accounting"
 assert_contains "failure fallback restores the pre-challenger set" \
   "fall back to the pre-challenger merged finding set"
 
@@ -89,12 +105,16 @@ assert_contains "prompt-size guard withholds low and info findings" \
   'tokens, withhold `low` and `info` findings from the challenger'
 assert_contains "prompt-size guard restores withheld findings" \
   "input and re-append them, unchallenged, after step 3."
-assert_contains "retained findings replace the challenged subset" \
-  'Otherwise replace the challenged subset with `adjudicated_findings`,'
-assert_contains "retained findings restore withheld findings" \
-  "then re-append withheld findings."
+assert_contains "sub-agent-failure findings are always withheld from the challenger" \
+  '`sub-agent-failure` findings are always withheld'
+assert_contains "sub-agent-failure findings are re-appended unchanged" \
+  're-appended unchanged after step 3'
 assert_contains "removed findings are logged but excluded" \
   'Log `removed_findings`, but exclude them from the final review.'
+assert_contains "challenger input excludes sub-agent-failure findings" \
+  'EXCLUDING `sub-agent-failure` findings'
+assert_contains "adjudicated set includes re-appended withheld findings" \
+  'plus the re-appended withheld findings'
 
 assert_contains "challenger failure finding is low severity" \
   '"severity": "low"'
@@ -117,6 +137,42 @@ assert_contains "removed_findings schema emits original_description" \
   '"original_description":'
 assert_contains "removed_findings schema emits removal_reason" \
   '"removal_reason":'
+assert_contains "adjudicated_findings schema emits original_identity" \
+  '"original_identity":'
+assert_contains "adjudicated_findings schema emits merged_from" \
+  '"merged_from":'
+assert_contains "challenger_action enum is kept|downgraded|merged" \
+  '"challenger_action": "kept|downgraded|merged"'
+assert_contains "identity line is required when the finding has a line" \
+  'required when the finding has a line'
+assert_contains "constraints state every input appears exactly once" \
+  'Every challenged input finding appears exactly once'
+assert_contains "merged entry top-level includes severity" \
+  'top-level `severity`, `category`, `file`, `line`, and `description`'
+assert_contains "constraints mirror kept identity equality" \
+  '`severity` and `category` must equal its `original_identity` input'
+assert_contains "constraints mirror merged severity and category equality" \
+  '`severity` and `category` must equal those of the highest-severity input'
+assert_contains "challenger step 3 forbids correctness-security merge" \
+  'never merge a correctness-category finding with a security-category finding'
+assert_contains "constraints mirror merge dimension ban" \
+  'must never combine a correctness-category input with a security-category input'
+assert_contains "constraints inline correctness categories" \
+  'correctness = `logic-error`, `nil-deref`'
+assert_contains "constraints inline security categories" \
+  'security = `auth-bypass`, `rbac-violation`'
+assert_contains "constraints mirror downgrade strictly lower" \
+  '`severity` must be strictly lower than its input'
+assert_contains "constraints mirror severity ordering" \
+  '(critical > high > medium > low > info)'
+assert_contains "constraints mirror downgrade category unchanged" \
+  'its `category` unchanged'
+assert_contains "constraints mirror downgrade reason evidence" \
+  'its `challenger_reason` must cite evidence'
+assert_contains "constraints mirror merged tie-break" \
+  '(ties broken on the more specific remediation)'
+assert_not_contains "merged entry no longer omits severity" \
+  'top-level `category`, `file`, `line`, and `description`'
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
