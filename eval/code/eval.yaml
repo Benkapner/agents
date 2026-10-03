@@ -117,7 +117,7 @@ models:
   skill: claude-sonnet-5-5
   # No LLM judge in this eval; kept equal to the review and triage evals,
   # whose comment says why the judge is not on claude-sonnet-5-5 yet.
-  judge: claude-sonnet-4-6
+  judge: claude-sonnet-5
 
 dataset:
   path: cases
