@@ -413,6 +413,8 @@ run_control_label_test "empty-not-control" "" "false"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POST_SCRIPT="${SCRIPT_DIR}/post-review.sh"
+REVIEW_SCHEMA="${SCRIPT_DIR}/../schemas/review-result.schema.json"
+SCHEMA_VALIDATOR="${SCRIPT_DIR}/validate-output-schema.sh"
 
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "${TMPDIR}"' EXIT
@@ -1698,6 +1700,21 @@ run_failure_action_test() {
   : > "${GH_LOG}"
   rm -f "${TMPDIR}/last-result.json"
 
+  # The harness validates agent-result.json against review-result.schema.json
+  # before post-review.sh ever runs (ADR 0022) — run that same validation
+  # here so these fixtures stay representative of what the script actually
+  # receives in production, not just whatever the mock happens to accept.
+  local schema_exit_code=0
+  FULLSEND_OUTPUT_SCHEMA="${REVIEW_SCHEMA}" \
+    bash -c "cd '${run_dir}/iteration-1' && bash '${SCHEMA_VALIDATOR}'" \
+    > "${TMPDIR}/schema-${test_name}.log" 2>&1 || schema_exit_code=$?
+  if [[ ${schema_exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — fixture does not validate against review-result.schema.json"
+    cat "${TMPDIR}/schema-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
   local exit_code=0
   # shellcheck disable=SC2030,SC2031
   (
@@ -1743,12 +1760,26 @@ run_failure_action_test() {
     return
   fi
 
+  # Regression guard (#1612): a stale ready-for-merge/requires-manual-review/
+  # rejected label from an earlier, completed run must still be cleaned up
+  # even though this run ends with a failed task outcome. The failure exit
+  # must not bypass the stale-outcome-label removal loop.
+  for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
+    if ! grep -qF -- "--remove-label ${stale_label}" "${GH_LOG}"; then
+      echo "FAIL: ${test_name} — stale label '${stale_label}' was not removed after failure propagation"
+      echo "Actual calls:"
+      cat "${GH_LOG}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  done
+
   echo "PASS: ${test_name}"
 }
 
 for failure_reason in tool-failure missing-context ambiguous-findings token-limit time-budget; do
   run_failure_action_test "explicit-failure-propagates-${failure_reason}" \
-    "{\"action\":\"failure\",\"reason\":\"${failure_reason}\"}"
+    "{\"action\":\"failure\",\"pr_number\":99,\"repo\":\"test-org/test-repo\",\"reason\":\"${failure_reason}\"}"
 done
 
 # Regression guard: ordinary substantive verdicts must remain successful

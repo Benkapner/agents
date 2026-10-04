@@ -1175,20 +1175,6 @@ elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Explicit failure result: the agent could not complete a real review (e.g.
-# tool-failure, missing-context). forge_post_review above already published
-# the failure notice successfully — that is publication success, not review
-# success. Without this check the script falls through to the success exit
-# at the bottom, so the runner reports Success for a review that never
-# happened. Propagate a failed task outcome instead. (#1612)
-# ---------------------------------------------------------------------------
-if [ "${ACTION}" = "failure" ]; then
-  FAILURE_REASON=$(jq -r '.reason // "unknown"' "${RESULT_FILE}")
-  echo "::error::Review result reported action=failure (reason: ${FAILURE_REASON}) — failure notice was published, but propagating a failed task outcome (PR #${PR_NUMBER} in ${REPO})" >&2
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
 # Outcome labels: apply labels based on the review action.
 # Labels are created if missing, matching the needs-human pattern in
 # post-fix.sh.
@@ -1196,7 +1182,10 @@ fi
 # ---------------------------------------------------------------------------
 
 # Determine the target outcome label before mutating anything so we can
-# skip no-op remove/re-add cycles that generate timeline noise.
+# skip no-op remove/re-add cycles that generate timeline noise. An explicit
+# failure result (handled below) gets no outcome label, so OUTCOME_LABEL
+# stays empty in that case — which correctly removes all three stale
+# labels in the loop that follows.
 OUTCOME_LABEL=""
 if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
   OUTCOME_LABEL="ready-for-merge"
@@ -1211,10 +1200,29 @@ fi
 # about to apply so we don't create a pointless unlabel/relabel cycle.
 # 2>/dev/null is intentional: removal of a non-existent label is the
 # common case and not worth logging.
+#
+# This must run before the action=failure exit below: a PR can carry a
+# stale ready-for-merge/requires-manual-review/rejected label from an
+# earlier run whose review did complete, and a failed run must not leave
+# that stale label in place (#1612).
 for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
   [ "${stale_label}" = "${OUTCOME_LABEL}" ] && continue
   forge_remove_label_edit "${stale_label}"
 done
+
+# ---------------------------------------------------------------------------
+# Explicit failure result: the agent could not complete a real review (e.g.
+# tool-failure, missing-context). forge_post_review above already published
+# the failure notice successfully — that is publication success, not review
+# success. Without this check the script falls through to the success exit
+# at the bottom, so the runner reports Success for a review that never
+# happened. Propagate a failed task outcome instead. (#1612)
+# ---------------------------------------------------------------------------
+if [ "${ACTION}" = "failure" ]; then
+  FAILURE_REASON=$(jq -r '.reason // "unknown"' "${RESULT_FILE}")
+  echo "::error::Review result reported action=failure (reason: ${FAILURE_REASON}) — failure notice was published, but propagating a failed task outcome (PR #${PR_NUMBER} in ${REPO})" >&2
+  exit 1
+fi
 
 if [ "${OUTCOME_LABEL}" = "ready-for-merge" ]; then
   echo "Approve disposition — applying ready-for-merge label"
