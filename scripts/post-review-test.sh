@@ -1679,8 +1679,85 @@ for projection_forge in github gitlab; do
     "${PR_LEVEL_AND_FILE_PROJECTION_EXPECTED}" "${projection_forge}"
 done
 
-run_no_projection_test "failure-without-body-posts-no-projection" \
-  '{"action":"failure","reason":"time-budget"}'
+# ---------------------------------------------------------------------------
+# Explicit action="failure" integration tests (#1612)
+#
+# A schema-valid failure result must still publish a failure notice via
+# fullsend post-review (so the PR gets a clear status comment) AND the
+# post-script must propagate a non-zero (failed) task outcome — previously
+# the script exited 0 after publishing, so the runner reported Success for
+# a review that never actually completed.
+# ---------------------------------------------------------------------------
+run_failure_action_test() {
+  local test_name="$1"
+  local json_content="$2"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected a non-zero exit for action=failure, got 0"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "fullsend post-review" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — failure notice was not published via fullsend post-review"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "::error::Review result reported action=failure" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected a failure-propagation error message on stdout/stderr"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local body
+  body="$(jq -r '.body' "${TMPDIR}/last-result.json" 2>/dev/null || true)"
+  if grep -qE '<!-- fullsend:review-findings-v[12]:' <<< "${body}"; then
+    echo "FAIL: ${test_name} — lossy projection was not omitted for a failure result"
+    echo "Actual body: ${body}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+for failure_reason in tool-failure missing-context ambiguous-findings token-limit time-budget; do
+  run_failure_action_test "explicit-failure-propagates-${failure_reason}" \
+    "{\"action\":\"failure\",\"reason\":\"${failure_reason}\"}"
+done
+
+# Regression guard: ordinary substantive verdicts must remain successful
+# executions when publication succeeds — the failure-propagation check only
+# fires for action="failure", not "reject" (which has its own disposition:
+# close the PR and apply the "rejected" label).
+run_label_test "reject-still-succeeds-after-failure-propagation-fix" \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Fundamentally wrong approach","findings":[{"severity":"critical","category":"design-direction","file":"main.go","description":"wrong approach"}]}' \
+  "fullsend post-review"
 
 # request-changes + label_actions → body has label notice (---) AND action-hints footer (---)
 LABEL_PLUS_HINTS_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}'

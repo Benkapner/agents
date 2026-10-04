@@ -24,7 +24,10 @@
 #
 # Exit codes:
 #   0 — review posted
-#   1 — error (review not posted or fallback comment posted)
+#   1 — error (review not posted, fallback comment posted, or the agent
+#       result's action was explicitly "failure" — even though the failure
+#       notice itself was published successfully, the review did not
+#       complete, so the task outcome must not report Success)
 set -euo pipefail
 
 : "${REVIEW_TOKEN:?REVIEW_TOKEN is required}"
@@ -1169,6 +1172,20 @@ ${REDISPATCH_MARKER}" || echo "::warning::Failed to post re-dispatch comment"
 elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
   echo "::error::fullsend post-review failed with exit code ${POST_REVIEW_EXIT} (PR #${PR_NUMBER} in ${REPO})" >&2
   exit "${POST_REVIEW_EXIT}"
+fi
+
+# ---------------------------------------------------------------------------
+# Explicit failure result: the agent could not complete a real review (e.g.
+# tool-failure, missing-context). forge_post_review above already published
+# the failure notice successfully — that is publication success, not review
+# success. Without this check the script falls through to the success exit
+# at the bottom, so the runner reports Success for a review that never
+# happened. Propagate a failed task outcome instead. (#1612)
+# ---------------------------------------------------------------------------
+if [ "${ACTION}" = "failure" ]; then
+  FAILURE_REASON=$(jq -r '.reason // "unknown"' "${RESULT_FILE}")
+  echo "::error::Review result reported action=failure (reason: ${FAILURE_REASON}) — failure notice was published, but propagating a failed task outcome (PR #${PR_NUMBER} in ${REPO})" >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
