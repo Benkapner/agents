@@ -1767,9 +1767,52 @@ run_disposition_case "projection-reclassified-keeps-finding" \
   '.findings[0].id == "f_reclass1" and .findings[0].category == "incorrect-doc" and .dispositions[0].status == "reclassified"'
 
 run_disposition_case "projection-dismissed-by-human-leaves-open-list" \
-  "$(jq -c '.findings=[] | .dispositions=[{id:"f_human1",status:"dismissed_by_human",rationale:"The author wants the name kept.",evidence:"PR description dismisses f_human1"}]' <<< "${BASE_REVIEW}")" \
+  "$(jq -c '.findings=[] | .dispositions=[{id:"f_human1",status:"dismissed_by_human",rationale:"A reviewer resolved the thread and wants the name kept.",evidence:"reviewer alice resolved the src/foo.go:4 thread: name matches the public API"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}]}' \
   '([.findings[] | select(.id == "f_human1")] | length) == 0 and .dispositions[0].status == "dismissed_by_human"'
+
+# The post-script log must name every prior id that got the default open
+# disposition, and stay quiet when the model answered all of them.
+assert_disposition_stdout() {
+  local test_name="$1"
+  local pattern="$2"
+  local match_mode="$3"  # "present" or "absent"
+  local log="${TMPDIR}/stdout-${test_name}.log"
+  if [[ "${match_mode}" == "present" ]] && ! grep -qF -- "${pattern}" "${log}"; then
+    echo "FAIL: ${test_name} — expected log line not found: ${pattern}"
+    cat "${log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${match_mode}" == "absent" ]] && grep -qF -- "${pattern}" "${log}"; then
+    echo "FAIL: ${test_name} — unexpected log line: ${pattern}"
+    cat "${log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (log ${match_mode}: ${pattern})"
+}
+
+run_disposition_case "projection-warns-on-unanswered-prior-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_old1"},{"severity":"low","category":"stale-doc","file":"old.md","line":1,"id":"f_old2"}]}' \
+  '([.dispositions[] | select(.status == "open")] | length) == 2'
+assert_disposition_stdout "projection-warns-on-unanswered-prior-id" \
+  "::warning::No disposition recorded for prior finding id(s) f_old1, f_old2; recorded as open" "present"
+
+run_disposition_case "projection-no-warning-when-prior-ids-answered" \
+  "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_old1"}] | .dispositions=[{id:"f_old1",status:"open",rationale:"The nil check is still missing.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_old1"}]}' \
+  '.dispositions[0].id == "f_old1" and .dispositions[0].rationale == "The nil check is still missing."'
+assert_disposition_stdout "projection-no-warning-when-prior-ids-answered" \
+  "::warning::No disposition recorded" "absent"
+
+# More findings than the fixed 128-id pool used to hold: every finding still
+# gets a distinct id and the post does not abort.
+run_disposition_case "projection-mints-ids-beyond-128-findings" \
+  "$(jq -c '.findings=[range(0;130) | {severity:"low",category:"logic-error",file:"internal/foo.go",line:(.+1),description:"d"}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 130 and ([.findings[].id] | unique | length) == 130 and all(.findings[].id; test("^f_[A-Za-z0-9]+$"))'
 
 run_no_projection_test "failure-without-body-posts-no-projection" \
   '{"action":"failure","reason":"time-budget"}'

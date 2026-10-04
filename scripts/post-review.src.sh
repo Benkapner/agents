@@ -501,11 +501,20 @@ if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
     PRIOR_JSON="${parsed_prior}"
   fi
 fi
-# 128 ids, 16 hex chars each, from /dev/urandom. Not derived from the finding.
+# Mint one 16-hex-char id per finding (at least 128) from /dev/urandom so the
+# pool can never run dry and abort the post. Not derived from the finding.
+FINDING_COUNT="$(jq '.findings | if type == "array" then length else 0 end' "${RESULT_FILE}" 2>/dev/null || echo 0)"
+MINT_COUNT=128
+if [[ "${FINDING_COUNT}" =~ ^[0-9]+$ ]] && (( FINDING_COUNT > MINT_COUNT )); then
+  MINT_COUNT="${FINDING_COUNT}"
+fi
 MINT_IDS="$(
-  od -An -N1024 -tx1 /dev/urandom | tr -d ' \n' | fold -w16 | head -n 128 | sed 's/^/f_/' \
+  od -An -N"$((MINT_COUNT * 8))" -tx1 /dev/urandom | tr -d ' \n' | fold -w16 | head -n "${MINT_COUNT}" | sed 's/^/f_/' \
     | jq -R . | jq -sc .
 )"
+# A prior id the model did not answer is recorded with this rationale. The
+# warning below uses it to name every id that fell through.
+DEFAULT_OPEN_RATIONALE="Still open. No resolution was recorded."
 if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   ID_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${ID_RESULT}")
@@ -549,7 +558,7 @@ fi
 # challenger failures are non-dimensional and retain the pre-challenger findings.
 # A dimension failure the severity filter removed (Sonnet-tier failures are
 # recorded at info) must still suppress the projection.
-PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_JSON}" '
+PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_JSON}" --arg default_open "${DEFAULT_OPEN_RATIONALE}" '
   def allowed_category:
     IN(
       "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
@@ -612,7 +621,7 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
           | if $got != null and ($got | resolving) then {id: $got.id, status: $got.status, rationale: $got.rationale, evidence: $got.evidence}
             elif $got != null and ($got | reclassified) then {id: $got.id, status: "reclassified", rationale: $got.rationale, evidence: $got.evidence}
             elif $got != null and $got.status == "open" and ($got.rationale | length) > 0 then {id: $got.id, status: "open", rationale: $got.rationale, evidence: ($got.evidence // "")}
-            else {id: $id, status: "open", rationale: "Still open. No resolution was recorded.", evidence: ""}
+            else {id: $id, status: "open", rationale: $default_open, evidence: ""}
             end
         ] as $accounted
       | {
@@ -636,6 +645,15 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
 ' "${RESULT_FILE}")"
 PROJECTION_MARKER=""
 if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
+  # Every prior id must be answered. A missing or malformed disposition is
+  # recorded as open so the ledger stays complete, but say so in the log:
+  # silent defaults would hide a model that stopped answering.
+  UNANSWERED_IDS="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | jq -r --arg default_open "${DEFAULT_OPEN_RATIONALE}" '
+    [(.dispositions // [])[] | select(.status == "open" and .rationale == $default_open) | .id] | join(", ")
+  ' 2>/dev/null || true)"
+  if [[ -n "${UNANSWERED_IDS}" ]]; then
+    echo "::warning::No disposition recorded for prior finding id(s) ${UNANSWERED_IDS}; recorded as open"
+  fi
   PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
   PROJECTION_MARKER="<!-- fullsend:review-findings-v2:${PRIOR_FINDINGS_ENCODED} -->"
 fi
