@@ -11,6 +11,14 @@ Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
   Read it directly; do not search it for marker comments or sticky-history
   delimiters, and never recover finding identity from review Markdown. The
   producer emits v2, while v1 remains accepted for existing comments.
+  v2 findings may include `id`. On a re-review, copy each prior `id` onto that
+  same finding. Every prior id needs a `dispositions` entry: `open` (including
+  when this push did not touch the file), `resolved_by_change` (the diff fixes
+  it; `evidence` names the change), `reclassified` (same concern, different
+  severity or category; `rationale` says why), or `dismissed_by_human` (a person
+  dismissed it on the PR; `evidence` names who and what they said). Absence from
+  the latest diff is not a resolution. Do not drop a prior finding because it
+  was not in the current diff, and do not derive an id from the file, line, or text.
 
 **Host validation background:** Before rewriting this file, the host derives
 the JSON from schema-validated findings and accepts exactly one versioned

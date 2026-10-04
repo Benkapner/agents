@@ -131,7 +131,7 @@ The review agent follows the same pre-script / sandbox / post-script pipeline as
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)).
 4. **Post-script** posts the review on the PR. On GitHub, it also resolves still-open review threads whose only comments are outdated inline comments authored by the review agent, so stale comments do not remain in the PR's unresolved-review state.
 
-On re-review, the sandbox receives a validated `fullsend:review-findings-v2` projection containing only severity, category, file, and optional line—not prior descriptions or remediation text. A null file retains PR-level category context without serving as a path or severity anchor. The pre-script continues to accept v1 markers for existing comments. Only GitHub `app-verified` re-reviews use file-backed records for remediation-candidate matching.
+On re-review, the sandbox receives a validated `fullsend:review-findings-v2` projection containing severity, category, file, optional line, optional id, and dispositions for those ids—not prior descriptions or remediation text. A null file retains PR-level category context without serving as a path or severity anchor. The pre-script continues to accept v1 markers for existing comments. Only GitHub `app-verified` re-reviews use file-backed records for remediation-candidate matching.
 
 ## Time budget
 

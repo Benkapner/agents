@@ -1064,13 +1064,64 @@ else
   remove_stale_risk_labels
 fi
 
+# Stable finding ids. Copy a prior id when file, category, and line match
+# exactly one prior finding; otherwise assign f_ plus random hex. Never
+# hash the path or the text. PRIOR_REVIEW_FILE is the JSON pre-review wrote.
+PRIOR_JSON='{"findings":[]}'
+if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
+  if parsed_prior="$(jq -ce 'select(type == "object" and (.findings | type) == "array")' "${PRIOR_REVIEW_FILE}" 2>/dev/null)"; then
+    PRIOR_JSON="${parsed_prior}"
+  fi
+fi
+# 128 ids, 16 hex chars each, from /dev/urandom. Not derived from the finding.
+MINT_IDS="$(
+  od -An -N1024 -tx1 /dev/urandom | tr -d ' \n' | fold -w16 | head -n 128 | sed 's/^/f_/' \
+    | jq -R . | jq -sc .
+)"
+if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
+  ID_RESULT="$(mktemp)"
+  CLEANUP_FILES+=("${ID_RESULT}")
+  jq --argjson prior "${PRIOR_JSON}" --argjson mints "${MINT_IDS}" '
+    def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+    def anchor: if type == "number" then . else null end;
+    def anchor_file: if . == "N/A" or . == null then null else . end;
+    (.findings // []) as $rows
+    | .findings = (
+        reduce range(0; ($rows | length)) as $i (
+          {done: [], mint_i: 0};
+          . as $state
+          | $rows[$i] as $f
+          | ([$state.done[].id] + [$rows[].id | select(valid_id)]) as $used
+          | (
+              if ($f.id | valid_id) then {id: $f.id, mint_i: $state.mint_i}
+              else
+                [ $prior.findings[]?
+                  | select(.id | valid_id)
+                  | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category and ((.line | anchor) == ($f.line | anchor)))
+                  | select(.id as $pid | ($used | index($pid) | not))
+                ] as $cands
+                | if ($cands | length) == 1 then {id: $cands[0].id, mint_i: $state.mint_i}
+                  elif ($mints[$state.mint_i] | valid_id | not) then error("ran out of finding ids")
+                  else {id: $mints[$state.mint_i], mint_i: ($state.mint_i + 1)}
+                  end
+              end
+            ) as $picked
+          | .done += [$f + {id: $picked.id}]
+          | .mint_i = $picked.mint_i
+        )
+        | .done
+      )
+  ' "${RESULT_FILE}" > "${ID_RESULT}"
+  mv "${ID_RESULT}" "${RESULT_FILE}"
+fi
+
 # Append a machine-readable projection only when every schema-validated finding
 # can be represented safely. A lossy projection could turn a failed sub-agent
 # into an apparently clean dimension on the next re-review. Low-severity
 # challenger failures are non-dimensional and retain the pre-challenger findings.
 # A dimension failure the severity filter removed (Sonnet-tier failures are
 # recorded at info) must still suppress the projection.
-PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" '
+PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_JSON}" '
   def allowed_category:
     IN(
       "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
@@ -1093,6 +1144,30 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
     (.category == "sub-agent-failure" and .severity == "low");
   def projectable:
     (.category | type == "string" and allowed_category) and (.file == "N/A" or (.file | safe_path));
+  def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+  def resolving:
+    (.status == "resolved_by_change" or .status == "dismissed_by_human")
+    and (.rationale | type == "string" and length > 0)
+    and (.evidence | type == "string" and length > 0);
+  def reclassified:
+    .status == "reclassified"
+    and (.rationale | type == "string" and length > 0)
+    and (.evidence | type == "string" and length > 0);
+  def well_formed_disposition:
+    type == "object"
+    and (.id | valid_id)
+    and (.status | IN("open", "resolved_by_change", "reclassified", "dismissed_by_human"))
+    and (.rationale | type == "string")
+    and (.evidence | type == "string");
+  def project_finding:
+    {
+      severity,
+      category,
+      file: (if .file == "N/A" then null else .file end),
+      id
+    } + (if (.line | type) == "number" then {line} else {} end);
+  def is_resolved($accounted; $id):
+    [$accounted[] | select(.id == $id and resolving)] | length > 0;
   (.findings // []) as $findings
   | ($findings | map(select(non_dimensional_finding | not))) as $dimension_findings
   | (($unfiltered[0].findings // [])
@@ -1100,14 +1175,34 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
   | if (.action | IN("approve", "request-changes", "comment", "reject"))
       and ($dimension_findings | all(.[]; projectable))
       and ($dimension_failed | not) then
-      {
-        version: 2,
-        findings: [
-          $dimension_findings[]
-          | {severity, category, file: (if .file == "N/A" then null else .file end)}
-            + (if (.line | type) == "number" then {line} else {} end)
-        ]
-      }
+      ([ $prior.findings[]? | select(.id | valid_id) ]) as $prior_ids
+      | ([ (.dispositions // [])[] | select(well_formed_disposition) ]) as $given
+      | [
+          $prior_ids[]
+          | .id as $id
+          | ($given | map(select(.id == $id)) | last) as $got
+          | if $got != null and ($got | resolving) then {id: $got.id, status: $got.status, rationale: $got.rationale, evidence: $got.evidence}
+            elif $got != null and ($got | reclassified) then {id: $got.id, status: "reclassified", rationale: $got.rationale, evidence: $got.evidence}
+            elif $got != null and $got.status == "open" and ($got.rationale | length) > 0 then {id: $got.id, status: "open", rationale: $got.rationale, evidence: ($got.evidence // "")}
+            else {id: $id, status: "open", rationale: "Still open. No resolution was recorded.", evidence: ""}
+            end
+        ] as $accounted
+      | {
+          version: 2,
+          findings: (
+            [
+              $dimension_findings[]
+              | select(is_resolved($accounted; .id) | not)
+              | project_finding
+            ] + [
+              $prior_ids[]
+              | select(is_resolved($accounted; .id) | not)
+              | select(.id as $id | [$dimension_findings[].id] | index($id) | not)
+              | project_finding
+            ]
+          )
+        }
+        + (if ($accounted | length) > 0 then {dispositions: $accounted} else {} end)
     else empty
     end
 ' "${RESULT_FILE}")"

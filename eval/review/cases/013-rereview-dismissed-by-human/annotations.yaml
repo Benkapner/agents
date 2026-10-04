@@ -1,0 +1,22 @@
+state: open
+
+labels:
+  required: []
+  forbidden: []
+  risk_label_required: false
+
+findings:
+  required: []
+  forbidden:
+    - naming-convention
+
+max_cost_usd: 2.75
+
+review_expectations: |
+  This is an app-verified GitHub re-review. The prior finding f_human1 is
+  low naming-convention at src/foo.py:1. The follow-up does not change
+  src/foo.py. The PR description says the author is dismissing f_human1
+  because the name x matches the public API. A good review records
+  dismissed_by_human for f_human1 with that statement as evidence, does not
+  list naming-convention as an open finding, and mentions it under Earlier
+  findings.

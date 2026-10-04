@@ -58,6 +58,9 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   and rejects the human-readable review body before sandbox ingress. Projection
   v2 uses `file: null` for PR-level findings with no source-file anchor; keep
   their category for dispatch but never use them for severity or path matching.
+  Findings may include `id` (`f_` plus letters and digits). `dispositions`
+  records what happened to each prior id. Copy an id onto the same finding;
+  do not mint a new one and do not derive one from the path or the text.
   The file is empty on first review or when provenance, projection, category,
   or path validation fails.
 
@@ -265,6 +268,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `head_sha`  | string  | conditional     | Commit SHA (40 or 64 hex chars)                  |
 | `body`      | string  | conditional     | Markdown review comment (min 1 char)             |
 | `findings`  | array   | conditional     | Array of finding objects (min 1 item when present)|
+| `dispositions` | array | no           | One `{id, status, rationale, evidence}` per prior finding id. Omit on a first review. `status` is `open`, `resolved_by_change`, `reclassified`, or `dismissed_by_human`. |
 | `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit`, `time-budget` |
 | `label_actions` | object | no | Contextual label recommendations (see `issue-labels` skill) |
 | `risk_assessment` | object | no | Risk assessment from the risk-assessment sub-agent (see `pr-risk-assessment` skill) |
@@ -290,6 +294,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `description` | string  | yes      | Finding description (min 1 char)              |
 | `remediation` | string  | no       | Suggested fix                                 |
 | `actionable`  | boolean | no       | When true with a non-empty `remediation`, routes the verdict to `request-changes` so the fix agent can address the finding automatically (follow-up issue creation is temporarily disabled; see #1137) |
+| `id`          | string  | no       | Stable id copied from the prior projection (`f_` plus letters and digits). Omit on a new finding. |
 
 Schema validation failures trigger a harness retry iteration. The jq
 examples below show the exact JSON shape for each action.

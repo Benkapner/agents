@@ -219,7 +219,7 @@ assert_contains "context assembly supplies provenance" "${SKILL}" \
   "prior_review_provenance"
 assert_contains "context assembly supplies incremental diff" "${SKILL}" \
   "incremental_diff"
-assert_not_contains "prior finding context does not claim an id field" "${SKILL}" \
+assert_contains "prior finding context includes id records" "${SKILL}" \
   "severity, category, file, line, and id records"
 assert_contains "prior review data is fenced as untrusted" "${SKILL}" \
   "UNTRUSTED PRIOR-REVIEW DATA"

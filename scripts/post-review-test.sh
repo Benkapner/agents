@@ -1412,6 +1412,8 @@ run_projection_test() {
   encoded="${marker#<!-- fullsend:review-findings-v2:}"
   encoded="${encoded% -->}"
   actual="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
+  # Ids are assigned per run. Compare the projection without them.
+  actual="$(jq -c 'del(.findings[].id)' <<< "${actual}" 2>/dev/null || true)"
 
   if [[ ${exit_code} -ne 0 ]] || ! jq -e --argjson expected "${expected_projection}" '. == $expected' <<< "${actual}" >/dev/null 2>&1; then
     echo "FAIL: ${test_name} — machine-readable projection mismatch"
@@ -1622,7 +1624,7 @@ run_sticky_round_trip_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if ! jq -e --argjson expected "${expected}" '. == $expected' "${prior_file}" >/dev/null 2>&1; then
+  if ! jq -e --argjson expected "${expected}" 'del(.findings[].id) == $expected' "${prior_file}" >/dev/null 2>&1; then
     echo "FAIL: ${test_name} — pre-review did not recover the projection"
     cat "${prior_file}"
     FAILURES=$((FAILURES + 1))
@@ -1678,6 +1680,96 @@ for projection_forge in github gitlab; do
     "${PR_LEVEL_AND_FILE_PROJECTION_INPUT}" \
     "${PR_LEVEL_AND_FILE_PROJECTION_EXPECTED}" "${projection_forge}"
 done
+
+# Finding ids and dispositions. Ids on a first review are random, so these
+# checks assert shape. Re-review cases use the prior JSON pre-review writes.
+run_disposition_case() {
+  local test_name="$1"
+  local json_content="$2"
+  local prior_json="$3"
+  local check_jq="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local prior_file="${run_dir}/prior.json"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    if [[ -n "${prior_json}" ]]; then
+      printf '%s' "${prior_json}" > "${prior_file}"
+      export PRIOR_REVIEW_FILE="${prior_file}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  local marker encoded actual
+  marker="$(jq -r '.body' "${TMPDIR}/last-result.json" 2>/dev/null | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
+  encoded="${marker#<!-- fullsend:review-findings-v2:}"
+  encoded="${encoded% -->}"
+  actual="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
+
+  if [[ ${exit_code} -ne 0 ]] || ! jq -e "${check_jq}" <<< "${actual}" >/dev/null 2>&1; then
+    echo "FAIL: ${test_name} — disposition projection mismatch"
+    echo "Actual: ${actual}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+BASE_REVIEW='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review"}'
+run_disposition_case "projection-keeps-supplied-finding-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d",id:"f_keep1"}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '.findings[0].id == "f_keep1" and .findings[0].file == "internal/foo.go" and (.findings | length) == 1 and .dispositions == null'
+
+run_disposition_case "projection-mints-missing-finding-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d"}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 1 and (.findings[0].id | test("^f_[A-Za-z0-9]+$")) and .findings[0].file == "internal/foo.go" and .dispositions == null'
+
+run_disposition_case "projection-copies-prior-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_same1"}]}' \
+  '.findings[0].id == "f_same1" and (.findings | length) == 1 and .dispositions[0].id == "f_same1" and .dispositions[0].status == "open" and .dispositions[0].rationale == "Still open. No resolution was recorded." and .dispositions[0].evidence == ""'
+
+run_disposition_case "projection-carries-undispositioned-prior-finding" \
+  "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_old1"}]}' \
+  '([.findings[] | select(.id == "f_old1" and .file == "old.go")] | length) == 1 and ([.dispositions[] | select(.id == "f_old1" and .status == "open")] | length) == 1 and (.findings | length) == 2'
+
+run_disposition_case "projection-resolved-by-change-leaves-open-list" \
+  "$(jq -c '.findings=[] | .dispositions=[{id:"f_done1",status:"resolved_by_change",rationale:"The return value is corrected.",evidence:"src/add.go now returns a + b"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_done1"}]}' \
+  '([.findings[] | select(.id == "f_done1")] | length) == 0 and .dispositions[0].status == "resolved_by_change" and .dispositions[0].evidence == "src/add.go now returns a + b"'
+
+run_disposition_case "projection-resolved-without-evidence-stays-open" \
+  "$(jq -c '.findings=[] | .dispositions=[{id:"f_done1",status:"resolved_by_change",rationale:"Fixed.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_done1"}]}' \
+  '([.findings[] | select(.id == "f_done1")] | length) == 1 and .dispositions[0].status == "open"'
+
+run_disposition_case "projection-reclassified-keeps-finding" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"README.md",line:3,description:"typo",id:"f_reclass1"}] | .dispositions=[{id:"f_reclass1",status:"reclassified",rationale:"This is a docs typo, not a logic error.",evidence:"README still says pytset"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"README.md","line":3,"id":"f_reclass1"}]}' \
+  '.findings[0].id == "f_reclass1" and .findings[0].category == "incorrect-doc" and .dispositions[0].status == "reclassified"'
+
+run_disposition_case "projection-dismissed-by-human-leaves-open-list" \
+  "$(jq -c '.findings=[] | .dispositions=[{id:"f_human1",status:"dismissed_by_human",rationale:"The author wants the name kept.",evidence:"PR description dismisses f_human1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}]}' \
+  '([.findings[] | select(.id == "f_human1")] | length) == 0 and .dispositions[0].status == "dismissed_by_human"'
 
 run_no_projection_test "failure-without-body-posts-no-projection" \
   '{"action":"failure","reason":"time-budget"}'

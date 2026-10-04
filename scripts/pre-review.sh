@@ -652,18 +652,30 @@ validate_prior_review_projection() {
     .version as $projection_version
     | if (
       type == "object" and
-      ((keys - ["version", "findings"]) | length == 0) and
+      ((keys - ["version", "findings", "dispositions"]) | length == 0) and
       (.version | IN(1, 2)) and
       .version == $marker_version and
       (.findings | type == "array") and
       all(.findings[];
         type == "object" and
-        ((keys - ["severity", "category", "file", "line"]) | length == 0) and
+        ((keys - ["severity", "category", "file", "line", "id"]) | length == 0) and
         (.severity | IN("info", "low", "medium", "high", "critical")) and
         (.category | type == "string" and allowed_category) and
         ((.file == null and $projection_version == 2) or (.file | safe_path)) and
-        (.line == null or (.line | type == "number" and . > 0 and floor == .))
-      )
+        (.line == null or (.line | type == "number" and . > 0 and floor == .)) and
+        (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$")))
+      ) and
+      (.dispositions == null or (
+        (.dispositions | type == "array") and
+        all(.dispositions[];
+          type == "object" and
+          ((keys - ["id", "status", "rationale", "evidence"]) | length == 0) and
+          (.id | type == "string" and test("^f_[A-Za-z0-9]+$")) and
+          (.status | IN("open", "resolved_by_change", "reclassified", "dismissed_by_human")) and
+          (.rationale | type == "string" and length > 0) and
+          (.evidence | type == "string")
+        )
+      ))
     ) then {
       version: $projection_version,
       findings: [.findings[] | {
@@ -671,8 +683,10 @@ validate_prior_review_projection() {
         category: .category,
         file: .file,
         line: .line
-      }]
-    } else error("invalid prior review projection") end
+      } + (if .id == null then {} else {id: .id} end)]
+    } + (if .dispositions == null then {} else {
+      dispositions: [.dispositions[] | {id, status, rationale, evidence}]
+    } end) else error("invalid prior review projection") end
   ' > "${tmp_file}"; then
     mv "${tmp_file}" "${prior_file}"
     echo "Prior review projection validated"
