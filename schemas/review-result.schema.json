@@ -26,7 +26,7 @@
     },
     "dispositions": {
       "type": "array",
-      "description": "One entry for every finding id from the prior projection. Omit on a first review.",
+      "description": "One entry for every open finding id from the prior projection (status absent, open, or reclassified). Ids already resolved or dismissed by a human are closed and must not be answered. Omit on a first review.",
       "items": { "$ref": "#/$defs/disposition" }
     },
     "label_actions": {

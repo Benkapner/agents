@@ -59,8 +59,11 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   v2 uses `file: null` for PR-level findings with no source-file anchor; keep
   their category for dispatch but never use them for severity or path matching.
   Findings may include `id` (`f_` plus letters and digits). `dispositions`
-  records what happened to each prior id. Copy an id onto the same finding;
-  do not mint a new one and do not derive one from the path or the text.
+  gives each prior id a `status`. An id whose status is `resolved_by_change`
+  or `dismissed_by_human` is closed: do not raise that finding again, do not
+  answer it, and do not reuse its id. Every other prior id is open and needs
+  an answer. Copy an open id onto the same finding; do not mint a new one and
+  do not derive one from the path or the text.
   The file is empty on first review or when provenance, projection, category,
   or path validation fails.
 

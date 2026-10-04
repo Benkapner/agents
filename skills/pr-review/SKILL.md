@@ -1352,9 +1352,11 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   that it was fixed. Never claim exhaustive verification of any property
   that requires CI or runtime validation.
 - **Earlier findings.** After the open findings, add `### Earlier findings`
-  with one line per prior id that is not `open`: the id, the disposition,
-  and the evidence. Omit the heading when every prior finding is still open
-  or this is a first review. Open findings stay in `### Findings`.
+  with one line per prior id this review resolved, reclassified, or recorded
+  as dismissed by a human: the id, the disposition, and the evidence. Ids
+  that were already closed before this review are not listed again. Omit
+  the heading when nothing changed or this is a first review. Open findings
+  stay in `### Findings`.
 - **No footer.** Do not append any footer, action-hints block, or
   boilerplate after findings. The post-review pipeline appends
   action hints deterministically for the `request-changes` action

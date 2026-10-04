@@ -1064,52 +1064,95 @@ else
   remove_stale_risk_labels
 fi
 
-# Stable finding ids. Copy a prior id when file, category, and line match
-# exactly one prior finding; otherwise assign f_ plus random hex. Never
-# hash the path or the text. PRIOR_REVIEW_FILE is the JSON pre-review wrote.
+# ---------------------------------------------------------------------------
+# Finding ledger: stable ids and dispositions.
+#
+# Every finding carries an opaque id (f_ plus random hex). On a re-review the
+# prior ledger arrives as PRIOR_REVIEW_FILE, the JSON pre-review validated.
+# A prior id is OPEN when its last disposition is absent, open, or
+# reclassified, and CLOSED when it is resolved_by_change or
+# dismissed_by_human. Open ids must be answered by this review; closed ids
+# are carried forward unchanged, anchor and all, so a later review can
+# recognise the same finding and not raise it again. Nothing is dropped for
+# being outside the latest diff. Ids are never derived from the path or text.
+# ---------------------------------------------------------------------------
 PRIOR_JSON='{"findings":[]}'
 if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
   if parsed_prior="$(jq -ce 'select(type == "object" and (.findings | type) == "array")' "${PRIOR_REVIEW_FILE}" 2>/dev/null)"; then
     PRIOR_JSON="${parsed_prior}"
   fi
 fi
-# Mint one 16-hex-char id per finding (at least 128) from /dev/urandom so the
-# pool can never run dry and abort the post. Not derived from the finding.
+# Mint one 16-hex-char id per current and prior finding (at least 128) from
+# /dev/urandom so the pool can never run dry and abort the post.
 FINDING_COUNT="$(jq '.findings | if type == "array" then length else 0 end' "${RESULT_FILE}" 2>/dev/null || echo 0)"
+PRIOR_COUNT="$(jq '.findings | length' <<< "${PRIOR_JSON}")"
 MINT_COUNT=128
-if [[ "${FINDING_COUNT}" =~ ^[0-9]+$ ]] && (( FINDING_COUNT > MINT_COUNT )); then
-  MINT_COUNT="${FINDING_COUNT}"
+if [[ "${FINDING_COUNT}" =~ ^[0-9]+$ && "${PRIOR_COUNT}" =~ ^[0-9]+$ ]] && (( FINDING_COUNT + PRIOR_COUNT > MINT_COUNT )); then
+  MINT_COUNT=$(( FINDING_COUNT + PRIOR_COUNT ))
 fi
 MINT_IDS="$(
   od -An -N"$((MINT_COUNT * 8))" -tx1 /dev/urandom | tr -d ' \n' | fold -w16 | head -n "${MINT_COUNT}" | sed 's/^/f_/' \
     | jq -R . | jq -sc .
 )"
-# A prior id the model did not answer is recorded with this rationale. The
-# warning below uses it to name every id that fell through.
-DEFAULT_OPEN_RATIONALE="Still open. No resolution was recorded."
+
+# Prior ledger: give legacy prior findings (written before ids existed) an id
+# so they enter the ledger instead of vanishing, and split prior ids into
+# open and closed. Minted ids used here are removed from the pool below.
+PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
+  def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+  def closed_status: IN("resolved_by_change", "dismissed_by_human");
+  ([ (.dispositions // [])[] | select(type == "object" and (.id | valid_id) and (.status | type == "string")) ]) as $disp
+  | (reduce (.findings // [])[] as $f ({findings: [], mint_i: 0};
+      if ($f.id | valid_id) then .findings += [$f]
+      else .findings += [$f + {id: $mints[.mint_i]}] | .mint_i += 1
+      end
+    )) as $r
+  | ($r.findings) as $fs
+  | {
+      findings: $fs,
+      closed: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
+                | select($d != null and ($d.status | closed_status)) | . + {status: $d.status} ],
+      open_ids: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
+                  | select($d == null or ($d.status | closed_status | not)) | .id ],
+      used_mints: $r.mint_i
+    }
+' <<< "${PRIOR_JSON}")"
+MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< "${MINT_IDS}")"
+
+# Id assignment for this review. A supplied id is kept only when it is an
+# open prior id no earlier row already took; a closed, foreign, or duplicate
+# id is replaced. Without a usable id, copy the open prior id whose file and
+# category match: the exact line first, else the only candidate at that
+# place (a shifted line must not create a second ledger entry). Otherwise
+# mint. Supplied open ids of later rows are reserved for them.
 if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   ID_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${ID_RESULT}")
-  jq --argjson prior "${PRIOR_JSON}" --argjson mints "${MINT_IDS}" '
+  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" '
     def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
-    def anchor: if type == "number" then . else null end;
+    def anchor_line: if type == "number" then . else null end;
     def anchor_file: if . == "N/A" or . == null then null else . end;
-    (.findings // []) as $rows
+    ($prior.open_ids) as $open
+    | ([ $prior.findings[] | select(.id as $pid | $open | index($pid) != null) ]) as $open_findings
+    | (.findings // []) as $rows
     | .findings = (
         reduce range(0; ($rows | length)) as $i (
           {done: [], mint_i: 0};
           . as $state
           | $rows[$i] as $f
-          | ([$state.done[].id] + [$rows[].id | select(valid_id)]) as $used
+          | ([ $state.done[].id ]) as $taken
           | (
-              if ($f.id | valid_id) then {id: $f.id, mint_i: $state.mint_i}
+              if ($f.id | valid_id) and ($open | index($f.id)) != null and ($taken | index($f.id)) == null
+              then {id: $f.id, mint_i: $state.mint_i}
               else
-                [ $prior.findings[]?
-                  | select(.id | valid_id)
-                  | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category and ((.line | anchor) == ($f.line | anchor)))
-                  | select(.id as $pid | ($used | index($pid) | not))
-                ] as $cands
-                | if ($cands | length) == 1 then {id: $cands[0].id, mint_i: $state.mint_i}
+                ([ $rows[($i + 1):][] | .id | select(valid_id) | select(. as $x | $open | index($x) != null) ]) as $reserved
+                | ([ $open_findings[]
+                     | select(.id as $pid | ($taken + $reserved) | index($pid) == null)
+                     | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category)
+                   ]) as $same_place
+                | ([ $same_place[] | select((.line | anchor_line) == ($f.line | anchor_line)) ]) as $exact
+                | if ($exact | length) == 1 then {id: $exact[0].id, mint_i: $state.mint_i}
+                  elif ($same_place | length) == 1 then {id: $same_place[0].id, mint_i: $state.mint_i}
                   elif ($mints[$state.mint_i] | valid_id | not) then error("ran out of finding ids")
                   else {id: $mints[$state.mint_i], mint_i: ($state.mint_i + 1)}
                   end
@@ -1124,13 +1167,67 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   mv "${ID_RESULT}" "${RESULT_FILE}"
 fi
 
+# Accounting report: which open prior ids this review did not answer, which
+# of those are high or critical and absent from the current findings (an
+# approval must not slip past them), and dispositions aimed at closed ids
+# (ignored: a human dismissal or a recorded fix is not the model'"'"'s to undo).
+LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" '
+  def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+  def well_formed_disposition:
+    type == "object"
+    and (.id | valid_id)
+    and (.status | IN("open", "resolved_by_change", "reclassified", "dismissed_by_human"))
+    and (.rationale | type == "string")
+    and (.evidence | type == "string");
+  ($prior.open_ids) as $open
+  | ([ $prior.closed[].id ]) as $closed
+  | ([ (.dispositions // [])[] | select(well_formed_disposition) | .id ]) as $answered
+  | ([ (.findings // [])[] | .id | select(valid_id) ]) as $current_ids
+  | ([ $open[] | select(. as $id | $answered | index($id) == null) ]) as $unanswered
+  | {
+      unanswered: $unanswered,
+      blocking: [ $prior.findings[]
+                  | select(.id as $id | ($unanswered | index($id) != null) and ($current_ids | index($id) == null))
+                  | select(.severity | IN("high", "critical")) | .id ],
+      ignored_closed: [ (.dispositions // [])[] | select(type == "object") | .id
+                        | select(type == "string") | select(. as $id | $closed | index($id) != null) ] | unique
+    }
+' "${RESULT_FILE}")"
+UNANSWERED_IDS="$(jq -r '.unanswered | join(", ")' <<< "${LEDGER_REPORT}")"
+if [[ -n "${UNANSWERED_IDS}" ]]; then
+  echo "::warning::No disposition recorded for prior finding id(s) ${UNANSWERED_IDS}; recorded as open"
+fi
+IGNORED_CLOSED_IDS="$(jq -r '.ignored_closed | join(", ")' <<< "${LEDGER_REPORT}")"
+if [[ -n "${IGNORED_CLOSED_IDS}" ]]; then
+  echo "::warning::Ignoring disposition for closed prior finding id(s) ${IGNORED_CLOSED_IDS}; a resolved or human-dismissed finding stays closed"
+fi
+BLOCKING_IDS="$(jq -r '.blocking | join(", ")' <<< "${LEDGER_REPORT}")"
+if [[ -n "${BLOCKING_IDS}" && "${ACTION}" = "approve" ]]; then
+  echo "::warning::Approval withheld: prior high/critical finding id(s) ${BLOCKING_IDS} are still open and were not addressed"
+  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) '"${BLOCKING_IDS}"$' are still open and this review did not address them.'
+  LEDGER_RESULT="$(mktemp)"
+  CLEANUP_FILES+=("${LEDGER_RESULT}")
+  jq --arg notice "${LEDGER_NOTICE}" \
+    '.action = "comment" | .body = (.body + $notice)' \
+    "${RESULT_FILE}" > "${LEDGER_RESULT}"
+  RESULT_FILE="${LEDGER_RESULT}"
+  ACTION="comment"
+  DOWNGRADED=true
+fi
+
 # Append a machine-readable projection only when every schema-validated finding
 # can be represented safely. A lossy projection could turn a failed sub-agent
 # into an apparently clean dimension on the next re-review. Low-severity
 # challenger failures are non-dimensional and retain the pre-challenger findings.
 # A dimension failure the severity filter removed (Sonnet-tier failures are
 # recorded at info) must still suppress the projection.
-PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_JSON}" --arg default_open "${DEFAULT_OPEN_RATIONALE}" '
+#
+# The projection is the ledger: every current finding plus every prior
+# finding not re-emitted, each with its id, and one {id, status} per prior
+# id. Closed findings keep their anchor so the next review can recognise
+# them; the oldest closed entries are dropped past 100. Rationale and
+# evidence stay in the human-readable comment and never enter the marker.
+PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_LEDGER}" '
   def allowed_category:
     IN(
       "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
@@ -1154,8 +1251,9 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
   def projectable:
     (.category | type == "string" and allowed_category) and (.file == "N/A" or (.file | safe_path));
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+  def closed_status: IN("resolved_by_change", "dismissed_by_human");
   def resolving:
-    (.status == "resolved_by_change" or .status == "dismissed_by_human")
+    (.status | closed_status)
     and (.rationale | type == "string" and length > 0)
     and (.evidence | type == "string" and length > 0);
   def reclassified:
@@ -1175,57 +1273,47 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       file: (if .file == "N/A" then null else .file end),
       id
     } + (if (.line | type) == "number" then {line} else {} end);
-  def is_resolved($accounted; $id):
-    [$accounted[] | select(.id == $id and resolving)] | length > 0;
+  def is_closed($accounted; $id):
+    [$accounted[] | select(.id == $id and (.status | closed_status))] | length > 0;
   (.findings // []) as $findings
   | ($findings | map(select(non_dimensional_finding | not))) as $dimension_findings
   | (($unfiltered[0].findings // [])
-      | any(.[]; .category == "sub-agent-failure" and (non_dimensional_finding | not))) as $dimension_failed
+      | any(.[]; .category == "sub-agent-failure" and .severity != "low")) as $dimension_failed
   | if (.action | IN("approve", "request-changes", "comment", "reject"))
       and ($dimension_findings | all(.[]; projectable))
       and ($dimension_failed | not) then
-      ([ $prior.findings[]? | select(.id | valid_id) ]) as $prior_ids
+      ($prior.open_ids) as $open
       | ([ (.dispositions // [])[] | select(well_formed_disposition) ]) as $given
-      | [
-          $prior_ids[]
-          | .id as $id
+      | ([
+          $open[]
+          | . as $id
           | ($given | map(select(.id == $id)) | last) as $got
-          | if $got != null and ($got | resolving) then {id: $got.id, status: $got.status, rationale: $got.rationale, evidence: $got.evidence}
-            elif $got != null and ($got | reclassified) then {id: $got.id, status: "reclassified", rationale: $got.rationale, evidence: $got.evidence}
-            elif $got != null and $got.status == "open" and ($got.rationale | length) > 0 then {id: $got.id, status: "open", rationale: $got.rationale, evidence: ($got.evidence // "")}
-            else {id: $id, status: "open", rationale: $default_open, evidence: ""}
+          | if $got != null and ($got | resolving) then {id: $id, status: $got.status}
+            elif $got != null and ($got | reclassified) then {id: $id, status: "reclassified"}
+            else {id: $id, status: "open"}
             end
-        ] as $accounted
+        ]) as $answered
+      | ([ $prior.closed[] | {id, status} ]) as $carried
+      | ($answered + $carried) as $accounted
+      | ([ $dimension_findings[] | select(is_closed($accounted; .id) | not) | project_finding ]) as $current
+      | ([ $current[].id ]) as $current_ids
+      | ([ $prior.findings[] | select(.id as $id | $current_ids | index($id) == null) | project_finding ]) as $carried_findings
+      | ([ $carried_findings[] | select(is_closed($accounted; .id) | not) ]) as $carried_open
+      | ([ $carried_findings[] | select(is_closed($accounted; .id)) ]
+          | if length > 100 then .[(length - 100):] else . end) as $carried_closed
+      | ([ $carried_closed[].id ]) as $kept_closed
       | {
           version: 2,
-          findings: (
-            [
-              $dimension_findings[]
-              | select(is_resolved($accounted; .id) | not)
-              | project_finding
-            ] + [
-              $prior_ids[]
-              | select(is_resolved($accounted; .id) | not)
-              | select(.id as $id | [$dimension_findings[].id] | index($id) | not)
-              | project_finding
-            ]
-          )
+          findings: ($current + $carried_open + $carried_closed)
         }
-        + (if ($accounted | length) > 0 then {dispositions: $accounted} else {} end)
+        + (if ($accounted | length) > 0 then
+             {dispositions: [ $accounted[] | select((.status | closed_status | not) or (.id as $id | $kept_closed | index($id) != null)) ]}
+           else {} end)
     else empty
     end
 ' "${RESULT_FILE}")"
 PROJECTION_MARKER=""
 if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
-  # Every prior id must be answered. A missing or malformed disposition is
-  # recorded as open so the ledger stays complete, but say so in the log:
-  # silent defaults would hide a model that stopped answering.
-  UNANSWERED_IDS="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | jq -r --arg default_open "${DEFAULT_OPEN_RATIONALE}" '
-    [(.dispositions // [])[] | select(.status == "open" and .rationale == $default_open) | .id] | join(", ")
-  ' 2>/dev/null || true)"
-  if [[ -n "${UNANSWERED_IDS}" ]]; then
-    echo "::warning::No disposition recorded for prior finding id(s) ${UNANSWERED_IDS}; recorded as open"
-  fi
   PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
   PROJECTION_MARKER="<!-- fullsend:review-findings-v2:${PRIOR_FINDINGS_ENCODED} -->"
 fi
@@ -1246,7 +1334,9 @@ jq --arg marker "${PROJECTION_MARKER}" '
     if (.body | type) == "string" then .body else "" end
     | strip_reserved_fixpoint
   )
-  | if $marker == "" then . else .body = (.body + "\n\n" + $marker) end
+  # The marker leads the body: sticky truncation cuts from the end, so a
+  # very long review must never lose its ledger.
+  | if $marker == "" then . else .body = ($marker + "\n\n" + .body) end
 ' \
   "${RESULT_FILE}" > "${TMP_RESULT}"
 mv "${TMP_RESULT}" "${RESULT_FILE}"

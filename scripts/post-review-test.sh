@@ -1731,10 +1731,11 @@ run_disposition_case() {
 }
 
 BASE_REVIEW='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review"}'
+# A supplied id is kept when it names an open prior finding.
 run_disposition_case "projection-keeps-supplied-finding-id" \
-  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d",id:"f_keep1"}]' <<< "${BASE_REVIEW}")" \
-  "" \
-  '.findings[0].id == "f_keep1" and .findings[0].file == "internal/foo.go" and (.findings | length) == 1 and .dispositions == null'
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d",id:"f_keep1"}] | .dispositions=[{id:"f_keep1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_keep1"}]}' \
+  '.findings[0].id == "f_keep1" and .findings[0].file == "internal/foo.go" and (.findings | length) == 1 and .dispositions == [{id: "f_keep1", status: "open"}]'
 
 run_disposition_case "projection-mints-missing-finding-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d"}]' <<< "${BASE_REVIEW}")" \
@@ -1744,17 +1745,19 @@ run_disposition_case "projection-mints-missing-finding-id" \
 run_disposition_case "projection-copies-prior-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_same1"}]}' \
-  '.findings[0].id == "f_same1" and (.findings | length) == 1 and .dispositions[0].id == "f_same1" and .dispositions[0].status == "open" and .dispositions[0].rationale == "Still open. No resolution was recorded." and .dispositions[0].evidence == ""'
+  '.findings[0].id == "f_same1" and (.findings | length) == 1 and .dispositions == [{id: "f_same1", status: "open"}]'
 
 run_disposition_case "projection-carries-undispositioned-prior-finding" \
   "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_old1"}]}' \
   '([.findings[] | select(.id == "f_old1" and .file == "old.go")] | length) == 1 and ([.dispositions[] | select(.id == "f_old1" and .status == "open")] | length) == 1 and (.findings | length) == 2'
 
-run_disposition_case "projection-resolved-by-change-leaves-open-list" \
+# A resolved finding stays in the ledger with its anchor and a closed status,
+# so the next review recognises it. Rationale and evidence never enter the marker.
+run_disposition_case "projection-resolved-by-change-closes-finding" \
   "$(jq -c '.findings=[] | .dispositions=[{id:"f_done1",status:"resolved_by_change",rationale:"The return value is corrected.",evidence:"src/add.go now returns a + b"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_done1"}]}' \
-  '([.findings[] | select(.id == "f_done1")] | length) == 0 and .dispositions[0].status == "resolved_by_change" and .dispositions[0].evidence == "src/add.go now returns a + b"'
+  '.findings == [{"severity":"high","category":"logic-error","file":"src/add.go","id":"f_done1","line":2}] and .dispositions == [{id: "f_done1", status: "resolved_by_change"}]'
 
 run_disposition_case "projection-resolved-without-evidence-stays-open" \
   "$(jq -c '.findings=[] | .dispositions=[{id:"f_done1",status:"resolved_by_change",rationale:"Fixed.",evidence:""}]' <<< "${BASE_REVIEW}")" \
@@ -1764,12 +1767,12 @@ run_disposition_case "projection-resolved-without-evidence-stays-open" \
 run_disposition_case "projection-reclassified-keeps-finding" \
   "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"README.md",line:3,description:"typo",id:"f_reclass1"}] | .dispositions=[{id:"f_reclass1",status:"reclassified",rationale:"This is a docs typo, not a logic error.",evidence:"README still says pytset"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"README.md","line":3,"id":"f_reclass1"}]}' \
-  '.findings[0].id == "f_reclass1" and .findings[0].category == "incorrect-doc" and .dispositions[0].status == "reclassified"'
+  '.findings[0].id == "f_reclass1" and .findings[0].category == "incorrect-doc" and (.findings | length) == 1 and .dispositions == [{id: "f_reclass1", status: "reclassified"}]'
 
-run_disposition_case "projection-dismissed-by-human-leaves-open-list" \
+run_disposition_case "projection-dismissed-by-human-closes-finding" \
   "$(jq -c '.findings=[] | .dispositions=[{id:"f_human1",status:"dismissed_by_human",rationale:"A reviewer resolved the thread and wants the name kept.",evidence:"reviewer alice resolved the src/foo.go:4 thread: name matches the public API"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}]}' \
-  '([.findings[] | select(.id == "f_human1")] | length) == 0 and .dispositions[0].status == "dismissed_by_human"'
+  '([.findings[] | select(.id == "f_human1" and .file == "src/foo.go")] | length) == 1 and .dispositions == [{id: "f_human1", status: "dismissed_by_human"}]'
 
 # The post-script log must name every prior id that got the default open
 # disposition, and stay quiet when the model answered all of them.
@@ -1803,7 +1806,7 @@ assert_disposition_stdout "projection-warns-on-unanswered-prior-id" \
 run_disposition_case "projection-no-warning-when-prior-ids-answered" \
   "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_old1"}] | .dispositions=[{id:"f_old1",status:"open",rationale:"The nil check is still missing.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_old1"}]}' \
-  '.dispositions[0].id == "f_old1" and .dispositions[0].rationale == "The nil check is still missing."'
+  '.dispositions == [{id: "f_old1", status: "open"}]'
 assert_disposition_stdout "projection-no-warning-when-prior-ids-answered" \
   "::warning::No disposition recorded" "absent"
 
@@ -1813,6 +1816,104 @@ run_disposition_case "projection-mints-ids-beyond-128-findings" \
   "$(jq -c '.findings=[range(0;130) | {severity:"low",category:"logic-error",file:"internal/foo.go",line:(.+1),description:"d"}]' <<< "${BASE_REVIEW}")" \
   "" \
   '(.findings | length) == 130 and ([.findings[].id] | unique | length) == 130 and all(.findings[].id; test("^f_[A-Za-z0-9]+$"))'
+
+# Asserts on the result the mock fullsend received (action, body) for the
+# most recent run_disposition_case.
+assert_last_result() {
+  local test_name="$1"
+  local check_jq="$2"
+  if ! jq -e "${check_jq}" "${TMPDIR}/last-result.json" >/dev/null 2>&1; then
+    echo "FAIL: ${test_name} — last result mismatch: ${check_jq}"
+    jq '{action, body}' "${TMPDIR}/last-result.json" 2>/dev/null
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (result ${check_jq})"
+}
+
+# A finding closed on an earlier review is carried forward unchanged, with
+# its anchor, and is not reported as unanswered.
+CLOSED_PRIOR='{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_closed1"},{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_open1"}],"dispositions":[{"id":"f_closed1","status":"dismissed_by_human"},{"id":"f_open1","status":"open"}]}'
+run_disposition_case "projection-carries-closed-finding-forward" \
+  "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"src/add.go",line:2,description:"d",id:"f_open1"}] | .dispositions=[{id:"f_open1",status:"open",rationale:"Still wrong.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  "${CLOSED_PRIOR}" \
+  '([.findings[] | select(.id == "f_closed1" and .file == "src/foo.go" and .line == 4)] | length) == 1 and ([.dispositions[] | select(.id == "f_closed1" and .status == "dismissed_by_human")] | length) == 1 and (.findings | length) == 2'
+assert_disposition_stdout "projection-carries-closed-finding-forward" \
+  "::warning::No disposition recorded" "absent"
+
+# The model cannot reopen a closed id: a disposition for it is ignored, and a
+# finding that reuses the id gets a fresh one while the closed entry stays.
+run_disposition_case "projection-closed-id-cannot-be-reused-or-reopened" \
+  "$(jq -c '.findings=[{severity:"low",category:"naming-convention",file:"src/foo.go",line:4,description:"d",id:"f_closed1"}] | .dispositions=[{id:"f_closed1",status:"open",rationale:"Raising again.",evidence:""},{id:"f_open1",status:"open",rationale:"Still wrong.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  "${CLOSED_PRIOR}" \
+  '([.findings[] | select(.id == "f_closed1")] | length) == 1 and ([.findings[] | select(.category == "naming-convention")] | length) == 2 and ([.findings[] | select(.category == "naming-convention" and .id != "f_closed1") | .id | test("^f_[A-Za-z0-9]+$")] == [true]) and ([.dispositions[] | select(.id == "f_closed1")] == [{id: "f_closed1", status: "dismissed_by_human"}])'
+assert_disposition_stdout "projection-closed-id-cannot-be-reused-or-reopened" \
+  "::warning::Ignoring disposition for closed prior finding id(s) f_closed1" "present"
+
+# Two rows that supply the same prior id cannot share one resolution: the
+# second gets its own id.
+run_disposition_case "projection-duplicate-supplied-id-is-reminted" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"d",id:"f_same1"},{severity:"low",category:"logic-error",file:"b.go",line:1,description:"d",id:"f_same1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":1,"id":"f_same1"}]}' \
+  '(.findings | length) == 2 and ([.findings[].id] | unique | length) == 2 and ([.findings[] | select(.file == "a.go") | .id] == ["f_same1"])'
+
+# An id that is not a prior id (for example invented on a first review) is
+# replaced, so ids only ever come from the ledger or the mint.
+run_disposition_case "projection-foreign-supplied-id-is-reminted" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"d",id:"f_invented1"}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 1 and .findings[0].id != "f_invented1" and (.findings[0].id | test("^f_[A-Za-z0-9]+$"))'
+
+# A shifted line still copies the prior id when file and category identify
+# one prior finding, so an edit above the finding does not duplicate it.
+run_disposition_case "projection-copies-prior-id-across-line-shift" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:9,description:"d"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_shift1"}]}' \
+  '.findings == [{"severity":"low","category":"logic-error","file":"internal/foo.go","id":"f_shift1","line":9}] and .dispositions == [{id: "f_shift1", status: "open"}]'
+
+# A prior finding written before ids existed gets one and enters the ledger
+# instead of vanishing when the model does not mention it.
+run_disposition_case "projection-assigns-id-to-legacy-prior-finding" \
+  "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3}]}' \
+  '([.findings[] | select(.file == "old.go" and .category == "logic-error" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.dispositions | length) == 1 and .dispositions[0].status == "open" and (.findings | length) == 2'
+
+# An approval cannot slip past an unanswered high or critical prior finding
+# that the review omitted: the action is downgraded to comment.
+run_disposition_case "approve-withheld-for-unanswered-high-prior-finding" \
+  "$(jq -c '.action="approve" | .findings=[]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '([.findings[] | select(.id == "f_hi1")] | length) == 1 and .dispositions == [{id: "f_hi1", status: "open"}]'
+assert_last_result "approve-withheld-for-unanswered-high-prior-finding" \
+  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+assert_disposition_stdout "approve-withheld-for-unanswered-high-prior-finding" \
+  "::warning::Approval withheld: prior high/critical finding id(s) f_hi1" "present"
+
+run_disposition_case "approve-kept-for-unanswered-low-prior-finding" \
+  "$(jq -c '.action="approve" | .findings=[]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"stale-doc","file":"docs/x.md","line":3,"id":"f_lo1"}]}' \
+  '.dispositions == [{id: "f_lo1", status: "open"}]'
+assert_last_result "approve-kept-for-unanswered-low-prior-finding" \
+  '.action == "approve" and (.body | contains("Approval withheld") | not)'
+
+run_disposition_case "approve-kept-for-answered-high-prior-finding" \
+  "$(jq -c '.action="approve" | .findings=[] | .dispositions=[{id:"f_hi1",status:"resolved_by_change",rationale:"Fixed.",evidence:"old.go now checks for nil"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.dispositions == [{id: "f_hi1", status: "resolved_by_change"}]'
+assert_last_result "approve-kept-for-answered-high-prior-finding" \
+  '.action == "approve"'
+
+# The marker leads the body so sticky truncation from the end cannot cut it.
+assert_last_result "projection-marker-is-first-body-line" \
+  '(.body | split("\n")[0]) | test("^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$")'
+
+# Closed entries are capped at the newest 100 so the marker stays bounded.
+CAPPED_PRIOR="$(jq -nc '{version:2, findings:[range(0;101) | {severity:"low",category:"logic-error",file:"src/a.go",line:(.+1),id:("f_c" + tostring)}], dispositions:[range(0;101) | {id:("f_c" + tostring),status:"resolved_by_change"}]}')"
+run_disposition_case "projection-caps-closed-findings-at-100" \
+  "$(jq -c '.findings=[]' <<< "${BASE_REVIEW}")" \
+  "${CAPPED_PRIOR}" \
+  '(.findings | length) == 100 and (.dispositions | length) == 100 and ([.findings[].id] | index("f_c0")) == null and ([.findings[].id] | index("f_c100")) != null and ([.dispositions[].id] | index("f_c0")) == null'
 
 run_no_projection_test "failure-without-body-posts-no-projection" \
   '{"action":"failure","reason":"time-budget"}'

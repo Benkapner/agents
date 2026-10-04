@@ -665,16 +665,16 @@ validate_prior_review_projection() {
         (.line == null or (.line | type == "number" and . > 0 and floor == .)) and
         (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$")))
       ) and
+      ([.findings[].id | select(. != null)] | length == (unique | length)) and
       (.dispositions == null or (
         (.dispositions | type == "array") and
         all(.dispositions[];
           type == "object" and
-          ((keys - ["id", "status", "rationale", "evidence"]) | length == 0) and
+          ((keys - ["id", "status"]) | length == 0) and
           (.id | type == "string" and test("^f_[A-Za-z0-9]+$")) and
-          (.status | IN("open", "resolved_by_change", "reclassified", "dismissed_by_human")) and
-          (.rationale | type == "string" and length > 0) and
-          (.evidence | type == "string")
-        )
+          (.status | IN("open", "resolved_by_change", "reclassified", "dismissed_by_human"))
+        ) and
+        ([.dispositions[].id] | length == (unique | length))
       ))
     ) then {
       version: $projection_version,
@@ -685,7 +685,7 @@ validate_prior_review_projection() {
         line: .line
       } + (if .id == null then {} else {id: .id} end)]
     } + (if .dispositions == null then {} else {
-      dispositions: [.dispositions[] | {id, status, rationale, evidence}]
+      dispositions: [.dispositions[] | {id, status}]
     } end) else error("invalid prior review projection") end
   ' > "${tmp_file}"; then
     mv "${tmp_file}" "${prior_file}"
