@@ -896,18 +896,24 @@ if [[ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" =~ [[:cntrl:]] ]]; then
 fi
 REVIEW_RISK_ASSESSMENT_ENABLED_LOWER=$(printf '%s' "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]' | tr -dc '[:print:]')
 case "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" in
-  true|1|yes) ;;
-  false|0|no) echo "Risk assessment disabled (REVIEW_RISK_ASSESSMENT_ENABLED=${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER})" ;;  # falls through to skip-gate
+  true) ;;
+  false) echo "Risk assessment disabled (REVIEW_RISK_ASSESSMENT_ENABLED=false)" ;;  # falls through to skip-gate
   "") ;;  # unset, skip the gate
-  *) echo "::error::REVIEW_RISK_ASSESSMENT_ENABLED='${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER//%/%25}' is unrecognized (expected true/1/yes or false/0/no)"; exit 1 ;;
+  *)
+    SAFE_ENABLED=$(printf '%s' "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" | tr -dc '[:print:]')
+    SAFE_ENABLED="${SAFE_ENABLED//::/}"
+    SAFE_ENABLED="${SAFE_ENABLED//%/%25}"
+    echo "::error::REVIEW_RISK_ASSESSMENT_ENABLED='${SAFE_ENABLED}' is unrecognized (expected true or false)"
+    exit 1
+  ;;
 esac
-if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "true" ] || [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "1" ] || [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "yes" ]; then
+if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "true" ]; then
   THRESHOLD="${REVIEW_RISK_VERDICT_THRESHOLD:-4}"
   # Validate threshold is an integer 1-6; 6 disables the gate entirely (opt-out)
   if [[ ! "${THRESHOLD}" =~ ^[1-6]$ ]]; then
-    SAFE_THRESHOLD="${THRESHOLD//%/%25}"
-    SAFE_THRESHOLD="${SAFE_THRESHOLD//::/: :}"
-    SAFE_THRESHOLD=$(echo "${SAFE_THRESHOLD}" | tr -dc '[:print:]')
+    SAFE_THRESHOLD=$(printf '%s' "${THRESHOLD}" | tr -dc '[:print:]')
+    SAFE_THRESHOLD="${SAFE_THRESHOLD//::/}"
+    SAFE_THRESHOLD="${SAFE_THRESHOLD//%/%25}"
     echo "::error::REVIEW_RISK_VERDICT_THRESHOLD='${SAFE_THRESHOLD}' is invalid (expected integer 1-6)"
     exit 1
   fi
@@ -915,11 +921,12 @@ if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "true" ] || [ "${REVIEW_RISK_AS
   HAS_RISK_ASSESSMENT=$(jq 'has("risk_assessment")' "${RESULT_FILE}")
   RISK_GATE_TRIGGERED=false
 
-  # Normalize structurally invalid risk_assessment to absent. The schema
-  # (review-result.schema.json) requires score (integer 1-5), level, and
-  # rationale when risk_assessment is present. If a malformed assessment
-  # somehow bypasses schema validation, strip it so the missing-assessment
-  # gate handles it fail-closed — eliminating unreachable defensive branches.
+  # Defense-in-depth: normalize structurally invalid risk_assessment to
+  # absent. The harness validation_loop (review-result.schema.json) runs
+  # before this post-script executes, so well-formed pipelines reject
+  # malformed assessments during validation. This block guards against
+  # direct script invocation (tests, debugging) and future schema changes
+  # that might relax the risk_assessment constraint.
   if [ "${HAS_RISK_ASSESSMENT}" = "true" ]; then
     RISK_STRUCT_VALID=$(jq '
       .risk_assessment | type == "object"

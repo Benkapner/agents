@@ -2894,6 +2894,85 @@ run_risk_invalid_threshold_test() {
 }
 run_risk_invalid_threshold_test
 
+# --- Injection-vuln: sanitization strips workflow delimiters ---
+run_risk_sanitization_test() {
+  local test_name="$1"
+  local env_var="$2"   # "enabled" or "threshold"
+  local value="$3"
+  local expect_pattern="$4"
+
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_4_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_PR_FILES="README.md"
+    if [ "${env_var}" = "enabled" ]; then
+      export REVIEW_RISK_ASSESSMENT_ENABLED="${value}"
+      export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    else
+      export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+      export REVIEW_RISK_VERDICT_THRESHOLD="${value}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 1 ]]; then
+    echo "FAIL: ${test_name} — expected exit code 1, got ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Verify no literal :: appears in the diagnostic (after the ::error:: prefix)
+  if grep -q '::error::.*'"'"'[^'"'"']*::[^'"'"']*'"'"'' "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — diagnostic contains unsanitized :: inside quoted value"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expect_pattern}" ]]; then
+    if ! grep -qF "${expect_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected pattern not found: '${expect_pattern}'"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_risk_sanitization_test "risk-sanitize-enabled-literal-colons" \
+  "enabled" "::set-output::evil" "is unrecognized"
+
+run_risk_sanitization_test "risk-sanitize-threshold-literal-colons" \
+  "threshold" "::set-env::x" "is invalid"
+
+run_risk_sanitization_test "risk-sanitize-threshold-ansi-escape" \
+  "threshold" $'\x1b[31mred\x1b[0m' "is invalid"
+
+run_risk_sanitization_test "risk-sanitize-enabled-percent-encoding" \
+  "enabled" "%0Ainjection" "is unrecognized"
+
+# --- Enabled value contract: 1/yes/0/no rejected ---
+run_risk_sanitization_test "risk-enabled-rejects-numeric-1" \
+  "enabled" "1" "is unrecognized"
+
+run_risk_sanitization_test "risk-enabled-rejects-yes" \
+  "enabled" "yes" "is unrecognized"
+
 # --- Combined protected-path and risk verdict gate ---
 RISK_PROTECTED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
 run_risk_combined_test() {
