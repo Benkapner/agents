@@ -322,7 +322,7 @@ if [[ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" =~ [[:cntrl:]] ]]; then
   echo "::error::REVIEW_RISK_ASSESSMENT_ENABLED contains control characters (only printable ASCII allowed)"
   exit 1
 fi
-REVIEW_RISK_ASSESSMENT_ENABLED_LOWER=$(echo "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]' | tr -dc '[:print:]')
+REVIEW_RISK_ASSESSMENT_ENABLED_LOWER=$(printf '%s' "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]' | tr -dc '[:print:]')
 case "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" in
   true|1|yes) ;;
   false|0|no) echo "Risk assessment disabled (REVIEW_RISK_ASSESSMENT_ENABLED=${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER})" ;;  # falls through to skip-gate

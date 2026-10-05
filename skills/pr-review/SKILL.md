@@ -528,10 +528,11 @@ be absent from the result JSON.
    assessment from the PR's sticky comment using the forge API:
 
    ```bash
-   # GitHub:
+   # GitHub — authenticate against the expected bot identity to prevent
+   # a contributor forging a low-score comment with the risk marker:
    PRIOR_RISK_COMMENT=$(gh api --paginate \
      "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
-     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->"))] | last // empty')
+     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->")) | select(.performed_via_github_app.slug == "fullsend-ai" or .user.login == "fullsend-ai[bot]")] | last // empty')
    ```
 
    If found, extract the prior score, level, and rationale from the

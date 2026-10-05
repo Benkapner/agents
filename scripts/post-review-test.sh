@@ -1132,7 +1132,7 @@ run_severity_sanitize_test() {
 
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
-  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}' \
     > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
 
@@ -1871,7 +1871,7 @@ run_protected_paths_test() {
   echo "PASS: ${test_name}"
 }
 
-APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}'
 
 # Custom REVIEW_PROTECTED_PATHS: .github/ is no longer protected
 run_protected_paths_test "custom-paths-removes-default" \
@@ -2012,7 +2012,7 @@ run_empty_paths_test
 # Non-approve action must succeed even with degenerate REVIEW_PROTECTED_PATHS.
 run_nonapprove_degenerate_test() {
   local test_name="nonapprove-degenerate-paths-succeeds"
-  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
+  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Looks good overall."}'
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
@@ -2048,7 +2048,7 @@ run_nonapprove_degenerate_test
 # the protected-path block only runs for "approve".
 run_nonapprove_unset_env_var_test() {
   local test_name="nonapprove-unset-env-var-succeeds"
-  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
+  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Looks good overall."}'
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
@@ -2369,7 +2369,7 @@ run_protected_paths_default_drift_test
 # ---------------------------------------------------------------------------
 
 # Result with risk_assessment → risk label applied
-RISK_HIGH_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Auth middleware refactor.","tier1_signals":[{"dimension":"blast_radius","value":"large"}]}}'
+RISK_HIGH_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Auth middleware refactor.","tier1_signals":[{"dimension":"blast_radius","value":"large"}]}}'
 
 run_label_test "risk-label-high-applied" \
   "${RISK_HIGH_RESULT}" \
@@ -2386,7 +2386,7 @@ run_label_test_stdout "risk-label-log-message" \
   "Applying risk/high label"
 
 # Result WITHOUT risk_assessment → stale risk labels removed
-APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}'
 
 run_label_test "risk-absent-stale-removal" \
   "${APPROVE_NO_RISK}" \
@@ -2397,21 +2397,21 @@ run_label_test_no_pattern "risk-absent-no-create" \
   "gh label create risk/"
 
 # Result with risk_assessment level=low → risk/low label
-RISK_LOW_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo fix."}}'
+RISK_LOW_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo fix."}}'
 
 run_label_test "risk-label-low-applied" \
   "${RISK_LOW_RESULT}" \
   "gh label create risk/low"
 
 # Risk labels work with request-changes too
-RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
 
 run_label_test "risk-label-with-request-changes" \
   "${RISK_RC_RESULT}" \
   "gh label create risk/elevated"
 
 # Invalid risk level → warning, no risk label applied
-RISK_INVALID_LEVEL='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":3,"level":"bogus","rationale":"Bad level."}}'
+RISK_INVALID_LEVEL='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":3,"level":"bogus","rationale":"Bad level."}}'
 
 run_label_test_stdout "risk-invalid-level-warning" \
   "${RISK_INVALID_LEVEL}" \
@@ -2422,7 +2422,7 @@ run_label_test_no_pattern "risk-invalid-level-no-label" \
   "gh label create risk/"
 
 # Invalid risk score → warning but label still applied (level is valid)
-RISK_INVALID_SCORE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":99,"level":"high","rationale":"Bad score."}}'
+RISK_INVALID_SCORE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":99,"level":"high","rationale":"Bad score."}}'
 
 run_label_test_stdout "risk-invalid-score-warning" \
   "${RISK_INVALID_SCORE}" \
@@ -2546,7 +2546,7 @@ run_select_test "select-matrix-only-eligible" \
   "$(jq -nc --argjson a "${ELIGIBLE}" --argjson b "${RESOLVED}" --argjson c "${HUMAN}" '[$a,$b,$c]')" \
   "PRRT_eligible"
 
-COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"notes"}'
+COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"notes"}'
 
 run_outdated_integration() {
   local test_name="$1"
@@ -2669,7 +2669,7 @@ run_gitlab_outdated_noop_test() {
   local test_name="gitlab-outdated-threads-noop"
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
-  echo '{"action":"comment","pr_number":99,"repo":"test-group/test-project","head_sha":"abc123","body":"notes"}' \
+  echo '{"action":"comment","pr_number":99,"repo":"test-group/test-project","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"notes"}' \
     > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
 
@@ -2799,37 +2799,37 @@ run_risk_verdict_test() {
 }
 
 # --- Risk score at threshold (4/4) triggers downgrade ---
-RISK_SCORE_4_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Large auth refactor."}}'
+RISK_SCORE_4_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Large auth refactor."}}'
 run_risk_verdict_test "risk-verdict-score-at-threshold-downgrades" \
   "${RISK_SCORE_4_RESULT}" "true" "4" "true" \
   "Risk score 4 >= threshold 4" ""
 
 # --- Risk score above threshold (5/4) triggers downgrade ---
-RISK_SCORE_5_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":5,"level":"critical","rationale":"Auth middleware."}}'
+RISK_SCORE_5_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":5,"level":"critical","rationale":"Auth middleware."}}'
 run_risk_verdict_test "risk-verdict-score-above-threshold-downgrades" \
   "${RISK_SCORE_5_RESULT}" "true" "4" "true" \
   "Risk score 5 >= threshold 4" ""
 
 # --- Risk score below threshold (3/4) does not trigger gate ---
-RISK_SCORE_3_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+RISK_SCORE_3_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
 run_risk_verdict_test "risk-verdict-score-below-threshold-passes" \
   "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
   "" "downgrading approve to comment"
 
 # --- Missing risk_assessment triggers downgrade (fail-closed) ---
-APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}'
 run_risk_verdict_test "risk-verdict-missing-assessment-downgrades" \
   "${APPROVE_NO_RISK}" "true" "4" "true" \
   "no risk_assessment present" ""
 
 # --- risk_assessment present but score absent triggers downgrade ---
-RISK_NO_SCORE_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"level":"high","rationale":"Missing score."}}'
+RISK_NO_SCORE_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"level":"high","rationale":"Missing score."}}'
 run_risk_verdict_test "risk-verdict-score-absent-downgrades" \
   "${RISK_NO_SCORE_RESULT}" "true" "4" "true" \
   "no score" ""
 
 # --- Degraded risk assessment triggers downgrade ---
-RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":2,"level":"low","degraded":"tier1-only","rationale":"Degraded."}}'
+RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","degraded":"tier1-only","rationale":"Degraded."}}'
 run_risk_verdict_test "risk-verdict-degraded-downgrades" \
   "${RISK_DEGRADED_RESULT}" "true" "4" "true" \
   "Risk assessment is degraded" ""
@@ -2840,7 +2840,7 @@ run_risk_verdict_test "risk-verdict-disabled-skips-gate" \
   "" "downgrading approve to comment"
 
 # --- Non-approve action skips gate ---
-RISK_COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"notes","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+RISK_COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"notes","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
 run_risk_verdict_test "risk-verdict-non-approve-skips-gate" \
   "${RISK_COMMENT_RESULT}" "true" "4" "false" \
   "" "downgrading approve to comment"
@@ -2893,7 +2893,7 @@ run_risk_invalid_threshold_test() {
 run_risk_invalid_threshold_test
 
 # --- Combined protected-path and risk verdict gate ---
-RISK_PROTECTED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+RISK_PROTECTED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
 run_risk_combined_test() {
   local test_name="risk-combined-with-protected-path"
   local run_dir="${TMPDIR}/run-risk-${test_name}"
@@ -2955,28 +2955,28 @@ run_risk_verdict_test "risk-verdict-false-enabled-skips-gate" \
   "" "downgrading approve to comment"
 
 # --- Non-numeric/out-of-range score triggers downgrade ---
-RISK_SCORE_NULL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":null,"level":"high","rationale":"Null score."}}'
+RISK_SCORE_NULL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":null,"level":"high","rationale":"Null score."}}'
 run_risk_verdict_test "risk-verdict-null-score-downgrades" \
   "${RISK_SCORE_NULL_RESULT}" "true" "4" "true" \
   "Risk assessment score is invalid" ""
 
-RISK_SCORE_BOOL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":true,"level":"high","rationale":"Bool score."}}'
+RISK_SCORE_BOOL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":true,"level":"high","rationale":"Bool score."}}'
 run_risk_verdict_test "risk-verdict-bool-score-downgrades" \
   "${RISK_SCORE_BOOL_RESULT}" "true" "4" "true" \
   "Risk assessment score is invalid" ""
 
-RISK_SCORE_NEG_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":-1,"level":"high","rationale":"Negative score."}}'
+RISK_SCORE_NEG_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":-1,"level":"high","rationale":"Negative score."}}'
 run_risk_verdict_test "risk-verdict-neg-score-downgrades" \
   "${RISK_SCORE_NEG_RESULT}" "true" "4" "true" \
   "Risk assessment score is invalid" ""
 
-RISK_SCORE_STR_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":"high","level":"high","rationale":"String score."}}'
+RISK_SCORE_STR_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":"high","level":"high","rationale":"String score."}}'
 run_risk_verdict_test "risk-verdict-str-score-downgrades" \
   "${RISK_SCORE_STR_RESULT}" "true" "4" "true" \
   "Risk assessment score is invalid" ""
 
 # --- Native comment with high risk appends notice ---
-RISK_COMMENT_HI_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+RISK_COMMENT_HI_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
 run_risk_native_comment_test() {
   local test_name="risk-native-comment-notice"
   local run_dir="${TMPDIR}/run-risk-${test_name}"
@@ -3026,7 +3026,7 @@ run_risk_native_comment_test() {
 run_risk_native_comment_test
 
 # --- Native comment with low risk does not append notice ---
-RISK_COMMENT_LO_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Just a note.","risk_assessment":{"score":2,"level":"low","rationale":"Test."}}'
+RISK_COMMENT_LO_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Just a note.","risk_assessment":{"score":1,"level":"low","rationale":"Test."}}'
 run_risk_native_comment_low_test() {
   local test_name="risk-native-comment-low-no-notice"
   local run_dir="${TMPDIR}/run-risk-${test_name}"
@@ -3074,7 +3074,7 @@ run_risk_verdict_test "risk-verdict-threshold-6-opt-out" \
   "" "downgrading approve to comment"
 
 # --- Threshold 6 with comment action must not abort (regression: set -u crash) ---
-RISK_COMMENT_HI_6_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+RISK_COMMENT_HI_6_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
 run_risk_native_comment_optout_test() {
   local test_name="risk-threshold6-comment-does-not-abort"
   local run_dir="${TMPDIR}/run-risk-${test_name}"
@@ -3135,7 +3135,7 @@ run_risk_verdict_test "risk-verdict-threshold-2-score-2-downgrades" \
   "Risk score 2 >= threshold 2" ""
 
 # --- Verdict body check: degraded result has correct body ---
-RISK_DEGRADED_CHECK_BODY='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":2,"level":"low","degraded":"tier1-only","rationale":"Degraded."}}'
+RISK_DEGRADED_CHECK_BODY='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","degraded":"tier1-only","rationale":"Degraded."}}'
 run_risk_verdict_body_test() {
   local test_name="risk-verdict-body-degraded-downgrade"
   local run_dir="${TMPDIR}/run-risk-${test_name}"
