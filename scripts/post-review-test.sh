@@ -2802,13 +2802,13 @@ run_risk_verdict_test() {
 RISK_SCORE_4_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Large auth refactor."}}'
 run_risk_verdict_test "risk-verdict-score-at-threshold-downgrades" \
   "${RISK_SCORE_4_RESULT}" "true" "4" "true" \
-  "Risk score 4 >= threshold 4" ""
+  "Risk gate triggered (high)" ""
 
 # --- Risk score above threshold (5/4) triggers downgrade ---
 RISK_SCORE_5_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":5,"level":"critical","rationale":"Auth middleware."}}'
 run_risk_verdict_test "risk-verdict-score-above-threshold-downgrades" \
   "${RISK_SCORE_5_RESULT}" "true" "4" "true" \
-  "Risk score 5 >= threshold 4" ""
+  "Risk gate triggered (high)" ""
 
 # --- Risk score below threshold (3/4) does not trigger gate ---
 RISK_SCORE_3_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
@@ -2820,7 +2820,7 @@ run_risk_verdict_test "risk-verdict-score-below-threshold-passes" \
 APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}'
 run_risk_verdict_test "risk-verdict-missing-assessment-downgrades" \
   "${APPROVE_NO_RISK}" "true" "4" "true" \
-  "no risk_assessment present" ""
+  "Risk gate triggered (missing)" ""
 
 # --- risk_assessment present but score absent triggers downgrade ---
 # Normalization catches this before the gate — structurally invalid assessment
@@ -2834,7 +2834,7 @@ run_risk_verdict_test "risk-verdict-score-absent-downgrades" \
 RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","degraded":"tier1-only","rationale":"Degraded."}}'
 run_risk_verdict_test "risk-verdict-degraded-downgrades" \
   "${RISK_DEGRADED_RESULT}" "true" "4" "true" \
-  "Risk assessment is degraded" ""
+  "Risk gate triggered (degraded)" ""
 
 # --- Risk assessment disabled skips gate ---
 run_risk_verdict_test "risk-verdict-disabled-skips-gate" \
@@ -2850,7 +2850,7 @@ run_risk_verdict_test "risk-verdict-non-approve-skips-gate" \
 # --- Unset threshold falls back to default ---
 run_risk_verdict_test "risk-verdict-unset-threshold-defaults" \
   "${RISK_SCORE_4_RESULT}" "true" "" "true" \
-  ">= threshold 4" ""
+  "Risk gate triggered (high)" ""
 
 # --- Invalid threshold causes exit 1 ---
 run_risk_invalid_threshold_test() {
@@ -3014,7 +3014,7 @@ run_risk_combined_test() {
     return
   fi
 
-  if ! grep -qF "Risk score 4 >= threshold 4" "${TMPDIR}/stdout-${test_name}.log"; then
+  if ! grep -qF "Risk gate triggered (high)" "${TMPDIR}/stdout-${test_name}.log"; then
     echo "FAIL: ${test_name} — expected risk-verdict downgrade not found"
     cat "${TMPDIR}/stdout-${test_name}.log"
     FAILURES=$((FAILURES + 1))
@@ -3030,10 +3030,9 @@ run_risk_verdict_test "risk-verdict-unset-enabled-skips-gate" \
   "${RISK_SCORE_4_RESULT}" "" "4" "false" \
   "" "downgrading approve to comment"
 
-# --- Risk assessment enabled=true but FALSE not equal to "true" ---
-run_risk_verdict_test "risk-verdict-false-enabled-skips-gate" \
-  "${RISK_SCORE_4_RESULT}" "FALSE" "4" "false" \
-  "" "downgrading approve to comment"
+# --- Risk assessment enabled=FALSE is rejected (exact match required) ---
+run_risk_sanitization_test "risk-verdict-false-enabled-rejected" \
+  "enabled" "FALSE" "is unrecognized"
 
 # --- Non-numeric/out-of-range score triggers downgrade ---
 # Normalization now catches structurally invalid assessments (null, boolean,
@@ -3091,7 +3090,7 @@ run_risk_native_comment_test() {
     return
   fi
 
-  if ! grep -qF "Agent chose comment for PR with risk score" "${TMPDIR}/stdout-${test_name}.log"; then
+  if ! grep -qF "Agent chose comment — appending risk notice (high)" "${TMPDIR}/stdout-${test_name}.log"; then
     echo "FAIL: ${test_name} — expected native comment risk notice not found"
     cat "${TMPDIR}/stdout-${test_name}.log"
     FAILURES=$((FAILURES + 1))
@@ -3211,7 +3210,7 @@ run_risk_native_comment_optout_test
 # --- Threshold at non-default values ---
 run_risk_verdict_test "risk-verdict-threshold-3-score-3-downgrades" \
   "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 3')" "true" "3" "true" \
-  "Risk score 3 >= threshold 3" ""
+  "Risk gate triggered (high)" ""
 
 run_risk_verdict_test "risk-verdict-threshold-3-score-2-passes" \
   "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 2')" "true" "3" "false" \
@@ -3219,7 +3218,7 @@ run_risk_verdict_test "risk-verdict-threshold-3-score-2-passes" \
 
 run_risk_verdict_test "risk-verdict-threshold-2-score-2-downgrades" \
   "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 2')" "true" "2" "true" \
-  "Risk score 2 >= threshold 2" ""
+  "Risk gate triggered (high)" ""
 
 # --- Verdict body check: degraded result has correct body ---
 RISK_DEGRADED_CHECK_BODY='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","degraded":"tier1-only","rationale":"Degraded."}}'

@@ -894,20 +894,19 @@ if [[ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" =~ [[:cntrl:]] ]]; then
   echo "::error::REVIEW_RISK_ASSESSMENT_ENABLED contains control characters (only printable ASCII allowed)"
   exit 1
 fi
-REVIEW_RISK_ASSESSMENT_ENABLED_LOWER=$(printf '%s' "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" | tr '[:upper:]' '[:lower:]' | tr -dc '[:print:]')
-case "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" in
+case "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" in
   true) ;;
-  false) echo "Risk assessment disabled (REVIEW_RISK_ASSESSMENT_ENABLED=false)" ;;  # falls through to skip-gate
-  "") ;;  # unset, skip the gate
+  false) echo "Risk assessment disabled (REVIEW_RISK_ASSESSMENT_ENABLED=false)" ;;
+  "") ;;
   *)
-    SAFE_ENABLED=$(printf '%s' "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" | tr -dc '[:print:]')
+    SAFE_ENABLED=$(printf '%s' "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" | tr -dc '[:print:]')
     SAFE_ENABLED="${SAFE_ENABLED//::/}"
     SAFE_ENABLED="${SAFE_ENABLED//%/%25}"
-    echo "::error::REVIEW_RISK_ASSESSMENT_ENABLED='${SAFE_ENABLED}' is unrecognized (expected true or false)"
+    echo "::error::REVIEW_RISK_ASSESSMENT_ENABLED='${SAFE_ENABLED}' is unrecognized (expected 'true' or 'false')"
     exit 1
   ;;
 esac
-if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "true" ]; then
+if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" = "true" ]; then
   THRESHOLD="${REVIEW_RISK_VERDICT_THRESHOLD:-4}"
   # Validate threshold is an integer 1-6; 6 disables the gate entirely (opt-out)
   if [[ ! "${THRESHOLD}" =~ ^[1-6]$ ]]; then
@@ -919,7 +918,6 @@ if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "true" ]; then
   fi
 
   HAS_RISK_ASSESSMENT=$(jq 'has("risk_assessment")' "${RESULT_FILE}")
-  RISK_GATE_TRIGGERED=false
 
   # Defense-in-depth: normalize structurally invalid risk_assessment to
   # absent. The harness validation_loop (review-result.schema.json) runs
@@ -949,41 +947,41 @@ if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "true" ]; then
   # disabled — risk labels and comments still apply but do not gate the verdict.
   if [ "${THRESHOLD}" = "6" ]; then
     echo "Risk verdict gate disabled (REVIEW_RISK_VERDICT_THRESHOLD=6) — informational scoring only"
-    :
   else
+    # -----------------------------------------------------------------------
+    # Evaluate risk status once — shared between approve and comment actions.
+    # -----------------------------------------------------------------------
+    RISK_STATUS="ok"
+    RISK_NOTICE=""
 
-  if [ "${ACTION}" = "approve" ]; then
     if [ "${HAS_RISK_ASSESSMENT}" != "true" ]; then
-      echo "Risk assessment enabled but no risk_assessment present — downgrading approve to comment"
-      RISK_GATE_TRIGGERED=true
+      RISK_STATUS="missing"
       RISK_NOTICE=$'\n\n---\n\n'
       RISK_NOTICE+=$'> **Risk assessment missing** — risk assessment is enabled but no score was\n'
       RISK_NOTICE+=$'> produced. A human reviewer must evaluate this PR.\n'
     else
-      RISK_HAS_SCORE=$(jq 'has("score")' <<< "$(jq '.risk_assessment' "${RESULT_FILE}")")
       RISK_HAS_DEGRADED=$(jq '.risk_assessment | has("degraded")' "${RESULT_FILE}")
+      RISK_HAS_SCORE=$(jq '.risk_assessment | has("score")' "${RESULT_FILE}")
 
       if [ "${RISK_HAS_DEGRADED}" = "true" ]; then
         RISK_DEGRADED_REASON=$(jq -r '.risk_assessment.degraded' "${RESULT_FILE}" | tr -dc '[:print:]')
-        echo "Risk assessment is degraded — downgrading approve to comment"
-        RISK_GATE_TRIGGERED=true
+        RISK_STATUS="degraded"
         RISK_NOTICE=$'\n\n---\n\n'
         RISK_NOTICE+=$'> **Risk assessment degraded** — the risk score was not fully computed\n'
-        RISK_NOTICE+="> (${RISK_DEGRADED_REASON}). A human reviewer must evaluate this PR.\n"
+        RISK_NOTICE+="> (${RISK_DEGRADED_REASON}). A human reviewer must evaluate this PR."$'\n'
       elif [ "${RISK_HAS_SCORE}" != "true" ]; then
-        echo "Risk assessment present but no score — downgrading approve to comment"
-        RISK_GATE_TRIGGERED=true
+        RISK_STATUS="missing_score"
         RISK_NOTICE=$'\n\n---\n\n'
         RISK_NOTICE+=$'> **Risk score missing** — risk assessment is present but contains no\n'
         RISK_NOTICE+=$'> score. A human reviewer must evaluate this PR.\n'
       else
         # Validate score type in jq to prevent bash $(jq -r) re-canonicalization:
-        # strings ("1\n"), arrays, objects, null, booleans, and floats (1.5) are all
-        # rejected before they reach bash. Only integer numbers 1–5 pass.
+        # strings ("1\n"), arrays, objects, null, booleans, and floats (1.5) are
+        # all rejected before they reach bash. Only integer numbers 1–5 pass.
         SCORE_VALID=$(jq '.risk_assessment | has("score") and (.score | type == "number" and floor == . and . >= 1 and . <= 5)' "${RESULT_FILE}")
         if [ "${SCORE_VALID}" != "true" ]; then
-          echo "::warning::Risk assessment score is invalid (expected integer 1-5) — downgrading approve to comment"
-          RISK_GATE_TRIGGERED=true
+          RISK_STATUS="invalid"
+          echo "::warning::Risk assessment score is invalid (expected integer 1-5)"
           RISK_NOTICE=$'\n\n---\n\n'
           RISK_NOTICE+="> **Risk score invalid** — the risk assessment produced an invalid"$'\n'
           RISK_NOTICE+=$'> score. A human reviewer must evaluate this PR.\n'
@@ -991,73 +989,32 @@ if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "true" ]; then
           RISK_SCORE=$(jq -r '.risk_assessment.score' "${RESULT_FILE}")
           THRESHOLD_CHECK=$(jq -n --argjson score "${RISK_SCORE}" --argjson threshold "${THRESHOLD}" '$score >= $threshold')
           if [ "${THRESHOLD_CHECK}" = "true" ]; then
-            echo "Risk score ${RISK_SCORE} >= threshold ${THRESHOLD} — downgrading approve to comment"
-            RISK_GATE_TRIGGERED=true
+            RISK_STATUS="high"
             RISK_NOTICE=$'\n\n---\n\n'
             RISK_NOTICE+="> **Risk score ${RISK_SCORE}/5** — this PR has a risk score at or above the"$'\n'
             RISK_NOTICE+="> threshold (${THRESHOLD}). Automatic approval is not permitted for high-risk PRs."$'\n'
             RISK_NOTICE+=$'> A human reviewer must evaluate this PR.\n'
-    fi
-        fi
-      fi
-    fi
-    fi
-
-    if [ "${RISK_GATE_TRIGGERED}" = "true" ]; then
-      RISK_MODIFIED_RESULT=$(mktemp)
-      CLEANUP_FILES+=("${RISK_MODIFIED_RESULT}")
-      jq --arg notice "${RISK_NOTICE}" \
-        '.action = "comment" | .risk_gated = true | .body = (.body + $notice)' \
-        "${RESULT_FILE}" > "${RISK_MODIFIED_RESULT}"
-      RESULT_FILE="${RISK_MODIFIED_RESULT}"
-      DOWNGRADED=true
-    fi
-
-    if [ "${ACTION}" = "comment" ]; then
-      COMMENT_NOTICE=""
-      if [ "${HAS_RISK_ASSESSMENT}" != "true" ]; then
-        echo "Agent chose comment — risk assessment missing, appending notice to review body"
-        COMMENT_NOTICE=$'\n\n---\n\n'
-        COMMENT_NOTICE+=$'> **Risk assessment missing** — risk assessment is enabled but no score was\n'
-        COMMENT_NOTICE+=$'> produced. A human reviewer must evaluate this PR.\n'
-      else
-        RISK_COM_DEGRADED=$(jq '.risk_assessment | has("degraded")' "${RESULT_FILE}")
-        RISK_COM_HAS_SCORE=$(jq 'has("score")' <<< "$(jq '.risk_assessment' "${RESULT_FILE}")")
-        if [ "${RISK_COM_DEGRADED}" = "true" ]; then
-          RISK_COM_DEGRADED_REASON=$(jq -r '.risk_assessment.degraded' "${RESULT_FILE}" | tr -dc '[:print:]')
-          echo "Agent chose comment — risk assessment degraded, appending notice to review body"
-          COMMENT_NOTICE=$'\n\n---\n\n'
-          COMMENT_NOTICE+=$'> **Risk assessment degraded** — the risk score was not fully computed\n'
-          COMMENT_NOTICE+="> (${RISK_COM_DEGRADED_REASON}). A human reviewer must evaluate this PR.\n"
-        elif [ "${RISK_COM_HAS_SCORE}" != "true" ]; then
-          echo "Agent chose comment — risk score missing, appending notice to review body"
-          COMMENT_NOTICE=$'\n\n---\n\n'
-          COMMENT_NOTICE+=$'> **Risk score missing** — risk assessment is present but contains no\n'
-          COMMENT_NOTICE+=$'> score. A human reviewer must evaluate this PR.\n'
-        else
-          SCORE_VALID=$(jq '.risk_assessment | has("score") and (.score | type == "number" and floor == . and . >= 1 and . <= 5)' "${RESULT_FILE}")
-          if [ "${SCORE_VALID}" != "true" ]; then
-            echo "Agent chose comment — risk score invalid, appending notice to review body"
-            COMMENT_NOTICE=$'\n\n---\n\n'
-            COMMENT_NOTICE+="> **Risk score invalid** — the risk assessment produced an invalid"$'\n'
-            COMMENT_NOTICE+=$'> score. A human reviewer must evaluate this PR.\n'
-          else
-            SCORE=$(jq -r '.risk_assessment.score' "${RESULT_FILE}")
-            SCORE_CHECK=$(jq -n --argjson score "${SCORE}" --argjson threshold "${THRESHOLD}" '$score >= $threshold')
-            if [ "${SCORE_CHECK}" = "true" ]; then
-              echo "Agent chose comment for PR with risk score ${SCORE}/${THRESHOLD} — appending notice to review body"
-              COMMENT_NOTICE=$'\n\n---\n\n'
-              COMMENT_NOTICE+="> **Risk score ${SCORE}/5** — this PR has a risk score at or above the"$'\n'
-              COMMENT_NOTICE+="> threshold (${THRESHOLD}). Automatic approval is not permitted for high-risk PRs."$'\n'
-              COMMENT_NOTICE+=$'> A human reviewer must evaluate this PR.\n'
-            fi
           fi
         fi
       fi
-      if [ -n "${COMMENT_NOTICE}" ]; then
+    fi
+
+    # Apply risk gate or notice based on action
+    if [ -n "${RISK_NOTICE}" ]; then
+      if [ "${ACTION}" = "approve" ]; then
+        echo "Risk gate triggered (${RISK_STATUS}) — downgrading approve to comment"
+        RISK_MODIFIED_RESULT=$(mktemp)
+        CLEANUP_FILES+=("${RISK_MODIFIED_RESULT}")
+        jq --arg notice "${RISK_NOTICE}" \
+          '.action = "comment" | .risk_gated = true | .body = (.body + $notice)' \
+          "${RESULT_FILE}" > "${RISK_MODIFIED_RESULT}"
+        RESULT_FILE="${RISK_MODIFIED_RESULT}"
+        DOWNGRADED=true
+      elif [ "${ACTION}" = "comment" ]; then
+        echo "Agent chose comment — appending risk notice (${RISK_STATUS}) to review body"
         COMMENT_MODIFIED=$(mktemp)
         CLEANUP_FILES+=("${COMMENT_MODIFIED}")
-        jq --arg notice "${COMMENT_NOTICE}" \
+        jq --arg notice "${RISK_NOTICE}" \
           '.body = (.body + $notice)' \
           "${RESULT_FILE}" > "${COMMENT_MODIFIED}"
         RESULT_FILE="${COMMENT_MODIFIED}"
