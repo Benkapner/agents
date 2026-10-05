@@ -737,17 +737,8 @@ run_test_prescript_output "protocol-empty-on-zero-sub-issues" \
   "" \
   0
 
-# =============================================================================
-# GitLab forge_list_prs_for_issue — fail open on API error (issue #1585)
-# =============================================================================
-#
-# pre-code.src.sh invokes this function as
-# `HUMAN_PR_LINES="$(forge_list_prs_for_issue ...)"` under `set -euo
-# pipefail`. A non-zero return therefore crashes the whole pre-script
-# instead of degrading gracefully. These tests exercise
-# scripts/lib/gitlab-code-ops.lib.sh directly (overriding the low-level API
-# call) to cover a real API-failure path — distinct from a confirmed
-# zero-MRs result, where the API call itself succeeds and returns "[]".
+# --- GitLab forge_list_prs_for_issue — fail open on API error (issue #1585) ---
+# Exercises gitlab-code-ops.lib.sh directly, mocking the low-level API call.
 
 run_gl_list_prs_test() {
   local test_name="$1"
@@ -786,42 +777,24 @@ run_gl_list_prs_test() {
   echo "PASS: ${test_name}"
 }
 
-# API failure on page 1 (bad token, transient 5xx, etc.) must fail open:
-# exit 0 with no PRs reported, matching the GitHub implementation's
-# contract instead of crashing the caller.
+# API failure on page 1 must fail open: exit 0, no PRs reported.
 run_gl_list_prs_test "gitlab-list-prs-api-failure-fails-open" '
 _gitlab_code_api() { return 1; }
 ' 0 ""
 
-# Confirmed zero MRs — the API call succeeds and returns an empty page.
-# Same observable output as the failure case, but reached via the success
-# path rather than the fail-open path.
+# Confirmed zero MRs (API succeeds, empty page) — same output, success path.
 run_gl_list_prs_test "gitlab-list-prs-zero-mrs-confirmed" '
 _gitlab_code_api() { echo "[]"; }
 ' 0 ""
 
-# =============================================================================
-# GitLab forge_list_prs_for_issue — production pre-script regression (#1585)
-# =============================================================================
-#
-# The unit-level tests above exercise gitlab-code-ops.lib.sh in isolation.
-# This test runs the actual pre-code script end-to-end with
-# FULLSEND_FORGE=gitlab and a mock `curl` that fails every API call,
-# asserting that the pre-script output file stays empty (the run proceeds)
-# rather than picking up a stray skipped=true. This is the regression the
-# unit tests could not catch on their own: forge_list_prs_for_issue's
-# fail-open warning used to be written to the same stdout stream that
-# `HUMAN_PR_LINES="$(forge_list_prs_for_issue ...)"` captures as PR data,
-# so the warning text made HUMAN_PR_LINES nonempty and tripped the
-# existing-PR skip path even though no PR was found.
+# --- GitLab forge_list_prs_for_issue — production pre-script regression (#1585) ---
+# End-to-end run of pre-code.sh with FULLSEND_FORGE=gitlab and every curl
+# call failing; asserts the output file stays empty (run proceeds).
 
 build_gitlab_api_failure_mock() {
   local mock_bin="${TMPDIR}/gl-bin"
   rm -rf "${mock_bin}"
   mkdir -p "${mock_bin}"
-  # Simulate every GitLab API call failing (bad token, transient 5xx, etc.)
-  # — the only forge call reached before the regression check is
-  # forge_list_prs_for_issue's merge-requests lookup.
   cat > "${mock_bin}/curl" <<'MOCKEOF'
 #!/usr/bin/env bash
 exit 1
@@ -872,9 +845,7 @@ run_gitlab_prescript_output_test() {
   echo "PASS: ${test_name}"
 }
 
-# A GitLab API failure while checking for existing human PRs must fail
-# open: the pre-script output file stays empty (run proceeds) instead of
-# being populated with skipped=true from a stray stdout warning.
+# GitLab API failure during the existing-PR check must fail open: file stays empty.
 run_gitlab_prescript_output_test "protocol-empty-on-gitlab-api-failure" \
   "" \
   0
