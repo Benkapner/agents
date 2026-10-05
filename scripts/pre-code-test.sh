@@ -27,10 +27,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 #   $1 — JSON string to return for "gh api graphql" calls. When the caller
 #        passes --jq, the mock pipes this JSON through jq so the real
 #        filter expression is exercised.  Pass an empty string for no PRs.
-#        The real `gh api` CLI has no `--arg` flag (that belongs to
-#        standalone `jq`), so the mock rejects it like the real CLI would —
-#        any caller that still needs an --arg-style filter must fetch the
-#        JSON here and pipe it through a separate `jq` invocation.
+#        Real `gh api` has no `--arg` flag, so the mock rejects it too.
 build_mock() {
   local graphql_output="$1"
   local mock_bin="${TMPDIR}/bin"
@@ -53,9 +50,7 @@ echo "gh $*" >> "${CALL_LOG}"
 # Route by subcommand
 if [[ "$1" == "api" && "$2" == "graphql" ]]; then
   # Parse --jq from arguments, just like the real gh CLI. Real `gh api`
-  # has no --arg flag, so reject it here too — a caller that regresses to
-  # passing --arg straight to `gh api graphql` (rather than piping into a
-  # standalone jq) must fail the same way the real CLI would.
+  # has no --arg flag, so reject it here too.
   JQ_EXPR=""
   shift 2
   while [[ $# -gt 0 ]]; do
@@ -301,11 +296,8 @@ run_test_stdout_excludes() {
 # --- Test cases ---
 
 # JSON helpers — build GraphQL response JSON that the mock returns to the
-# script.  The mock returns this JSON as-is (no --jq/--arg handling by
-# `gh`, matching the real CLI), and pre-code.sh pipes it through its own
-# standalone `jq -r --arg ...` filter, so the real filter expression is
-# exercised end-to-end.
-# The response format matches GitHub's closedByPullRequestsReferences query.
+# script. The response format matches GitHub's closedByPullRequestsReferences
+# query; pre-code.sh pipes it through its own `jq -r --arg ...` filter.
 
 _gql_wrap() {
   # Wrap a JSON array of PR nodes into a closedByPullRequestsReferences response.
@@ -325,14 +317,10 @@ _gql_wrap_sub() {
 # Empty response (no closing PRs).
 EMPTY_GQL_JSON="$(_gql_wrap '[]')"
 
-# Single human PR.
-# GraphQL's author.login never carries the REST "[bot]" suffix — including
-# __typename here mirrors the real closedByPullRequestsReferences response
-# shape, where every author node reports its __typename.
+# Single human PR. GraphQL always includes __typename on the author.
 HUMAN_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev","__typename":"User"},"state":"OPEN"}]')"
 
-# Single fullsend-ai bot PR. GraphQL reports the bare login ("fullsend-ai",
-# not "fullsend-ai[bot]") with __typename "Bot".
+# Single fullsend-ai bot PR, bare GraphQL-style login (no "[bot]" suffix).
 BOT_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai","__typename":"Bot"},"state":"OPEN"}]')"
 
 # Single fullsend-ai-coder bot PR, bare GraphQL-style login.

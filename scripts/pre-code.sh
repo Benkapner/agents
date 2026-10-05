@@ -159,13 +159,9 @@ forge_list_prs_for_issue() {
   # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
   # from text-search matching (e.g., #1 matching #12 in a PR title).
   #
-  # GraphQL's Bot.login omits the REST "[bot]" suffix (e.g. "fullsend-ai-coder"
-  # instead of "fullsend-ai-coder[bot]"), so strip the suffix before comparing
-  # and additionally require __typename == "Bot" — matching only on the bare
-  # login would risk excluding a human whose login happens to collide with it.
-  # `gh api graphql` has no `--arg` flag of its own (that belongs to
-  # standalone `jq`), so fetch the raw JSON first and pipe it through a
-  # separate `jq -r --arg ...` invocation to apply the bot-login filter.
+  # GraphQL's Bot.login has no "[bot]" suffix, so strip it and check
+  # __typename == "Bot" to avoid false bot matches. `gh api` lacks --arg,
+  # so pipe the JSON through a standalone `jq -r --arg ...` filter.
   gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
