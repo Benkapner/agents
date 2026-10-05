@@ -184,6 +184,7 @@ The sub-agent must return a JSON object with this schema:
 - `tier1_signals` (array of {dimension, value} objects)
 - `tier2_signals` (array of {dimension, value} objects)
 - `tier3_signals` (array of {dimension, value} objects)
+- `degraded` (string: reason for degraded assessment, e.g. "tier1-only", when a tier that was attempted could not produce valid results; does not apply when a tier is intentionally skipped, such as Tier 3 when no issue is linked)
 
 The signal arrays enable graceful degradation: if a tier cannot be
 fully evaluated, return partial signals or omit the array entirely.

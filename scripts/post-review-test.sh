@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2030,SC2031
 # post-review-test.sh — Test the outcome-label logic in post-review.sh.
 #
 # Extracts and tests the label-application logic in isolation using shell
@@ -2717,6 +2718,560 @@ for log in "${LABEL_LOGS[@]}"; do
     FAILURES=$((FAILURES + 1))
   fi
 done
+
+# ---------------------------------------------------------------------------
+# Risk verdict gate tests
+# ---------------------------------------------------------------------------
+
+run_risk_verdict_test() {
+  local test_name="$1"
+  local result_json="$2"
+  local risk_enabled="$3"
+  local threshold="${4:-4}"
+  local expect_downgrade="${5:-false}"
+  local expect_pattern="${6:-}"
+  local expect_no_pattern="${7:-}"
+
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
+    export REVIEW_RISK_VERDICT_THRESHOLD="${threshold}"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [ "${expect_downgrade}" = "true" ]; then
+    if ! grep -qF "downgrading approve to comment" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected downgrade message not found in stdout"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if grep -qF "downgrading approve to comment" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — unexpected downgrade message found in stdout"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  if [[ -n "${expect_pattern}" ]]; then
+    if ! grep -qF "${expect_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected log pattern not found: '${expect_pattern}'"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  if [[ -n "${expect_no_pattern}" ]]; then
+    if grep -qF "${expect_no_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — unexpected log pattern found: '${expect_no_pattern}'"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Risk score at threshold (4/4) triggers downgrade ---
+RISK_SCORE_4_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Large auth refactor."}}'
+run_risk_verdict_test "risk-verdict-score-at-threshold-downgrades" \
+  "${RISK_SCORE_4_RESULT}" "true" "4" "true" \
+  "Risk score 4 >= threshold 4" ""
+
+# --- Risk score above threshold (5/4) triggers downgrade ---
+RISK_SCORE_5_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":5,"level":"critical","rationale":"Auth middleware."}}'
+run_risk_verdict_test "risk-verdict-score-above-threshold-downgrades" \
+  "${RISK_SCORE_5_RESULT}" "true" "4" "true" \
+  "Risk score 5 >= threshold 4" ""
+
+# --- Risk score below threshold (3/4) does not trigger gate ---
+RISK_SCORE_3_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+run_risk_verdict_test "risk-verdict-score-below-threshold-passes" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Missing risk_assessment triggers downgrade (fail-closed) ---
+APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+run_risk_verdict_test "risk-verdict-missing-assessment-downgrades" \
+  "${APPROVE_NO_RISK}" "true" "4" "true" \
+  "no risk_assessment present" ""
+
+# --- risk_assessment present but score absent triggers downgrade ---
+RISK_NO_SCORE_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"level":"high","rationale":"Missing score."}}'
+run_risk_verdict_test "risk-verdict-score-absent-downgrades" \
+  "${RISK_NO_SCORE_RESULT}" "true" "4" "true" \
+  "no score" ""
+
+# --- Degraded risk assessment triggers downgrade ---
+RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":2,"level":"low","degraded":"tier1-only","rationale":"Degraded."}}'
+run_risk_verdict_test "risk-verdict-degraded-downgrades" \
+  "${RISK_DEGRADED_RESULT}" "true" "4" "true" \
+  "Risk assessment is degraded" ""
+
+# --- Risk assessment disabled skips gate ---
+run_risk_verdict_test "risk-verdict-disabled-skips-gate" \
+  "${RISK_SCORE_4_RESULT}" "false" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Non-approve action skips gate ---
+RISK_COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"notes","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+run_risk_verdict_test "risk-verdict-non-approve-skips-gate" \
+  "${RISK_COMMENT_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Unset threshold falls back to default ---
+run_risk_verdict_test "risk-verdict-unset-threshold-defaults" \
+  "${RISK_SCORE_4_RESULT}" "true" "" "true" \
+  ">= threshold 4" ""
+
+# --- Invalid threshold causes exit 1 ---
+run_risk_invalid_threshold_test() {
+  local test_name="risk-verdict-invalid-threshold-exits"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_4_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="abc"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 1 ]]; then
+    echo "FAIL: ${test_name} — expected exit code 1, got ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "REVIEW_RISK_VERDICT_THRESHOLD='abc' is invalid" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected invalid threshold error not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_invalid_threshold_test
+
+# --- Combined protected-path and risk verdict gate ---
+RISK_PROTECTED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+run_risk_combined_test() {
+  local test_name="risk-combined-with-protected-path"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_PROTECTED_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES=".github/workflows/ci.yml"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Both gates should have triggered
+  if ! grep -qF "PR touches protected paths" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected protected-path downgrade not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Risk score 4 >= threshold 4" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected risk-verdict downgrade not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_combined_test
+
+# --- Risk assessment enabled but unset value treats as disabled ---
+run_risk_verdict_test "risk-verdict-unset-enabled-skips-gate" \
+  "${RISK_SCORE_4_RESULT}" "" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Risk assessment enabled=true but FALSE not equal to "true" ---
+run_risk_verdict_test "risk-verdict-false-enabled-skips-gate" \
+  "${RISK_SCORE_4_RESULT}" "FALSE" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Non-numeric/out-of-range score triggers downgrade ---
+RISK_SCORE_NULL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":null,"level":"high","rationale":"Null score."}}'
+run_risk_verdict_test "risk-verdict-null-score-downgrades" \
+  "${RISK_SCORE_NULL_RESULT}" "true" "4" "true" \
+  "Risk assessment score is invalid" ""
+
+RISK_SCORE_BOOL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":true,"level":"high","rationale":"Bool score."}}'
+run_risk_verdict_test "risk-verdict-bool-score-downgrades" \
+  "${RISK_SCORE_BOOL_RESULT}" "true" "4" "true" \
+  "Risk assessment score is invalid" ""
+
+RISK_SCORE_NEG_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":-1,"level":"high","rationale":"Negative score."}}'
+run_risk_verdict_test "risk-verdict-neg-score-downgrades" \
+  "${RISK_SCORE_NEG_RESULT}" "true" "4" "true" \
+  "Risk assessment score is invalid" ""
+
+RISK_SCORE_STR_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":"high","level":"high","rationale":"String score."}}'
+run_risk_verdict_test "risk-verdict-str-score-downgrades" \
+  "${RISK_SCORE_STR_RESULT}" "true" "4" "true" \
+  "Risk assessment score is invalid" ""
+
+# --- Native comment with high risk appends notice ---
+RISK_COMMENT_HI_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+run_risk_native_comment_test() {
+  local test_name="risk-native-comment-notice"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_COMMENT_HI_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Agent chose comment for PR with risk score" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected native comment risk notice not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Risk score 4/5" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — expected risk notice not in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_native_comment_test
+
+# --- Native comment with low risk does not append notice ---
+RISK_COMMENT_LO_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Just a note.","risk_assessment":{"score":2,"level":"low","rationale":"Test."}}'
+run_risk_native_comment_low_test() {
+  local test_name="risk-native-comment-low-no-notice"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_COMMENT_LO_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "Risk score 2/5" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — notice should not be appended for low risk"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_native_comment_low_test
+
+# --- Threshold 6 disables verdict gating (opt-out) ---
+run_risk_verdict_test "risk-verdict-threshold-6-opt-out" \
+  "${RISK_SCORE_5_RESULT}" "true" "6" "false" \
+  "" "downgrading approve to comment"
+
+# --- Threshold 6 with comment action must not abort (regression: set -u crash) ---
+RISK_COMMENT_HI_6_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+run_risk_native_comment_optout_test() {
+  local test_name="risk-threshold6-comment-does-not-abort"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_COMMENT_HI_6_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="6"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code} (expected 0)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF '"action": "comment"' "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — action not comment in posted body"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "Risk score 4/5" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — risk notice should not be in body when gate is disabled"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_native_comment_optout_test
+
+# --- Threshold at non-default values ---
+run_risk_verdict_test "risk-verdict-threshold-3-score-3-downgrades" \
+  "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 3')" "true" "3" "true" \
+  "Risk score 3 >= threshold 3" ""
+
+run_risk_verdict_test "risk-verdict-threshold-3-score-2-passes" \
+  "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 2')" "true" "3" "false" \
+  "" "downgrading approve to comment"
+
+run_risk_verdict_test "risk-verdict-threshold-2-score-2-downgrades" \
+  "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 2')" "true" "2" "true" \
+  "Risk score 2 >= threshold 2" ""
+
+# --- Verdict body check: degraded result has correct body ---
+RISK_DEGRADED_CHECK_BODY='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":2,"level":"low","degraded":"tier1-only","rationale":"Degraded."}}'
+run_risk_verdict_body_test() {
+  local test_name="risk-verdict-body-degraded-downgrade"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_DEGRADED_CHECK_BODY}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF '"action": "comment"' "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — verdict not rewritten to comment in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Risk assessment degraded" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — degraded notice not in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_verdict_body_test
+
+# --- Verdict body check: score at threshold has correct notice ---
+run_risk_verdict_body_score_test() {
+  local test_name="risk-verdict-body-score-downgrade"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_4_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF '"action": "comment"' "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — verdict not rewritten to comment in posted body"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Risk score 4/5" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — risk notice not in posted body"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_verdict_body_score_test
+
+# --- risk_gated metadata marker present on downgraded result ---
+run_risk_gated_field_test() {
+  local test_name="risk-gated-field-present"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_4_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code} (expected 0)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF '"risk_gated": true' "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — risk_gated field not true in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_gated_field_test
 
 # --- Summary ---
 

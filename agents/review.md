@@ -218,7 +218,12 @@ mutations on the runner.
 
 - `approve` — no medium+ findings and no findings with `actionable: true`
   and a non-empty `remediation`; the change is safe (low/info findings
-  may be attached as comments)
+  may be attached as comments); also requires that, when risk assessment
+  is enabled (`REVIEW_RISK_ASSESSMENT_ENABLED` is `true`) and
+  `REVIEW_RISK_VERDICT_THRESHOLD` is not `6`,
+  `risk_assessment.score` is below `REVIEW_RISK_VERDICT_THRESHOLD` and
+  the assessment is not degraded (when threshold is `6`, the risk
+  verdict gate is disabled and does not block approval)
 - `request-changes` — findings *requiring* resolution: one or more critical or
   high findings; one or more medium-severity findings identifying a
   functional bug (incorrect behavior, permission error, schema violation,

@@ -184,15 +184,21 @@ rules:
     #   instruction:
     #     warn: 4000
     #     error: 8000
-    #   skill:
-    #     warn: 3000
-    #     error: 6000
-    #   command:
-    #     warn: 2000
-    #     error: 4000
-    #   agent:
-    #     warn: 2000
-    #     error: 4000
+    # Limits raised from defaults (3000/6000) to match this repo's actual
+      # skill corpus: pr-review/SKILL.md is 16,829 tokens (pre-existing),
+      # so the error limit needs headroom above that. 4,000 warn catches
+      # smaller skills approaching the boundary without false positives.
+      skill:
+        warn: 4000
+        error: 20000
+    # Limits raised from defaults to match this repo's actual corpus
+      # (all pre-existing files, not introduced by this PR).
+      command:
+        warn: 5000
+        error: 15000
+      agent:
+        warn: 4000
+        error: 8000
     #   rule:
     #     warn: 2000
     #     error: 4000

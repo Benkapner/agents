@@ -45,7 +45,7 @@ These labels reflect the review outcome and are updated after each review.
 |-------|---------|
 | `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) after pushing. In per-repo installs, triggers review when applied to a PR. |
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
-| `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
+| `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. Also applied when the risk verdict gate downgrades an approval. |
 | `rejected` | The review agent rejected the PR and closed it. |
 
 When the review agent requests changes (without rejecting), no outcome label is
@@ -65,7 +65,17 @@ post-script applies a `risk/*` label reflecting the composite risk score:
 | `risk/high` | 4 | Security-sensitive, large, or cross-cutting change |
 | `risk/critical` | 5 | Highest risk — auth, RBAC, or critical infrastructure |
 
-Risk labels are informational — they do not gate the review outcome.
+Risk score gates the review outcome when risk assessment is enabled:
+- **Score ≥ threshold** (default threshold `4` = high/critical) — the review verdict is downgraded from `approve`
+  to `comment`, requiring a human reviewer to evaluate the PR.
+- **Score missing or degraded** — same downgrade; the review is downgraded
+  without a complete risk assessment (fail-closed).
+- **Threshold is configurable** via `REVIEW_RISK_VERDICT_THRESHOLD` (default `"4"`).
+  Invalid thresholds (anything other than an integer 1–6) fail the post-script with an error,
+  and no review is posted. Set `6` to disable the gate entirely (informational scoring only).
+  Unrecognized `REVIEW_RISK_ASSESSMENT_ENABLED` values also fail closed the same way.
+- **Downgraded reviews** receive the `requires-manual-review` outcome label
+  (not `ready-for-merge`), blocking auto-merge.
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `priority/high`) but these are informational — they do not control agent
@@ -104,7 +114,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`). | `low` | `info`, `low`, `medium`, `high`, `critical` |
 | `REVIEW_SKIP_AUTHORS` | Comma-separated list of forge usernames to skip review for. When a PR/MR is opened by a user in this list, the review dispatch exits early without running the agent. Set in `env.runner` in your harness YAML (consumed by the pre-script on the runner). | _(empty — all PRs/MRs are reviewed)_ | Comma-separated logins, e.g. `app/renovate,app/dependabot` |
 | `REVIEW_PROTECTED_PATHS` | Comma-separated list of path prefixes the review agent treats as protected. PRs that modify files under these paths cannot be approved by the agent — only a human can grant approval. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`); an unset value is a misconfiguration (fail-closed). Set to an empty string to deliberately disable protected-path enforcement entirely. When set to a value that parses to no valid paths (e.g. stray or consecutive commas), the script aborts (fail-closed) as a likely misconfiguration. | See [`harness/review.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/review.yaml) | Comma-separated path prefixes (e.g. `.github/,deploy/,manifests/`) |
-| `REVIEW_RISK_ASSESSMENT_ENABLED` | Enables the risk assessment (GitHub only). When `true`, the orchestrator dispatches a risk-assessment sub-agent alongside the review dimensions. The sub-agent computes a composite 1–5 risk score from metadata signals, git history, and linked issue context. The post-script applies a `risk/*` label and posts a sticky risk comment. Set in `forge.github.env` in the harness — not in the top-level `env:` block, since the risk assessment scripts depend on the GitHub API and produce fabricated scores on other forges. | `true` (GitHub) | `"true"`, `"false"` |
+| `REVIEW_RISK_ASSESSMENT_ENABLED` | Enables the risk assessment (GitHub only). When `true`, the orchestrator dispatches a risk-assessment sub-agent alongside the review dimensions. The sub-agent computes a composite 1–5 risk score from metadata signals, git history, and linked issue context. The post-script applies a `risk/*` label, posts a sticky risk comment, and gates the review verdict when the score is at or above `REVIEW_RISK_VERDICT_THRESHOLD`. Set in `forge.github.env` in the harness — not in the top-level `env:` block, since the risk assessment scripts depend on the GitHub API and produce fabricated scores on other forges. | `true` (GitHub) | `"true"`, `"false"` |
+| `REVIEW_RISK_VERDICT_THRESHOLD` | Risk score threshold at or above which the review verdict is downgraded from `approve` to `comment`. Only active when `REVIEW_RISK_ASSESSMENT_ENABLED` is `true`. Scores ≥ threshold, missing scores, and degraded assessments all trigger the downgrade (fail-closed). Set in `forge.github.env` in the harness. Set to `6` to disable verdict gating (retains `risk/*` label and comment while keeping informational-only scoring). | `4` | Integer `1`–`6` |
 | `REVIEW_GIT_FETCH_DEPTH` | Controls clone deepening for git history analysis (risk assessment Tier 2). When set to `"0"`, the pre-script unshallows the target repo clone so the risk-assessment sub-agent can access full commit history. When unset and `REVIEW_RISK_ASSESSMENT_ENABLED` is `true`, defaults to `"0"` automatically — the Tier 2 sub-agent requires full git history. Set explicitly to any other value (e.g., `"1"`) to disable deepening even with risk assessment enabled. Set in `env.runner` in harness YAML (consumed by the pre-script on the runner). | _(auto: `"0"` when risk assessment enabled, no deepening otherwise)_ | `"0"` to fully unshallow |
 | `TIMEOUT_SECONDS` | Mirror of the harness `timeout_minutes`, in seconds, read by the `pr-review` skill to skip the challenger pass and write a result before the deadline (see [Time budget](#time-budget)). Set in `env.sandbox`; change it together with `timeout_minutes`. | `2700` | Seconds, equal to `timeout_minutes × 60` |
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | Fleet-wide base pin for the `sonnet` alias on the Claude Code runtime, exported by [`env/gcp-vertex.env`](../env/gcp-vertex.env) (mounted by every harness). Claude Code resolves the alias itself — for the main model, the Agent tool's `model:` argument and sub-agent frontmatter — and a pinned alias is used as written with no startup fallback. Override it when your Vertex project does not serve the pinned id. With `opus` unpinned, a run that reaches the CLI with no `--model` defaults to this id; every harness here sets `model:`. | `claude-sonnet-4-6` | A Claude model id your Vertex project serves, set via `env.sandbox` in a `base:` overlay |

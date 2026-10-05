@@ -49,7 +49,8 @@
           "type": "array",
           "items": { "$ref": "#/$defs/risk_signal" }
         },
-        "rationale": { "type": "string", "minLength": 1 }
+        "rationale": { "type": "string", "minLength": 1 },
+        "degraded": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false,
       "allOf": [
@@ -59,6 +60,10 @@
         { "if": { "properties": { "score": { "const": 4 } } }, "then": { "properties": { "level": { "const": "high" } } } },
         { "if": { "properties": { "score": { "const": 5 } } }, "then": { "properties": { "level": { "const": "critical" } } } }
       ]
+    },
+    "risk_gated": {
+      "type": "boolean",
+      "description": "Set by post-processing when a risk assessment downgrades the verdict. Not present in agent output — added by the harness post-script."
     }
   },
   "allOf": [
