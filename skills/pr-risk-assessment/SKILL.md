@@ -101,9 +101,17 @@ sub-scores for the Tier 2 composite.
 **Shallow repository detection:** Before running git log commands, check
 `git rev-parse --is-shallow-repository`. If the repo is shallow, Tier 2
 signals are unreliable — treat the entire tier as unavailable and
-redistribute per the weight table above. The pre-review script deepens the clone when
-`REVIEW_GIT_FETCH_DEPTH=0` is set, but the sub-agent must handle the
-case where deepening failed or was not configured.
+redistribute per the weight table above.
+
+- **Skipped** (`REVIEW_GIT_FETCH_DEPTH != 0`): the clone was never
+  deepened. Tier 2 is intentionally skipped and does not set the
+  `degraded` field.
+- **Degraded** (`REVIEW_GIT_FETCH_DEPTH=0` but repo is still shallow):
+  deepening was attempted and failed. Set `degraded` to describe the
+  failure (e.g. `"tier2-deepen-failed"`).
+
+The pre-review script deepens the clone when `REVIEW_GIT_FETCH_DEPTH=0`
+is set, but the sub-agent must handle both outcomes.
 
 **Per-file cap:** For PRs with more than 20 changed files, sample the
 top 20 files by lines changed instead of analyzing all files. This

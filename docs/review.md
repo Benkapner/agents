@@ -67,8 +67,9 @@ post-script applies a `risk/*` label reflecting the composite risk score:
 
 Risk score gates the review outcome when risk assessment is enabled:
 - **Score ≥ threshold** (default threshold `4` = high/critical) — the review verdict is downgraded from `approve`
-  to `comment`, requiring a human reviewer to evaluate the PR.
-- **Score missing or degraded** — same downgrade; the review is downgraded
+  to `comment`, withholding bot approval for this review cycle (a prior bot
+  approval remains unless the repository dismisses stale reviews on new pushes).
+- **Score missing or degraded** — same downgrade; the review completes as `comment`
   without a complete risk assessment (fail-closed).
 - **Threshold is configurable** via `REVIEW_RISK_VERDICT_THRESHOLD` (default `"4"`).
   Invalid thresholds (anything other than an integer 1–6) fail the post-script with an error,
