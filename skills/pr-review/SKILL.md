@@ -532,7 +532,7 @@ be absent from the result JSON.
    # a contributor forging a low-score comment with the risk marker:
    PRIOR_RISK_COMMENT=$(gh api --paginate \
      "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
-     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->")) | select(.performed_via_github_app.slug == "fullsend-ai" or .user.login == "fullsend-ai[bot]")] | last // empty')
+     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->")) | select(.performed_via_github_app.slug == "fullsend-ai-review" or .user.login == "fullsend-ai-review[bot]")] | last // empty')
    ```
 
    If found, extract the prior score, level, and rationale from the

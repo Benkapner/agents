@@ -2823,10 +2823,12 @@ run_risk_verdict_test "risk-verdict-missing-assessment-downgrades" \
   "no risk_assessment present" ""
 
 # --- risk_assessment present but score absent triggers downgrade ---
+# Normalization catches this before the gate — structurally invalid assessment
+# is stripped and the missing-assessment branch fires fail-closed.
 RISK_NO_SCORE_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"level":"high","rationale":"Missing score."}}'
 run_risk_verdict_test "risk-verdict-score-absent-downgrades" \
   "${RISK_NO_SCORE_RESULT}" "true" "4" "true" \
-  "no score" ""
+  "structurally invalid" ""
 
 # --- Degraded risk assessment triggers downgrade ---
 RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","degraded":"tier1-only","rationale":"Degraded."}}'
@@ -2955,25 +2957,28 @@ run_risk_verdict_test "risk-verdict-false-enabled-skips-gate" \
   "" "downgrading approve to comment"
 
 # --- Non-numeric/out-of-range score triggers downgrade ---
+# Normalization now catches structurally invalid assessments (null, boolean,
+# negative, string scores) before the gate — they are stripped and the
+# missing-assessment branch fires fail-closed.
 RISK_SCORE_NULL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":null,"level":"high","rationale":"Null score."}}'
 run_risk_verdict_test "risk-verdict-null-score-downgrades" \
   "${RISK_SCORE_NULL_RESULT}" "true" "4" "true" \
-  "Risk assessment score is invalid" ""
+  "structurally invalid" ""
 
 RISK_SCORE_BOOL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":true,"level":"high","rationale":"Bool score."}}'
 run_risk_verdict_test "risk-verdict-bool-score-downgrades" \
   "${RISK_SCORE_BOOL_RESULT}" "true" "4" "true" \
-  "Risk assessment score is invalid" ""
+  "structurally invalid" ""
 
 RISK_SCORE_NEG_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":-1,"level":"high","rationale":"Negative score."}}'
 run_risk_verdict_test "risk-verdict-neg-score-downgrades" \
   "${RISK_SCORE_NEG_RESULT}" "true" "4" "true" \
-  "Risk assessment score is invalid" ""
+  "structurally invalid" ""
 
 RISK_SCORE_STR_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":"high","level":"high","rationale":"String score."}}'
 run_risk_verdict_test "risk-verdict-str-score-downgrades" \
   "${RISK_SCORE_STR_RESULT}" "true" "4" "true" \
-  "Risk assessment score is invalid" ""
+  "structurally invalid" ""
 
 # --- Native comment with high risk appends notice ---
 RISK_COMMENT_HI_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
@@ -3057,8 +3062,11 @@ run_risk_native_comment_low_test() {
     return
   fi
 
-  if grep -qF "Risk score 2/5" "${TMPDIR}/last-result.json"; then
-    echo "FAIL: ${test_name} — notice should not be appended for low risk"
+  # Assert that no risk-gate notice was appended at all — the previous
+  # assertion only checked for "Risk score 2/5" (score is 1), so an
+  # incorrect "Risk score 1/5" notice would have slipped through.
+  if grep -qE "Risk (score|assessment)" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — risk-gate notice should not be appended for low risk"
     cat "${TMPDIR}/last-result.json"
     FAILURES=$((FAILURES + 1))
     return

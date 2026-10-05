@@ -343,6 +343,28 @@ if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_LOWER}" = "true" ] || [ "${REVIEW_RISK_AS
   HAS_RISK_ASSESSMENT=$(jq 'has("risk_assessment")' "${RESULT_FILE}")
   RISK_GATE_TRIGGERED=false
 
+  # Normalize structurally invalid risk_assessment to absent. The schema
+  # (review-result.schema.json) requires score (integer 1-5), level, and
+  # rationale when risk_assessment is present. If a malformed assessment
+  # somehow bypasses schema validation, strip it so the missing-assessment
+  # gate handles it fail-closed — eliminating unreachable defensive branches.
+  if [ "${HAS_RISK_ASSESSMENT}" = "true" ]; then
+    RISK_STRUCT_VALID=$(jq '
+      .risk_assessment | type == "object"
+      and has("score") and (.score | type == "number" and floor == . and . >= 1 and . <= 5)
+      and has("level") and (.level | type == "string")
+      and has("rationale") and (.rationale | type == "string")
+    ' "${RESULT_FILE}")
+    if [ "${RISK_STRUCT_VALID}" != "true" ]; then
+      echo "::warning::risk_assessment is structurally invalid — normalizing to absent for fail-closed handling"
+      NORMALIZED_RESULT=$(mktemp)
+      CLEANUP_FILES+=("${NORMALIZED_RESULT}")
+      jq 'del(.risk_assessment)' "${RESULT_FILE}" > "${NORMALIZED_RESULT}"
+      RESULT_FILE="${NORMALIZED_RESULT}"
+      HAS_RISK_ASSESSMENT="false"
+    fi
+  fi
+
   # Threshold=6 disables the verdict gate entirely (informational scoring only).
   # Missing, degraded, invalid, and high scores all pass through as-is when
   # disabled — risk labels and comments still apply but do not gate the verdict.
