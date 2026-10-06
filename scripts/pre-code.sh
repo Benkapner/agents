@@ -984,14 +984,20 @@ esac
 # %) so an attacker-controlled multiline value (e.g. COMMENT_BODY from an
 # issue comment) cannot inject a GitHub Actions workflow command (::error::,
 # ::add-mask::, etc.) via an embedded line break.
-if ! declare -F _gha_sanitize >/dev/null 2>&1; then
-  _gha_sanitize() {
-    printf '%s' "$1" | tr -d '\n\r' \
-      | sed -E 's/\x1b\][^\x1b\x07]*(\x07|\x1b\\)?//g; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b.?//g' \
-      | tr -d '\000-\010\013-\037\177' \
-      | sed 's/%/%25/g; s/::/%3A%3A/g'
-  }
-fi
+#
+# Named distinctly from _gha_sanitize — rather than the `declare -F
+# _gha_sanitize` guard forge libraries use — because code-ops.lib.sh, sourced
+# above, transitively sources gitlab-host-validation.lib.sh on the GitLab
+# path, which defines its own older/weaker _gha_sanitize (CSI-only ANSI
+# stripping) first. A `declare -F` guard here would silently keep that
+# weaker definition instead of installing this hardened one. A unique name
+# sidesteps forge-library load order entirely.
+_pre_code_sanitize_log() {
+  printf '%s' "$1" | tr -d '\n\r' \
+    | sed -E 's/\x1b\][^\x1b\x07]*(\x07|\x1b\\)?//g; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b.?//g' \
+    | tr -d '\000-\010\013-\037\177' \
+    | sed 's/%/%25/g; s/::/%3A%3A/g'
+}
 
 echo "::notice::🔗 Code target: ${ISSUE_URL:-}"
 
@@ -1076,9 +1082,17 @@ fi
 # the existing-PR or tracking-issue checks.
 FORCE_WORD=""
 if [[ -n "${COMMENT_BODY:-}" ]]; then
-  FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
+  # Extract the first line via parameter expansion rather than piping the
+  # full (possibly very large, multiline) COMMENT_BODY into `head -1`. A
+  # short-circuiting pipeline stage like `head -1` closes its stdin after
+  # reading one line; if the rest of COMMENT_BODY is large enough to still
+  # be in flight, the upstream `printf` gets SIGPIPE. Under `set -euo
+  # pipefail` that terminates the script before pre-commit preparation and
+  # PATH setup run, defeating the bypass behavior #1583 requests.
+  _COMMENT_FIRST_LINE="${COMMENT_BODY%%$'\n'*}"
+  FORCE_WORD="$(printf '%s' "${_COMMENT_FIRST_LINE}" | tr -d '\r' | awk '{print $2}')"
 fi
-echo "Evaluating force override: CODE_FORCE='$(_gha_sanitize "${CODE_FORCE:-}")' COMMENT_BODY='$(_gha_sanitize "${COMMENT_BODY:-}")'"
+echo "Evaluating force override: CODE_FORCE='$(_pre_code_sanitize_log "${CODE_FORCE:-}")' COMMENT_BODY='$(_pre_code_sanitize_log "${COMMENT_BODY:-}")'"
 if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]] \
    && { [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; }; then
   echo "Force override — skipping existing-PR and tracking-issue checks"

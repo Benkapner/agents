@@ -561,6 +561,96 @@ else
   echo "PASS: ${test_name}"
 fi
 
+# --- Regression: the hardened sanitizer must apply on GitLab too,
+# regardless of forge-library load order ---
+# code-ops.lib.sh (sourced near the top of pre-code.src.sh) transitively
+# sources gitlab-host-validation.lib.sh on the GitLab path, which defines
+# its own older/weaker _gha_sanitize (CSI-only ANSI stripping) before this
+# script's own sanitizer guard ran. A `declare -F _gha_sanitize` guard here
+# would silently keep that weaker definition, leaking OSC sequences and
+# other control characters into runner logs for both CODE_FORCE and
+# COMMENT_BODY. Use CODE_FORCE to take the bypass path deterministically.
+test_name="force-check-strips-osc-and-control-chars-from-comment-body-gitlab"
+gitlab_output="${TMPDIR}/github-output-gitlab.txt"
+: > "${gitlab_output}"
+gitlab_stdout="${TMPDIR}/stdout-gitlab.log"
+gitlab_exit=0
+env -u FULLSEND_PRESCRIPT_OUTPUT -u GH_TOKEN -u GITLAB_TOKEN \
+  PATH="${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  ISSUE_URL="https://gitlab.example.com/test-org/test-repo/-/issues/42" \
+  FULLSEND_FORGE="gitlab" \
+  CI_SERVER_HOST="gitlab.example.com" \
+  GITHUB_OUTPUT="${gitlab_output}" \
+  CODE_FORCE="true" \
+  COMMENT_BODY=$'line-one\n\x1b]0;evil-title\x07\x08trailing' \
+  bash "${PRE_SCRIPT}" > "${gitlab_stdout}" 2>&1 || gitlab_exit=$?
+
+if [[ ${gitlab_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${gitlab_exit}"
+  cat "${gitlab_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "Evaluating force override:" "${gitlab_stdout}"; then
+  echo "FAIL: ${test_name} — force override log line not found"
+  cat "${gitlab_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q $'\x1b' "${gitlab_stdout}" || grep -q $'\x08' "${gitlab_stdout}"; then
+  echo "FAIL: ${test_name} — raw ESC/control byte survived sanitization on the GitLab path"
+  cat "${gitlab_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
+# --- Regression: missing-token bypass must not SIGPIPE on a long multiline
+# COMMENT_BODY (found during review of #1583) ---
+# FORCE_WORD extraction previously piped the full COMMENT_BODY through
+# `head -1 | tr -d '\r' | awk ...`. `head -1` closes its stdin once it has
+# read the first line; once the remaining COMMENT_BODY payload is large
+# enough to still be in flight, the upstream `printf` receives SIGPIPE.
+# Under `set -euo pipefail` that terminates the script before it reaches
+# runner setup (pre-commit tool resolution/installation and PATH export),
+# defeating the missing-token bypass #1583 requests. Clear GH_TOKEN to take
+# the missing-token path, and point REPO_DIR at this repo (which ships a
+# real .pre-commit-config.yaml) with GITHUB_WORKSPACE cleared so the
+# workspace-fallback lookup does not mask the result.
+test_name="no-token-long-multiline-comment-reaches-precommit-install-section"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+sigpipe_output="${TMPDIR}/github-output-sigpipe.txt"
+: > "${sigpipe_output}"
+sigpipe_stdout="${TMPDIR}/stdout-sigpipe.log"
+sigpipe_exit=0
+LONG_COMMENT_BODY="$(printf '/fs-code status update\n%s\n' "$(printf 'A%.0s' $(seq 1 100000))")"
+env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u GH_TOKEN \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  FULLSEND_FORGE="github" \
+  GITHUB_OUTPUT="${sigpipe_output}" \
+  REPO_DIR="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}" \
+  GITHUB_WORKSPACE="" \
+  COMMENT_BODY="${LONG_COMMENT_BODY}" \
+  bash "${PRE_SCRIPT}" > "${sigpipe_stdout}" 2>&1 || sigpipe_exit=$?
+
+if [[ ${sigpipe_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${sigpipe_exit} (possible SIGPIPE regression)"
+  tail -c 2000 "${sigpipe_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "No github token set" "${sigpipe_stdout}"; then
+  echo "FAIL: ${test_name} — did not take the missing-token bypass path"
+  tail -c 2000 "${sigpipe_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "Pre-commit tool auto-install skipped: companion scripts not found" "${sigpipe_stdout}"; then
+  echo "FAIL: ${test_name} — did not reach pre-commit install section (PATH setup)"
+  tail -c 2000 "${sigpipe_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
 # --- Anchoring: --force counts only as the command's flag token ---
 # Mirrors the dispatch router's first-line tokenization. A comment that
 # merely mentions --force must not bypass the existing-PR check.
