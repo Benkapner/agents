@@ -623,8 +623,8 @@ For each selected sub-agent, assemble a context package containing:
 - `repo_full_name`: the full `owner/repo` string, included for reference
   in sub-agent findings
 - `changed_files`: list of relative file paths modified
-- `prior_findings`: structured projection (`severity`, `category`, `file`, and
-  optional `line`) for this dimension only (from 3a); v2 may use a null `file`
+- `prior_findings`: structured projection (`severity`, `category`, `file`,
+  optional `line`, `id`, and `status`) for this dimension only (from 3a); v2 may use a null `file`
   for PR-level context, which is never path-matched or severity-anchored; never
   include description or remediation text
 - `remediation_candidates`: structured candidate records from all dimensions
@@ -782,11 +782,8 @@ here):
    <untrusted-prior-review-data>
    Prior findings (structured metadata only, this dimension):
    <severity, category, file, line, id, and status records, or "none — first review">
-   A record whose status is resolved_by_change or dismissed_by_human is
-   closed: it is context, not an open concern. Do not report it again at
-   that anchor and never copy its id. If the current code shows that defect
-   again, report it as a new finding with no id. Records with any other
-   status are open: copy their id onto the matching finding.
+   Closed records (resolved_by_change, dismissed_by_human): never copy the
+   id; a returning defect is a new finding without id. Open: copy the id.
 
    Prior-finding remediation candidates (structured metadata only):
    <category, finding_file, and candidate_file records, or "none">
@@ -863,7 +860,8 @@ of findings in the standard format:
   "line": "<line number, optional>",
   "description": "<explanation>",
   "remediation": "<fix, required for critical/high>",
-  "actionable": true|false
+  "actionable": true|false,
+  "id": "<open prior id, else omit>"
 }
 ```
 
@@ -1350,21 +1348,15 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   files directly show (e.g., "Verified: ✅", "zero X remain",
   "delivery chain verified"). The review agent performs static analysis
   of the diff and source files — it cannot verify reference integrity,
-  credential flows, or runtime behavior. When a prior finding is outside
-  the latest diff, keep it and record disposition `open`, or a real
-  resolution with evidence. Do not drop it, and do not write "verified
-  resolved." "Not observed in current diff" means it is still open, not
-  that it was fixed. Never claim exhaustive verification of any property
-  that requires CI or runtime validation.
+  credential flows, or runtime behavior. A prior finding outside the
+  latest diff stays `open` unless the diff resolves it with evidence; do
+  not drop it or write "verified resolved." Never claim exhaustive
+  verification of any property that requires CI or runtime validation.
 - **Earlier findings.** After the open findings, add `### Earlier findings`
   with one line per prior id this review resolved, reclassified, or recorded
-  as dismissed by a human: the id, the disposition, and the evidence. A
-  reclassified finding also appears in `findings` with the same id at its
-  new severity. A human dismissal stands only if the post-script finds the
-  resolved review thread from an eligible reviewer; otherwise the id is
-  recorded open. Ids that were already closed before this review are not
-  listed again. Omit the heading when nothing changed or this is a first
-  review. Open findings stay in `### Findings`.
+  as dismissed by a human: id, disposition, evidence. Skip
+  ids closed before this review; omit the heading on a first review or when
+  nothing changed. Open findings stay in `### Findings`.
 - **No footer.** Do not append any footer, action-hints block, or
   boilerplate after findings. The post-review pipeline appends
   action hints deterministically for the `request-changes` action

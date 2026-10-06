@@ -85,7 +85,11 @@ findings to include. The severity order from lowest to highest is:
     info < low < medium < high < critical
 
 Suppress findings below the threshold — do not mention them in the
-review body and do not include them in the `findings` array.
+review body and do not include them in the `findings` array. One
+exception: a prior finding this review reclassifies keeps its row in
+`findings`, with its `id`, at the new severity even when that is below
+the threshold. The post-script keeps that row in the ledger and drops it
+from the posted review.
 
 This filtering applies to the narrative body text and the structured
 findings equally. If filtering removes all findings from a

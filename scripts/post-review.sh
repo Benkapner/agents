@@ -325,7 +325,14 @@ forge_get_human_dismissals() {
   page=0
   nodes_json="[]"
 
+  # The author exclusion is only as good as the author lookup: without a
+  # known author nothing can be verified.
   pr_author="$(forge_get_pr_author)"
+  if [[ -z "${pr_author}" ]]; then
+    echo "::warning::Could not determine the PR author — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
 
   query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
     repository(owner: $owner, name: $name) {
@@ -340,7 +347,7 @@ forge_get_human_dismissals() {
             resolvedBy { login }
             comments(first: 100) {
               pageInfo { hasNextPage }
-              nodes { body }
+              nodes { body viewerDidAuthor }
             }
           }
         }
@@ -389,7 +396,9 @@ forge_get_human_dismissals() {
     fi
   done
 
-  # Resolved threads with a known resolver and complete comment pages.
+  # Resolved threads with a known resolver and complete comment pages. A
+  # finding id stamp counts only in a comment this token authored (the
+  # review agent's own), never in a reply anyone else wrote.
   candidates=$(jq -c '
     [ .[]
       | select(type == "object")
@@ -401,7 +410,7 @@ forge_get_human_dismissals() {
           line: .line,
           original_line: .originalLine,
           resolved_by: .resolvedBy.login,
-          ids: ([ (.comments.nodes // [])[] | .body // "" | scan("finding:(f_[A-Za-z0-9]+)") | .[0] ] | unique)
+          ids: ([ (.comments.nodes // [])[] | select(.viewerDidAuthor == true) | .body // "" | scan("finding:(f_[A-Za-z0-9]+)") | .[0] ] | unique)
         }
     ]' <<< "${nodes_json}" 2>/dev/null) || candidates="[]"
 
@@ -410,7 +419,7 @@ forge_get_human_dismissals() {
   eligible="[]"
   while IFS= read -r login; do
     [[ -z "${login}" ]] && continue
-    [[ "${login}" == "${pr_author}" ]] && continue
+    [[ "${login,,}" == "${pr_author,,}" ]] && continue
     [[ "${login}" =~ ^[A-Za-z0-9-]+$ ]] || continue
     role=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/collaborators/${login}/permission" \
       --jq '.role_name' 2>/dev/null) || role=""
@@ -1334,7 +1343,8 @@ fi
 #                         else carries the new classification.
 #   dismissed_by_human  — rationale and evidence given, the prior finding is
 #                         not high or critical, and a verified dismissal
-#                         thread matches it by stamped id or by file and line.
+#                         thread matches it: by stamped id, or an unstamped
+#                         thread at the one open finding's file and line.
 #   open                — everything else, including a disposition aimed at
 #                         a closed id (a human dismissal or a recorded fix is
 #                         not the model's to undo).
@@ -1351,11 +1361,18 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
     and (.evidence | type == "string");
   def supported: (.rationale | nonempty) and (.evidence | nonempty);
   def dismissal_verified($f):
+    # A thread stamped with finding ids binds only to those ids. An
+    # unstamped thread binds by file and line, and only when exactly one
+    # open prior finding sits there.
     any($dismissals[]?;
-      ((.ids // []) | index($f.id) != null)
-      or ((.path | type == "string") and .path == $f.file
-          and ($f.line | type == "number")
-          and (.line == $f.line or .original_line == $f.line)));
+      if ((.ids // []) | length) > 0 then (.ids | index($f.id) != null)
+      else (.path | type == "string") and .path == $f.file
+        and ($f.line | type == "number")
+        and (.line == $f.line or .original_line == $f.line)
+        and ([ $prior.findings[]
+               | select(.id as $pid | $prior.open_ids | index($pid) != null)
+               | select(.file == $f.file and .line == $f.line) ] | length) == 1
+      end);
   ($prior.open_ids) as $open
   | ([ $prior.closed[].id ]) as $closed
   | ([ (.dispositions // [])[] | select(well_formed_disposition) ]) as $given

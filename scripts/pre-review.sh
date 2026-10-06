@@ -309,7 +309,14 @@ forge_get_human_dismissals() {
   page=0
   nodes_json="[]"
 
+  # The author exclusion is only as good as the author lookup: without a
+  # known author nothing can be verified.
   pr_author="$(forge_get_pr_author)"
+  if [[ -z "${pr_author}" ]]; then
+    echo "::warning::Could not determine the PR author — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
 
   query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
     repository(owner: $owner, name: $name) {
@@ -324,7 +331,7 @@ forge_get_human_dismissals() {
             resolvedBy { login }
             comments(first: 100) {
               pageInfo { hasNextPage }
-              nodes { body }
+              nodes { body viewerDidAuthor }
             }
           }
         }
@@ -373,7 +380,9 @@ forge_get_human_dismissals() {
     fi
   done
 
-  # Resolved threads with a known resolver and complete comment pages.
+  # Resolved threads with a known resolver and complete comment pages. A
+  # finding id stamp counts only in a comment this token authored (the
+  # review agent's own), never in a reply anyone else wrote.
   candidates=$(jq -c '
     [ .[]
       | select(type == "object")
@@ -385,7 +394,7 @@ forge_get_human_dismissals() {
           line: .line,
           original_line: .originalLine,
           resolved_by: .resolvedBy.login,
-          ids: ([ (.comments.nodes // [])[] | .body // "" | scan("finding:(f_[A-Za-z0-9]+)") | .[0] ] | unique)
+          ids: ([ (.comments.nodes // [])[] | select(.viewerDidAuthor == true) | .body // "" | scan("finding:(f_[A-Za-z0-9]+)") | .[0] ] | unique)
         }
     ]' <<< "${nodes_json}" 2>/dev/null) || candidates="[]"
 
@@ -394,7 +403,7 @@ forge_get_human_dismissals() {
   eligible="[]"
   while IFS= read -r login; do
     [[ -z "${login}" ]] && continue
-    [[ "${login}" == "${pr_author}" ]] && continue
+    [[ "${login,,}" == "${pr_author,,}" ]] && continue
     [[ "${login}" =~ ^[A-Za-z0-9-]+$ ]] || continue
     role=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/collaborators/${login}/permission" \
       --jq '.role_name' 2>/dev/null) || role=""
