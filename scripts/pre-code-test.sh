@@ -489,10 +489,8 @@ run_test_stdout "no-force-reaches-pr-search" \
   "COMMENT_BODY=/fs-code"
 
 # --- Regression: multiline COMMENT_BODY cannot inject a workflow command ---
-# The force-override log line interpolates COMMENT_BODY. A comment whose
-# second line starts with "::error::" (or "::add-mask::", etc.) must not
-# reach stdout as its own line — GitHub Actions parses workflow commands
-# per raw stdout line regardless of the surrounding quoting in the script.
+# A comment whose second line starts with "::error::" must not reach
+# stdout as its own line via the force-override log.
 test_name="force-check-sanitizes-multiline-comment-body"
 mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
 injection_output="${TMPDIR}/github-output-injection.txt"
@@ -525,11 +523,8 @@ fi
 
 # --- Regression: OSC sequences and other control characters must not
 # survive sanitization into logged output ---
-# _gha_sanitize's ANSI regex previously only stripped CSI sequences
-# (ESC [ ... letter); OSC sequences (ESC ] ... BEL/ST), other
-# escape-introduced sequences, and raw control characters like backspace
-# survived into runner logs. Use CODE_FORCE to take the bypass path
-# regardless of COMMENT_BODY content, isolating the sanitizer behavior.
+# The sanitizer previously only stripped CSI escapes; OSC sequences and
+# raw control bytes like backspace survived into runner logs.
 test_name="force-check-strips-osc-and-control-chars-from-comment-body"
 mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
 control_output="${TMPDIR}/github-output-control.txt"
@@ -562,11 +557,8 @@ else
 fi
 
 # --- Regression: horizontal tabs must not survive sanitization ---
-# _pre_code_sanitize_log's control-character deletion range previously
-# stopped at \010 and resumed at \013, skipping \011 (horizontal tab).
-# Both CODE_FORCE and COMMENT_BODY pass through this sanitizer, so a tab
-# embedded in either survived into the "Evaluating force override:" log
-# line. Embed a tab in both inputs to cover each logged value.
+# The control-character deletion range previously skipped \011 (tab),
+# letting a tab in CODE_FORCE or COMMENT_BODY reach the logs.
 test_name="force-check-strips-tabs-from-code-force-and-comment-body"
 mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
 tab_output="${TMPDIR}/github-output-tab.txt"
@@ -604,13 +596,8 @@ fi
 
 # --- Regression: the hardened sanitizer must apply on GitLab too,
 # regardless of forge-library load order ---
-# code-ops.lib.sh (sourced near the top of pre-code.src.sh) transitively
-# sources gitlab-host-validation.lib.sh on the GitLab path, which defines
-# its own older/weaker _gha_sanitize (CSI-only ANSI stripping) before this
-# script's own sanitizer guard ran. A `declare -F _gha_sanitize` guard here
-# would silently keep that weaker definition, leaking OSC sequences and
-# other control characters into runner logs for both CODE_FORCE and
-# COMMENT_BODY. Use CODE_FORCE to take the bypass path deterministically.
+# The GitLab path transitively loads an older, weaker _gha_sanitize; a
+# `declare -F` guard would keep it and leak control chars into logs.
 test_name="force-check-strips-osc-and-control-chars-from-comment-body-gitlab"
 gitlab_output="${TMPDIR}/github-output-gitlab.txt"
 : > "${gitlab_output}"
@@ -645,14 +632,8 @@ else
 fi
 
 # --- Regression: malformed ISSUE_URL must not inject a workflow command ---
-# ISSUE_URL is echoed before forge_validate_issue_url runs (the "Code
-# target" notice), and again in the validation-failure messages. When the
-# URL doesn't match the extraction regex, forge_extract_repo_from_url /
-# forge_extract_issue_from_url also fall back to echoing the raw,
-# unvalidated value unchanged. A malformed ISSUE_URL whose second line
-# starts with "::add-mask::" (or "::error::", etc.) must not reach the
-# output as its own line via any of these paths, including
-# forge_validate_issue_url's own (now-suppressed) stderr diagnostic.
+# ISSUE_URL is echoed raw in several places before validation; a malformed
+# value's second line must not reach stdout as its own workflow command.
 test_name="malformed-issue-url-does-not-inject-workflow-command"
 mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
 badurl_output="${TMPDIR}/github-output-badurl.txt"
@@ -684,16 +665,9 @@ fi
 
 # --- Regression: missing-token bypass must not SIGPIPE on a long multiline
 # COMMENT_BODY (found during review of #1583) ---
-# FORCE_WORD extraction previously piped the full COMMENT_BODY through
-# `head -1 | tr -d '\r' | awk ...`. `head -1` closes its stdin once it has
-# read the first line; once the remaining COMMENT_BODY payload is large
-# enough to still be in flight, the upstream `printf` receives SIGPIPE.
-# Under `set -euo pipefail` that terminates the script before it reaches
-# runner setup (pre-commit tool resolution/installation and PATH export),
-# defeating the missing-token bypass #1583 requests. Clear GH_TOKEN to take
-# the missing-token path, and point REPO_DIR at this repo (which ships a
-# real .pre-commit-config.yaml) with GITHUB_WORKSPACE cleared so the
-# workspace-fallback lookup does not mask the result.
+# Piping a large COMMENT_BODY through `head -1` could SIGPIPE the upstream
+# `printf`, which `set -euo pipefail` turns into a script-ending error
+# before runner setup runs.
 test_name="no-token-long-multiline-comment-reaches-precommit-install-section"
 mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
 sigpipe_output="${TMPDIR}/github-output-sigpipe.txt"
@@ -1006,14 +980,8 @@ run_test_prescript_output "protocol-skip-on-sub-issues" \
 
 # --- Regression: force/no-token bypass must still reach runner setup
 # (issue #1583) ---
-# Previously the force-override and missing-token guards used a bare
-# `exit 0`, which also skipped the pre-commit tool resolution/install
-# section near the end of the script. Point REPO_DIR at this repo (which
-# ships a real .pre-commit-config.yaml) — with GITHUB_WORKSPACE cleared so
-# the workspace-fallback lookup does not mask the result — and confirm
-# execution reaches that section (observed via its "companion scripts not
-# found" warning, since this repo does not vendor the companion scripts)
-# even though the existing-PR/tracking-issue checks are bypassed.
+# The force-override and missing-token guards previously used a bare
+# `exit 0`, which also skipped pre-commit tool resolution/install.
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 run_test_stdout "force-code-force-reaches-precommit-install-section" \

@@ -32,19 +32,11 @@ source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 
 # Sanitize a value for safe interpolation into logged output. Strips ANSI
-# escapes (CSI, OSC, and any other escape-introduced sequence) and other
-# control characters, strips newlines/carriage returns, and escapes :: (and
-# %) so an attacker-controlled multiline value (e.g. COMMENT_BODY from an
-# issue comment) cannot inject a GitHub Actions workflow command (::error::,
-# ::add-mask::, etc.) via an embedded line break.
+# escapes, control chars, and newlines, and escapes :: and % so an
+# attacker-controlled value can't inject a workflow command via a line break.
 #
-# Named distinctly from _gha_sanitize — rather than the `declare -F
-# _gha_sanitize` guard forge libraries use — because code-ops.lib.sh, sourced
-# above, transitively sources gitlab-host-validation.lib.sh on the GitLab
-# path, which defines its own older/weaker _gha_sanitize (CSI-only ANSI
-# stripping) first. A `declare -F` guard here would silently keep that
-# weaker definition instead of installing this hardened one. A unique name
-# sidesteps forge-library load order entirely.
+# Named distinctly from _gha_sanitize since code-ops.lib.sh transitively
+# loads an older, weaker _gha_sanitize that a `declare -F` guard would keep.
 _pre_code_sanitize_log() {
   printf '%s' "$1" | tr -d '\n\r' \
     | sed -E 's/\x1b\][^\x1b\x07]*(\x07|\x1b\\)?//g; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b.?//g' \
@@ -56,14 +48,9 @@ echo "::notice::🔗 Code target: $(_pre_code_sanitize_log "${ISSUE_URL:-}")"
 
 errors=0
 
-# ISSUE_NUMBER, REPO_FULL_NAME, and ISSUE_URL are workflow inputs that have
-# not been validated yet at this point — a malformed value may contain
-# newlines or other workflow-command-triggering content, so every
-# interpolation of the raw (unvalidated) value below goes through
-# _pre_code_sanitize_log. URL_REPO/URL_ISSUE need the same treatment: when
-# ISSUE_URL doesn't match the extraction regex, forge_extract_repo_from_url /
-# forge_extract_issue_from_url fall back to echoing the unmatched input
-# unchanged, so they can carry the same raw, unsanitized ISSUE_URL.
+# These are unvalidated workflow inputs, so every echo of a raw value below
+# goes through _pre_code_sanitize_log to prevent workflow-command injection
+# via an embedded newline.
 if [[ ! "${ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::ISSUE_NUMBER must be a positive integer, got: '$(_pre_code_sanitize_log "${ISSUE_NUMBER:-}")'"
   errors=$((errors + 1))
@@ -74,11 +61,8 @@ if [[ ! "${REPO_FULL_NAME:-}" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$ ]]; then
   errors=$((errors + 1))
 fi
 
-# Suppress forge_validate_issue_url's own stderr diagnostic: it interpolates
-# the raw, unvalidated ISSUE_URL without sanitization, which would otherwise
-# reintroduce the same workflow-command injection this block sanitizes
-# against. The sanitized "::error::" message below already reports the
-# failure.
+# Suppress the function's own stderr diagnostic — it echoes the raw,
+# unsanitized ISSUE_URL; the sanitized "::error::" below covers it.
 if ! forge_validate_issue_url "${ISSUE_URL:-}" 2>/dev/null; then
   echo "::error::ISSUE_URL format invalid, got: '$(_pre_code_sanitize_log "${ISSUE_URL:-}")'"
   errors=$((errors + 1))
@@ -128,10 +112,8 @@ fi
 # ---------------------------------------------------------------------------
 # Check for existing human PRs and tracking issues, unless bypassed
 # ---------------------------------------------------------------------------
-# These checks are best-effort and can be bypassed via --force or a missing
-# forge token. A bypass only skips these checks — it must NOT exit the
-# script, since downstream runner setup (pre-commit tool resolution and
-# installation, below) still needs to run before the sandbox is created.
+# Best-effort checks, bypassable via --force or a missing forge token. A
+# bypass must not exit the script — runner setup below still needs to run.
 SKIP_EXISTING_CHECKS=0
 
 # Skip if the forge-specific token is not available (best-effort check).
@@ -148,13 +130,9 @@ fi
 # the existing-PR or tracking-issue checks.
 FORCE_WORD=""
 if [[ -n "${COMMENT_BODY:-}" ]]; then
-  # Extract the first line via parameter expansion rather than piping the
-  # full (possibly very large, multiline) COMMENT_BODY into `head -1`. A
-  # short-circuiting pipeline stage like `head -1` closes its stdin after
-  # reading one line; if the rest of COMMENT_BODY is large enough to still
-  # be in flight, the upstream `printf` gets SIGPIPE. Under `set -euo
-  # pipefail` that terminates the script before pre-commit preparation and
-  # PATH setup run, defeating the bypass behavior #1583 requests.
+  # Use parameter expansion instead of piping into `head -1`: a large
+  # COMMENT_BODY can trigger SIGPIPE on the upstream `printf`, which
+  # `set -euo pipefail` would turn into a script-ending error.
   _COMMENT_FIRST_LINE="${COMMENT_BODY%%$'\n'*}"
   FORCE_WORD="$(printf '%s' "${_COMMENT_FIRST_LINE}" | tr -d '\r' | awk '{print $2}')"
 fi
