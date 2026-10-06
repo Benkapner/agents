@@ -64,8 +64,10 @@ Return a JSON object:
 ```
 
 `score` (1–5 integer), `level` (low/moderate/elevated/high/critical),
-and `rationale` are required. Signal arrays are optional for graceful
-degradation when individual tiers cannot be evaluated.
+and `rationale` are required. Signal arrays are optional. Set `degraded` to a reason string (e.g. "tier1-only") when a tier
+that was attempted could not produce valid results. Do NOT set
+`degraded` when a tier is intentionally skipped (e.g. Tier 3 is
+always skipped when no issue is linked).
 
 Score-to-level mapping: 1=low, 2=moderate, 3=elevated, 4=high, 5=critical.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2030,SC2031
 # post-review-test.sh — Test the outcome-label logic in post-review.sh.
 #
 # Extracts and tests the label-application logic in isolation using shell
@@ -1131,7 +1132,7 @@ run_severity_sanitize_test() {
 
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
-  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}' \
     > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
 
@@ -1870,7 +1871,7 @@ run_protected_paths_test() {
   echo "PASS: ${test_name}"
 }
 
-APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}'
 
 # Custom REVIEW_PROTECTED_PATHS: .github/ is no longer protected
 run_protected_paths_test "custom-paths-removes-default" \
@@ -2011,7 +2012,7 @@ run_empty_paths_test
 # Non-approve action must succeed even with degenerate REVIEW_PROTECTED_PATHS.
 run_nonapprove_degenerate_test() {
   local test_name="nonapprove-degenerate-paths-succeeds"
-  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
+  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Looks good overall."}'
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
@@ -2047,7 +2048,7 @@ run_nonapprove_degenerate_test
 # the protected-path block only runs for "approve".
 run_nonapprove_unset_env_var_test() {
   local test_name="nonapprove-unset-env-var-succeeds"
-  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
+  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Looks good overall."}'
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
@@ -2368,7 +2369,7 @@ run_protected_paths_default_drift_test
 # ---------------------------------------------------------------------------
 
 # Result with risk_assessment → risk label applied
-RISK_HIGH_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Auth middleware refactor.","tier1_signals":[{"dimension":"blast_radius","value":"large"}]}}'
+RISK_HIGH_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Auth middleware refactor.","tier1_signals":[{"dimension":"blast_radius","value":"large"}]}}'
 
 run_label_test "risk-label-high-applied" \
   "${RISK_HIGH_RESULT}" \
@@ -2385,7 +2386,7 @@ run_label_test_stdout "risk-label-log-message" \
   "Applying risk/high label"
 
 # Result WITHOUT risk_assessment → stale risk labels removed
-APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}'
 
 run_label_test "risk-absent-stale-removal" \
   "${APPROVE_NO_RISK}" \
@@ -2396,21 +2397,21 @@ run_label_test_no_pattern "risk-absent-no-create" \
   "gh label create risk/"
 
 # Result with risk_assessment level=low → risk/low label
-RISK_LOW_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo fix."}}'
+RISK_LOW_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo fix."}}'
 
 run_label_test "risk-label-low-applied" \
   "${RISK_LOW_RESULT}" \
   "gh label create risk/low"
 
 # Risk labels work with request-changes too
-RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
 
 run_label_test "risk-label-with-request-changes" \
   "${RISK_RC_RESULT}" \
   "gh label create risk/elevated"
 
 # Invalid risk level → warning, no risk label applied
-RISK_INVALID_LEVEL='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":3,"level":"bogus","rationale":"Bad level."}}'
+RISK_INVALID_LEVEL='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":3,"level":"bogus","rationale":"Bad level."}}'
 
 run_label_test_stdout "risk-invalid-level-warning" \
   "${RISK_INVALID_LEVEL}" \
@@ -2421,7 +2422,7 @@ run_label_test_no_pattern "risk-invalid-level-no-label" \
   "gh label create risk/"
 
 # Invalid risk score → warning but label still applied (level is valid)
-RISK_INVALID_SCORE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":99,"level":"high","rationale":"Bad score."}}'
+RISK_INVALID_SCORE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":99,"level":"high","rationale":"Bad score."}}'
 
 run_label_test_stdout "risk-invalid-score-warning" \
   "${RISK_INVALID_SCORE}" \
@@ -2545,7 +2546,7 @@ run_select_test "select-matrix-only-eligible" \
   "$(jq -nc --argjson a "${ELIGIBLE}" --argjson b "${RESOLVED}" --argjson c "${HUMAN}" '[$a,$b,$c]')" \
   "PRRT_eligible"
 
-COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"notes"}'
+COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"notes"}'
 
 run_outdated_integration() {
   local test_name="$1"
@@ -2668,7 +2669,7 @@ run_gitlab_outdated_noop_test() {
   local test_name="gitlab-outdated-threads-noop"
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
-  echo '{"action":"comment","pr_number":99,"repo":"test-group/test-project","head_sha":"abc123","body":"notes"}' \
+  echo '{"action":"comment","pr_number":99,"repo":"test-group/test-project","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"notes"}' \
     > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
 
@@ -2717,6 +2718,646 @@ for log in "${LABEL_LOGS[@]}"; do
     FAILURES=$((FAILURES + 1))
   fi
 done
+
+# ---------------------------------------------------------------------------
+# Risk verdict gate tests
+# ---------------------------------------------------------------------------
+
+run_risk_verdict_test() {
+  local test_name="$1"
+  local result_json="$2"
+  local risk_enabled="$3"
+  local threshold="${4:-4}"
+  local expect_downgrade="${5:-false}"
+  local expect_pattern="${6:-}"
+  local expect_no_pattern="${7:-}"
+
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
+    export REVIEW_RISK_VERDICT_THRESHOLD="${threshold}"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [ "${expect_downgrade}" = "true" ]; then
+    if ! grep -qF "downgrading approve to comment" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected downgrade message not found in stdout"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if grep -qF "downgrading approve to comment" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — unexpected downgrade message found in stdout"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  if [[ -n "${expect_pattern}" ]]; then
+    if ! grep -qF "${expect_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected log pattern not found: '${expect_pattern}'"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  if [[ -n "${expect_no_pattern}" ]]; then
+    if grep -qF "${expect_no_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — unexpected log pattern found: '${expect_no_pattern}'"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Risk score at threshold (4/4) triggers downgrade ---
+RISK_SCORE_4_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Large auth refactor."}}'
+run_risk_verdict_test "risk-verdict-score-at-threshold-downgrades" \
+  "${RISK_SCORE_4_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (high)" ""
+
+# --- Risk score above threshold (5/4) triggers downgrade ---
+RISK_SCORE_5_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":5,"level":"critical","rationale":"Auth middleware."}}'
+run_risk_verdict_test "risk-verdict-score-above-threshold-downgrades" \
+  "${RISK_SCORE_5_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (high)" ""
+
+# --- Risk score below threshold (3/4) does not trigger gate ---
+RISK_SCORE_3_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+run_risk_verdict_test "risk-verdict-score-below-threshold-passes" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Missing risk_assessment triggers downgrade (fail-closed) ---
+APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM"}'
+run_risk_verdict_test "risk-verdict-missing-assessment-downgrades" \
+  "${APPROVE_NO_RISK}" "true" "4" "true" \
+  "Risk gate triggered (missing)" ""
+
+# --- risk_assessment present but score absent triggers downgrade ---
+# Normalization catches this before the gate — structurally invalid assessment
+# is stripped and the missing-assessment branch fires fail-closed.
+RISK_NO_SCORE_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"level":"high","rationale":"Missing score."}}'
+run_risk_verdict_test "risk-verdict-score-absent-downgrades" \
+  "${RISK_NO_SCORE_RESULT}" "true" "4" "true" \
+  "structurally invalid" ""
+
+# --- Degraded risk assessment triggers downgrade ---
+RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","degraded":"tier1-only","rationale":"Degraded."}}'
+run_risk_verdict_test "risk-verdict-degraded-downgrades" \
+  "${RISK_DEGRADED_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (degraded)" ""
+
+# --- Risk assessment disabled skips gate ---
+run_risk_verdict_test "risk-verdict-disabled-skips-gate" \
+  "${RISK_SCORE_4_RESULT}" "false" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Non-approve action skips gate ---
+RISK_COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"notes","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+run_risk_verdict_test "risk-verdict-non-approve-skips-gate" \
+  "${RISK_COMMENT_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Unset threshold falls back to default ---
+run_risk_verdict_test "risk-verdict-unset-threshold-defaults" \
+  "${RISK_SCORE_4_RESULT}" "true" "" "true" \
+  "Risk gate triggered (high)" ""
+
+# --- Invalid threshold causes exit 1 ---
+run_risk_invalid_threshold_test() {
+  local test_name="risk-verdict-invalid-threshold-exits"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_4_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="abc"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 1 ]]; then
+    echo "FAIL: ${test_name} — expected exit code 1, got ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "REVIEW_RISK_VERDICT_THRESHOLD='abc' is invalid" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected invalid threshold error not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_invalid_threshold_test
+
+# --- Injection-vuln: sanitization strips workflow delimiters ---
+run_risk_sanitization_test() {
+  local test_name="$1"
+  local env_var="$2"   # "enabled" or "threshold"
+  local value="$3"
+  local expect_pattern="$4"
+
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_4_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_PR_FILES="README.md"
+    if [ "${env_var}" = "enabled" ]; then
+      export REVIEW_RISK_ASSESSMENT_ENABLED="${value}"
+      export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    else
+      export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+      export REVIEW_RISK_VERDICT_THRESHOLD="${value}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 1 ]]; then
+    echo "FAIL: ${test_name} — expected exit code 1, got ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Verify no literal :: appears in the diagnostic (after the ::error:: prefix)
+  if grep -q '::error::.*'"'"'[^'"'"']*::[^'"'"']*'"'"'' "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — diagnostic contains unsanitized :: inside quoted value"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expect_pattern}" ]]; then
+    if ! grep -qF "${expect_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected pattern not found: '${expect_pattern}'"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_risk_sanitization_test "risk-sanitize-enabled-literal-colons" \
+  "enabled" "::set-output::evil" "is unrecognized"
+
+run_risk_sanitization_test "risk-sanitize-threshold-literal-colons" \
+  "threshold" "::set-env::x" "is invalid"
+
+run_risk_sanitization_test "risk-sanitize-threshold-ansi-escape" \
+  "threshold" $'\x1b[31mred\x1b[0m' "is invalid"
+
+run_risk_sanitization_test "risk-sanitize-enabled-percent-encoding" \
+  "enabled" "%0Ainjection" "is unrecognized"
+
+# --- Enabled value contract: 1/yes/0/no rejected ---
+run_risk_sanitization_test "risk-enabled-rejects-numeric-1" \
+  "enabled" "1" "is unrecognized"
+
+run_risk_sanitization_test "risk-enabled-rejects-yes" \
+  "enabled" "yes" "is unrecognized"
+
+# --- Combined protected-path and risk verdict gate ---
+RISK_PROTECTED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+run_risk_combined_test() {
+  local test_name="risk-combined-with-protected-path"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_PROTECTED_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES=".github/workflows/ci.yml"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Both gates should have triggered
+  if ! grep -qF "PR touches protected paths" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected protected-path downgrade not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Risk gate triggered (high)" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected risk-verdict downgrade not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_combined_test
+
+# --- Risk assessment enabled but unset value treats as disabled ---
+run_risk_verdict_test "risk-verdict-unset-enabled-skips-gate" \
+  "${RISK_SCORE_4_RESULT}" "" "4" "false" \
+  "" "downgrading approve to comment"
+
+# --- Risk assessment enabled=FALSE is rejected (exact match required) ---
+run_risk_sanitization_test "risk-verdict-false-enabled-rejected" \
+  "enabled" "FALSE" "is unrecognized"
+
+# --- Non-numeric/out-of-range score triggers downgrade ---
+# Normalization now catches structurally invalid assessments (null, boolean,
+# negative, string scores) before the gate — they are stripped and the
+# missing-assessment branch fires fail-closed.
+RISK_SCORE_NULL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":null,"level":"high","rationale":"Null score."}}'
+run_risk_verdict_test "risk-verdict-null-score-downgrades" \
+  "${RISK_SCORE_NULL_RESULT}" "true" "4" "true" \
+  "structurally invalid" ""
+
+RISK_SCORE_BOOL_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":true,"level":"high","rationale":"Bool score."}}'
+run_risk_verdict_test "risk-verdict-bool-score-downgrades" \
+  "${RISK_SCORE_BOOL_RESULT}" "true" "4" "true" \
+  "structurally invalid" ""
+
+RISK_SCORE_NEG_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":-1,"level":"high","rationale":"Negative score."}}'
+run_risk_verdict_test "risk-verdict-neg-score-downgrades" \
+  "${RISK_SCORE_NEG_RESULT}" "true" "4" "true" \
+  "structurally invalid" ""
+
+RISK_SCORE_STR_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":"high","level":"high","rationale":"String score."}}'
+run_risk_verdict_test "risk-verdict-str-score-downgrades" \
+  "${RISK_SCORE_STR_RESULT}" "true" "4" "true" \
+  "structurally invalid" ""
+
+# --- Native comment with high risk appends notice ---
+RISK_COMMENT_HI_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+run_risk_native_comment_test() {
+  local test_name="risk-native-comment-notice"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_COMMENT_HI_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Agent chose comment — appending risk notice (high)" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected native comment risk notice not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Risk score 4/5" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — expected risk notice not in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_native_comment_test
+
+# --- Native comment with low risk does not append notice ---
+RISK_COMMENT_LO_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Just a note.","risk_assessment":{"score":1,"level":"low","rationale":"Test."}}'
+run_risk_native_comment_low_test() {
+  local test_name="risk-native-comment-low-no-notice"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_COMMENT_LO_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Assert that no risk-gate notice was appended at all — the previous
+  # assertion only checked for "Risk score 2/5" (score is 1), so an
+  # incorrect "Risk score 1/5" notice would have slipped through.
+  if grep -qE "Risk (score|assessment)" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — risk-gate notice should not be appended for low risk"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_native_comment_low_test
+
+# --- Threshold 6 disables verdict gating (opt-out) ---
+run_risk_verdict_test "risk-verdict-threshold-6-opt-out" \
+  "${RISK_SCORE_5_RESULT}" "true" "6" "false" \
+  "" "downgrading approve to comment"
+
+# --- Threshold 6 with comment action must not abort (regression: set -u crash) ---
+RISK_COMMENT_HI_6_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Just a note.","risk_assessment":{"score":4,"level":"high","rationale":"Test."}}'
+run_risk_native_comment_optout_test() {
+  local test_name="risk-threshold6-comment-does-not-abort"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_COMMENT_HI_6_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="6"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code} (expected 0)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF '"action": "comment"' "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — action not comment in posted body"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "Risk score 4/5" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — risk notice should not be in body when gate is disabled"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_native_comment_optout_test
+
+# --- Threshold at non-default values ---
+run_risk_verdict_test "risk-verdict-threshold-3-score-3-downgrades" \
+  "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 3')" "true" "3" "true" \
+  "Risk gate triggered (high)" ""
+
+run_risk_verdict_test "risk-verdict-threshold-3-score-2-passes" \
+  "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 2')" "true" "3" "false" \
+  "" "downgrading approve to comment"
+
+run_risk_verdict_test "risk-verdict-threshold-2-score-2-downgrades" \
+  "$(echo "${RISK_SCORE_4_RESULT}" | jq '.risk_assessment.score = 2')" "true" "2" "true" \
+  "Risk gate triggered (high)" ""
+
+# --- Verdict body check: degraded result has correct body ---
+RISK_DEGRADED_CHECK_BODY='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","degraded":"tier1-only","rationale":"Degraded."}}'
+run_risk_verdict_body_test() {
+  local test_name="risk-verdict-body-degraded-downgrade"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_DEGRADED_CHECK_BODY}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF '"action": "comment"' "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — verdict not rewritten to comment in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Risk assessment degraded" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — degraded notice not in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_verdict_body_test
+
+# --- Verdict body check: score at threshold has correct notice ---
+run_risk_verdict_body_score_test() {
+  local test_name="risk-verdict-body-score-downgrade"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_4_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF '"action": "comment"' "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — verdict not rewritten to comment in posted body"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Risk score 4/5" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — risk notice not in posted body"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_verdict_body_score_test
+
+# --- risk_gated metadata marker present on downgraded result ---
+run_risk_gated_field_test() {
+  local test_name="risk-gated-field-present"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_4_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code} (expected 0)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF '"risk_gated": true' "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — risk_gated field not true in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_gated_field_test
 
 # --- Summary ---
 
