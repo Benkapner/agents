@@ -5,13 +5,15 @@
 # See ADR 0033 for details.
 version: "1"
 runtime: claude
-# What the `sonnet` alias means in this repo, for the parent run of every agent
-# on both runtimes and for pi sub-agents. fullsend's pinned default is one
-# generation older; Vertex enables models per project, so this only works
-# where claude-sonnet-5 is served (a pinned alias has no fallback).
+# What the `opus` and `sonnet` aliases mean in this repo, for the parent run of
+# every agent on both runtimes and for pi sub-agents. fullsend's pinned defaults
+# are older; Vertex enables models per project, so this only works where
+# claude-opus-5-5 and claude-sonnet-5-5 are served (a pinned alias has no
+# fallback).
 models:
     aliases:
-        sonnet: claude-sonnet-5
+        opus: claude-opus-5-5
+        sonnet: claude-sonnet-5-5
 roles:
     - fullsend
     - triage
@@ -31,9 +33,9 @@ agents:
       model: google-vertex/gemini-3.8-flash
     - name: review
       runtime: pi
-      model: openai/gpt-6.1-sol
+      model: sonnet
       subagents:
-        challenger: openai/gpt-6.1-sol
+        challenger: opus
         correctness: openai/gpt-6.1-sol
         docs-currency: google-vertex/gemini-3.8-flash
         security: openai/gpt-6.1-sol
