@@ -58,7 +58,8 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   and rejects the human-readable review body before sandbox ingress. Projection
   v2 uses `file: null` for PR-level findings with no source-file anchor; keep
   their category for dispatch but never use them for severity or path matching.
-  Findings may include `id` (`f_` plus letters and digits). `dispositions`
+  Findings include `id` (`f_` plus letters and digits); a legacy marker
+  without one is assigned an id before sandbox ingress. `dispositions`
   gives each prior id a `status`. An id whose status is `resolved_by_change`
   or `dismissed_by_human` is closed: do not raise that finding again, do not
   answer it, and do not reuse its id. Every other prior id is open and needs

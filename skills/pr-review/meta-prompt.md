@@ -36,8 +36,8 @@ code.
 ## Severity anchoring (re-reviews only)
 
 The prior projection contains severity, category, file, optional line, an
-optional id, and a status per prior id. Prior descriptions, rationales, and
-evidence are intentionally unavailable. Severity
+id (`f_` plus letters and digits), and a status per prior id. Prior
+descriptions, rationales, and evidence are intentionally unavailable. Severity
 anchoring still uses category and file, not the id. Match only when the category,
 the same non-null file path, and the same function/class in unchanged code
 identify one prior finding. Use line only to disambiguate; do not require a prior

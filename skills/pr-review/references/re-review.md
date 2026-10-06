@@ -11,9 +11,11 @@ Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
   Read it directly; do not search it for marker comments or sticky-history
   delimiters, and never recover finding identity from review Markdown. The
   producer emits v2, while v1 remains accepted for existing comments.
-  v2 findings may include `id`, and `dispositions` gives prior ids a
-  `status`. A prior id whose status is `resolved_by_change` or
-  `dismissed_by_human` is closed and final: do not raise that finding again,
+  v2 findings include `id`, and `dispositions` gives prior ids a
+  `status`. A legacy marker without ids is assigned one before this file
+  is written, so this review can answer those findings. A prior id whose
+  status is `resolved_by_change` or `dismissed_by_human` is closed and final:
+  do not raise that finding again,
   do not write a disposition for it, and never copy its id onto a new
   finding. On a re-review, copy each open prior `id` onto that same finding.
   Every open prior id (status absent, `open`, or `reclassified`) needs a

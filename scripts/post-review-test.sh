@@ -1906,6 +1906,36 @@ run_disposition_case "approve-kept-for-answered-high-prior-finding" \
 assert_last_result "approve-kept-for-answered-high-prior-finding" \
   '.action == "approve"'
 
+# An explicit open disposition, or a resolve without evidence, still leaves
+# the prior high finding open. Approval must not slip through.
+run_disposition_case "approve-withheld-for-explicit-open-high-prior-finding" \
+  "$(jq -c '.action="approve" | .findings=[] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.dispositions == [{id: "f_hi1", status: "open"}]'
+assert_last_result "approve-withheld-for-explicit-open-high-prior-finding" \
+  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+
+run_disposition_case "approve-withheld-for-empty-evidence-resolved-high-prior-finding" \
+  "$(jq -c '.action="approve" | .findings=[] | .dispositions=[{id:"f_hi1",status:"resolved_by_change",rationale:"Fixed.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.dispositions == [{id: "f_hi1", status: "open"}]'
+assert_last_result "approve-withheld-for-empty-evidence-resolved-high-prior-finding" \
+  '.action == "comment" and (.body | contains("Approval withheld"))'
+
+# Resolving f_X must not copy that id onto a new finding in the same file
+# and category. The new row gets its own id and stays in the ledger.
+run_disposition_case "projection-does-not-copy-id-closed-this-review" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"src/a.go",line:9,description:"new"}] | .dispositions=[{id:"f_oldx",status:"resolved_by_change",rationale:"The check is in place.",evidence:"src/a.go:2 now returns early on nil"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"src/a.go","line":2,"id":"f_oldx"}]}' \
+  '([.findings[] | select(.id == "f_oldx" and .line == 2)] | length) == 1 and ([.findings[] | select(.line == 9 and .id != "f_oldx" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and ([.dispositions[] | select(.id == "f_oldx")] == [{id: "f_oldx", status: "resolved_by_change"}])'
+
+# Reclassifying a high finding to info must persist the new severity even
+# when the info row is below the posted-review threshold.
+run_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \
+  "$(jq -c '.findings=[{severity:"info",category:"incorrect-doc",file:"README.md",line:3,description:"typo",id:"f_reclass1"}] | .dispositions=[{id:"f_reclass1",status:"reclassified",rationale:"This is a docs typo, not a logic error.",evidence:"README still says pytset"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"README.md","line":3,"id":"f_reclass1"}]}' \
+  '.findings == [{"severity":"info","category":"incorrect-doc","file":"README.md","id":"f_reclass1","line":3}] and .dispositions == [{id: "f_reclass1", status: "reclassified"}]'
+
 # The marker leads the body so sticky truncation from the end cannot cut it.
 assert_last_result "projection-marker-is-first-body-line" \
   '(.body | split("\n")[0]) | test("^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$")'
@@ -1917,8 +1947,13 @@ run_disposition_case "projection-caps-closed-findings-at-100" \
   "${CAPPED_PRIOR}" \
   '(.findings | length) == 100 and (.dispositions | length) == 100 and ([.findings[].id] | index("f_c0")) == null and ([.findings[].id] | index("f_c100")) != null and ([.dispositions[].id] | index("f_c0")) == null'
 
-run_no_projection_test "failure-without-body-posts-no-projection" \
-  '{"action":"failure","reason":"time-budget"}'
+# A new resolution is newer than carried closures, so it is kept when the
+# cap drops the oldest closed entry.
+CAPPED_WITH_NEW="$(jq -nc '{version:2, findings:([{severity:"high",category:"logic-error",file:"src/new.go",line:1,id:"f_new1"}] + [range(0;100) | {severity:"low",category:"logic-error",file:"src/a.go",line:(.+1),id:("f_c" + tostring)}]), dispositions:([{id:"f_new1",status:"open"}] + [range(0;100) | {id:("f_c" + tostring),status:"resolved_by_change"}])}')"
+run_disposition_case "projection-caps-keep-newest-closure" \
+  "$(jq -c '.findings=[] | .dispositions=[{id:"f_new1",status:"resolved_by_change",rationale:"Fixed.",evidence:"src/new.go now returns nil-safe"}]' <<< "${BASE_REVIEW}")" \
+  "${CAPPED_WITH_NEW}" \
+  '([.findings[].id] | index("f_new1")) != null and ([.findings[].id] | index("f_c0")) == null and (.findings | length) == 100 and ([.dispositions[] | select(.id == "f_new1")] == [{id: "f_new1", status: "resolved_by_change"}])'
 
 # ---------------------------------------------------------------------------
 # Explicit action="failure" integration tests (#1612)

@@ -284,7 +284,15 @@ run_prior_projection_test() {
     echo "PASS: ${test_name}"
     return
   fi
-  if ! jq -e --argjson expected "${expected_json}" '. == $expected' "${prior_file}" >/dev/null 2>&1; then
+  if ! jq -e --argjson expected "${expected_json}" '
+    def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+    (.findings | length) == ($expected.findings | length) and
+    (.findings | all(has("id") and (.id | valid_id))) and
+    ((. | del(.findings)) == ($expected | del(.findings))) and
+    ([range(0; .findings | length) as $i
+      | .findings[$i] as $a | $expected.findings[$i] as $e
+      | if ($e | has("id")) then $a == $e else ($a | del(.id)) == $e end] | all)
+  ' "${prior_file}" >/dev/null 2>&1; then
     echo "FAIL: ${test_name} — canonical prior projection mismatch"
     cat "${prior_file}"
     FAILURES=$((FAILURES + 1))
@@ -422,6 +430,13 @@ run_prior_projection_test "v2-id-and-disposition-retained" \
   "$(projection_marker "${V2_ID_PROJECTION}")" \
   "app-verified" \
   "${V2_ID_PROJECTION}"
+
+# Legacy projections without ids receive one before the sandbox, so the
+# agent can write a disposition on the first re-review after upgrade.
+run_prior_projection_test "legacy-findings-get-minted-ids" \
+  "$(projection_marker "${VALID_PROJECTION}")" \
+  "app-verified" \
+  "${VALID_PROJECTION}"
 
 # Dispositions carry structured metadata only. Free text from an earlier
 # review (rationale, evidence) must never reach the sandbox.
