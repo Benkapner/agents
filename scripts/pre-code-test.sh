@@ -523,6 +523,44 @@ else
   echo "PASS: ${test_name}"
 fi
 
+# --- Regression: OSC sequences and other control characters must not
+# survive sanitization into logged output ---
+# _gha_sanitize's ANSI regex previously only stripped CSI sequences
+# (ESC [ ... letter); OSC sequences (ESC ] ... BEL/ST), other
+# escape-introduced sequences, and raw control characters like backspace
+# survived into runner logs. Use CODE_FORCE to take the bypass path
+# regardless of COMMENT_BODY content, isolating the sanitizer behavior.
+test_name="force-check-strips-osc-and-control-chars-from-comment-body"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+control_output="${TMPDIR}/github-output-control.txt"
+: > "${control_output}"
+control_stdout="${TMPDIR}/stdout-control.log"
+control_exit=0
+env -u FULLSEND_PRESCRIPT_OUTPUT \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  FULLSEND_FORGE="github" \
+  GH_TOKEN="fake-token" \
+  GITHUB_OUTPUT="${control_output}" \
+  CODE_FORCE="true" \
+  COMMENT_BODY=$'line-one\n\x1b]0;evil-title\x07\x08trailing' \
+  bash "${PRE_SCRIPT}" > "${control_stdout}" 2>&1 || control_exit=$?
+
+if [[ ${control_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${control_exit}"
+  cat "${control_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q $'\x1b' "${control_stdout}" || grep -q $'\x08' "${control_stdout}"; then
+  echo "FAIL: ${test_name} — raw ESC/control byte survived sanitization"
+  cat "${control_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
 # --- Anchoring: --force counts only as the command's flag token ---
 # Mirrors the dispatch router's first-line tokenization. A comment that
 # merely mentions --force must not bypass the existing-PR check.

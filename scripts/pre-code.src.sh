@@ -32,13 +32,17 @@ source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 
 # Sanitize a value for safe interpolation into logged output. Strips ANSI
-# escapes and newlines/carriage returns, and escapes :: (and %) so an
-# attacker-controlled multiline value (e.g. COMMENT_BODY from an issue
-# comment) cannot inject a GitHub Actions workflow command (::error::,
+# escapes (CSI, OSC, and any other escape-introduced sequence) and other
+# control characters, strips newlines/carriage returns, and escapes :: (and
+# %) so an attacker-controlled multiline value (e.g. COMMENT_BODY from an
+# issue comment) cannot inject a GitHub Actions workflow command (::error::,
 # ::add-mask::, etc.) via an embedded line break.
 if ! declare -F _gha_sanitize >/dev/null 2>&1; then
   _gha_sanitize() {
-    printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'
+    printf '%s' "$1" | tr -d '\n\r' \
+      | sed -E 's/\x1b\][^\x1b\x07]*(\x07|\x1b\\)?//g; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b.?//g' \
+      | tr -d '\000-\010\013-\037\177' \
+      | sed 's/%/%25/g; s/::/%3A%3A/g'
   }
 fi
 
