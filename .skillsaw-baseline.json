@@ -1,7 +1,7 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-10-05T17:10:37.425928+00:00",
+  "generated_at": "2026-10-06T13:57:53.866809+00:00",
   "violations": [
     {
       "fingerprint": "34efa8521ae07039",
@@ -80,9 +80,9 @@
       "fingerprint": "3841c25d67e33e68",
       "rule_id": "context-budget",
       "file_path": "skills/pr-risk-assessment/SKILL.md",
-      "message": "Estimated 3,836 tokens exceeds skill warn limit of 3,000",
+      "message": "Estimated 3,910 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3836,
+      "value": 3910,
       "baseline_mode": "ceiling"
     },
     {
