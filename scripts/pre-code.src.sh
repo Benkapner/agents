@@ -52,22 +52,35 @@ _pre_code_sanitize_log() {
     | sed 's/%/%25/g; s/::/%3A%3A/g'
 }
 
-echo "::notice::🔗 Code target: ${ISSUE_URL:-}"
+echo "::notice::🔗 Code target: $(_pre_code_sanitize_log "${ISSUE_URL:-}")"
 
 errors=0
 
+# ISSUE_NUMBER, REPO_FULL_NAME, and ISSUE_URL are workflow inputs that have
+# not been validated yet at this point — a malformed value may contain
+# newlines or other workflow-command-triggering content, so every
+# interpolation of the raw (unvalidated) value below goes through
+# _pre_code_sanitize_log. URL_REPO/URL_ISSUE need the same treatment: when
+# ISSUE_URL doesn't match the extraction regex, forge_extract_repo_from_url /
+# forge_extract_issue_from_url fall back to echoing the unmatched input
+# unchanged, so they can carry the same raw, unsanitized ISSUE_URL.
 if [[ ! "${ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "::error::ISSUE_NUMBER must be a positive integer, got: '${ISSUE_NUMBER:-}'"
+  echo "::error::ISSUE_NUMBER must be a positive integer, got: '$(_pre_code_sanitize_log "${ISSUE_NUMBER:-}")'"
   errors=$((errors + 1))
 fi
 
 if [[ ! "${REPO_FULL_NAME:-}" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$ ]]; then
-  echo "::error::REPO_FULL_NAME must be owner/repo (or group/subgroup/project) format, got: '${REPO_FULL_NAME:-}'"
+  echo "::error::REPO_FULL_NAME must be owner/repo (or group/subgroup/project) format, got: '$(_pre_code_sanitize_log "${REPO_FULL_NAME:-}")'"
   errors=$((errors + 1))
 fi
 
-if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
-  echo "::error::ISSUE_URL format invalid, got: '${ISSUE_URL:-}'"
+# Suppress forge_validate_issue_url's own stderr diagnostic: it interpolates
+# the raw, unvalidated ISSUE_URL without sanitization, which would otherwise
+# reintroduce the same workflow-command injection this block sanitizes
+# against. The sanitized "::error::" message below already reports the
+# failure.
+if ! forge_validate_issue_url "${ISSUE_URL:-}" 2>/dev/null; then
+  echo "::error::ISSUE_URL format invalid, got: '$(_pre_code_sanitize_log "${ISSUE_URL:-}")'"
   errors=$((errors + 1))
 fi
 
@@ -75,11 +88,11 @@ URL_REPO="$(forge_extract_repo_from_url "${ISSUE_URL:-}" 2>/dev/null || true)"
 URL_ISSUE="$(forge_extract_issue_from_url "${ISSUE_URL:-}" 2>/dev/null || true)"
 
 if [[ -n "${URL_REPO}" && "${URL_REPO}" != "${REPO_FULL_NAME:-}" ]]; then
-  echo "::error::REPO_FULL_NAME does not match issue URL repo ('${REPO_FULL_NAME:-}' vs '${URL_REPO}')"
+  echo "::error::REPO_FULL_NAME does not match issue URL repo ('$(_pre_code_sanitize_log "${REPO_FULL_NAME:-}")' vs '$(_pre_code_sanitize_log "${URL_REPO}")')"
   errors=$((errors + 1))
 fi
 if [[ -n "${URL_ISSUE}" && "${URL_ISSUE}" != "${ISSUE_NUMBER:-}" ]]; then
-  echo "::error::ISSUE_NUMBER does not match issue URL number ('${ISSUE_NUMBER:-}' vs '${URL_ISSUE}')"
+  echo "::error::ISSUE_NUMBER does not match issue URL number ('$(_pre_code_sanitize_log "${ISSUE_NUMBER:-}")' vs '$(_pre_code_sanitize_log "${URL_ISSUE}")')"
   errors=$((errors + 1))
 fi
 

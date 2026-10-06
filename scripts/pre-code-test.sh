@@ -644,6 +644,44 @@ else
   echo "PASS: ${test_name}"
 fi
 
+# --- Regression: malformed ISSUE_URL must not inject a workflow command ---
+# ISSUE_URL is echoed before forge_validate_issue_url runs (the "Code
+# target" notice), and again in the validation-failure messages. When the
+# URL doesn't match the extraction regex, forge_extract_repo_from_url /
+# forge_extract_issue_from_url also fall back to echoing the raw,
+# unvalidated value unchanged. A malformed ISSUE_URL whose second line
+# starts with "::add-mask::" (or "::error::", etc.) must not reach the
+# output as its own line via any of these paths, including
+# forge_validate_issue_url's own (now-suppressed) stderr diagnostic.
+test_name="malformed-issue-url-does-not-inject-workflow-command"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+badurl_output="${TMPDIR}/github-output-badurl.txt"
+: > "${badurl_output}"
+badurl_stdout="${TMPDIR}/stdout-badurl.log"
+badurl_exit=0
+MALFORMED_ISSUE_URL=$'https://github.com/test-org/test-repo/issues/42\n::add-mask::injected-workflow-command'
+env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  ISSUE_URL="${MALFORMED_ISSUE_URL}" \
+  FULLSEND_FORGE="github" \
+  GH_TOKEN="fake-token" \
+  GITHUB_OUTPUT="${badurl_output}" \
+  bash "${PRE_SCRIPT}" > "${badurl_stdout}" 2>&1 || badurl_exit=$?
+
+if [[ ${badurl_exit} -ne 1 ]]; then
+  echo "FAIL: ${test_name} — expected exit 1 (validation failure), got ${badurl_exit}"
+  cat "${badurl_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE '^::add-mask::injected-workflow-command' "${badurl_stdout}"; then
+  echo "FAIL: ${test_name} — injected workflow command appeared at start of a stdout line"
+  cat "${badurl_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
 # --- Regression: missing-token bypass must not SIGPIPE on a long multiline
 # COMMENT_BODY (found during review of #1583) ---
 # FORCE_WORD extraction previously piped the full COMMENT_BODY through
