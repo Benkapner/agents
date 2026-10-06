@@ -326,11 +326,13 @@ BOT_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-
 # Single fullsend-ai-coder bot PR, bare GraphQL-style login.
 CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder","__typename":"Bot"},"state":"OPEN"}]')"
 
-# Single custom-app[bot] PR (custom FULLSEND_APP_SET, no role suffix).
-CUSTOM_BOT_PR_JSON="$(_gql_wrap '[{"number":12,"url":"https://github.com/test-org/test-repo/pull/12","author":{"login":"custom-app[bot]"},"state":"OPEN"}]')"
+# Single custom-app[bot] PR (custom FULLSEND_APP_SET, no role suffix), bare
+# GraphQL-style login.
+CUSTOM_BOT_PR_JSON="$(_gql_wrap '[{"number":12,"url":"https://github.com/test-org/test-repo/pull/12","author":{"login":"custom-app","__typename":"Bot"},"state":"OPEN"}]')"
 
-# Single custom-app-coder[bot] PR (custom FULLSEND_APP_SET coder identity).
-CUSTOM_CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":13,"url":"https://github.com/test-org/test-repo/pull/13","author":{"login":"custom-app-coder[bot]"},"state":"OPEN"}]')"
+# Single custom-app-coder[bot] PR (custom FULLSEND_APP_SET coder identity),
+# bare GraphQL-style login.
+CUSTOM_CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":13,"url":"https://github.com/test-org/test-repo/pull/13","author":{"login":"custom-app-coder","__typename":"Bot"},"state":"OPEN"}]')"
 
 # Both bot PRs plus a human PR.
 MIXED_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai","__typename":"Bot"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder","__typename":"Bot"},"state":"OPEN"},{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev","__typename":"User"},"state":"OPEN"}]')"
