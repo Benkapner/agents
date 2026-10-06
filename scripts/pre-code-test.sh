@@ -488,6 +488,41 @@ run_test_stdout "no-force-reaches-pr-search" \
   0 \
   "COMMENT_BODY=/fs-code"
 
+# --- Regression: multiline COMMENT_BODY cannot inject a workflow command ---
+# The force-override log line interpolates COMMENT_BODY. A comment whose
+# second line starts with "::error::" (or "::add-mask::", etc.) must not
+# reach stdout as its own line — GitHub Actions parses workflow commands
+# per raw stdout line regardless of the surrounding quoting in the script.
+test_name="force-check-sanitizes-multiline-comment-body"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+injection_output="${TMPDIR}/github-output-injection.txt"
+: > "${injection_output}"
+injection_stdout="${TMPDIR}/stdout-injection.log"
+injection_exit=0
+env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  FULLSEND_FORGE="github" \
+  GH_TOKEN="fake-token" \
+  GITHUB_OUTPUT="${injection_output}" \
+  COMMENT_BODY=$'/fs-code --force\n::error::injected-workflow-command' \
+  bash "${PRE_SCRIPT}" > "${injection_stdout}" 2>&1 || injection_exit=$?
+
+if [[ ${injection_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${injection_exit}"
+  cat "${injection_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE '^::error::injected-workflow-command' "${injection_stdout}"; then
+  echo "FAIL: ${test_name} — injected workflow command appeared at start of a stdout line"
+  cat "${injection_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
 # --- Anchoring: --force counts only as the command's flag token ---
 # Mirrors the dispatch router's first-line tokenization. A comment that
 # merely mentions --force must not bypass the existing-PR check.

@@ -31,6 +31,17 @@ source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 # shellcheck source=lib/code-ops.lib.sh
 source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 
+# Sanitize a value for safe interpolation into logged output. Strips ANSI
+# escapes and newlines/carriage returns, and escapes :: (and %) so an
+# attacker-controlled multiline value (e.g. COMMENT_BODY from an issue
+# comment) cannot inject a GitHub Actions workflow command (::error::,
+# ::add-mask::, etc.) via an embedded line break.
+if ! declare -F _gha_sanitize >/dev/null 2>&1; then
+  _gha_sanitize() {
+    printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'
+  }
+fi
+
 echo "::notice::🔗 Code target: ${ISSUE_URL:-}"
 
 errors=0
@@ -116,7 +127,7 @@ FORCE_WORD=""
 if [[ -n "${COMMENT_BODY:-}" ]]; then
   FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
 fi
-echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
+echo "Evaluating force override: CODE_FORCE='$(_gha_sanitize "${CODE_FORCE:-}")' COMMENT_BODY='$(_gha_sanitize "${COMMENT_BODY:-}")'"
 if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]] \
    && { [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; }; then
   echo "Force override — skipping existing-PR and tracking-issue checks"
