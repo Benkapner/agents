@@ -880,8 +880,9 @@ MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< 
 # reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
 # category match: the exact line first, else the only candidate at that
 # place (a shifted line must not create a second ledger entry). Do not copy
-# an id this review is closing. Otherwise mint. Supplied open ids of later
-# rows are reserved for them.
+# an id this review is closing. A missing file (null or N/A) is not a
+# place, so those rows mint instead of inheriting. Otherwise mint.
+# Supplied open ids of later rows are reserved for them.
 if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   ID_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${ID_RESULT}")
@@ -917,6 +918,7 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                 ([ $rows[($i + 1):][] | .id | select(valid_id) | select(. as $x | $open | index($x) != null) ]) as $reserved
                 | ([ $open_findings[]
                      | select(.id as $pid | ($taken + $reserved + $closing) | index($pid) == null)
+                     | select((.file | anchor_file) != null and ($f.file | anchor_file) != null)
                      | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category)
                    ]) as $same_place
                 | ([ $same_place[] | select((.line | anchor_line) == ($f.line | anchor_line)) ]) as $exact
@@ -1410,9 +1412,7 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
       dismissed_unverified: [ $effective[] | select(.why == "dismissed-unverified") | .id ],
       blocking: [ $prior.findings[]
                   | select(.severity | IN("high", "critical"))
-                  | select(.id as $id | ($still_open | index($id) != null)
-                      and (([ ($unfiltered[0].findings // [])[] | select(.id == $id) | .severity ] | first // "absent")
-                           | IN("high", "critical") | not))
+                  | select(.id as $id | $still_open | index($id) != null)
                   | .id ],
       ignored_closed: [ (.dispositions // [])[] | select(type == "object") | .id
                         | select(type == "string") | select(. as $id | $closed | index($id) != null) ] | unique
@@ -1441,8 +1441,8 @@ if [[ -n "${IGNORED_CLOSED_IDS}" ]]; then
 fi
 BLOCKING_IDS="$(jq -r '.blocking | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${BLOCKING_IDS}" && "${ACTION}" = "approve" ]]; then
-  echo "::warning::Approval withheld: prior high/critical finding id(s) ${BLOCKING_IDS} are still open and were not addressed"
-  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) '"${BLOCKING_IDS}"$' are still open and this review did not address them.'
+  echo "::warning::Approval withheld: prior high/critical finding id(s) ${BLOCKING_IDS} are still open"
+  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) '"${BLOCKING_IDS}"$' are still open.'
   LEDGER_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${LEDGER_RESULT}")
   jq --arg notice "${LEDGER_NOTICE}" \

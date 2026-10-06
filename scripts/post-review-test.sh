@@ -1892,6 +1892,13 @@ run_disposition_case "projection-copies-prior-id-across-line-shift" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_shift1"}]}' \
   '.findings == [{"severity":"low","category":"logic-error","file":"internal/foo.go","id":"f_shift1","line":9}] and .dispositions == [{id: "f_shift1", status: "open"}]'
 
+# A missing file is not a place: a PR-level finding must not inherit the
+# prior id of another PR-level finding in the same category.
+run_disposition_case "projection-does-not-copy-id-across-unanchored-pr-level-findings" \
+  "$(jq -c '.findings=[{severity:"high",category:"missing-authorization",file:"N/A",description:"d"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '([.findings[] | select(.id == "f_pr1")] | length) == 1 and ([.findings[] | select(.file == null and .id != "f_pr1" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+
 # A prior finding written before ids existed gets one and enters the ledger
 # instead of vanishing when the model does not mention it.
 run_disposition_case "projection-assigns-id-to-legacy-prior-finding" \
@@ -2164,14 +2171,14 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lo
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
   '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 
-# Re-emitted at high with status open: the ledger keeps it and the review
-# posts as given (the approval logic elsewhere handles a high finding).
-run_disposition_case "projection-open-high-prior-finding-re-emitted-high" \
-  "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+# Re-emitting an open prior high finding at high still leaves it open.
+# open is not a resolution, so approval is withheld.
+run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
-  '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}]'
-assert_disposition_stdout "projection-open-high-prior-finding-re-emitted-high" \
-  "Approval withheld" "absent"
+  '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
+assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
+  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
