@@ -488,6 +488,222 @@ run_test_stdout "no-force-reaches-pr-search" \
   0 \
   "COMMENT_BODY=/fs-code"
 
+# --- Regression: multiline COMMENT_BODY cannot inject a workflow command ---
+# A comment whose second line starts with "::error::" must not reach
+# stdout as its own line via the force-override log.
+test_name="force-check-sanitizes-multiline-comment-body"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+injection_output="${TMPDIR}/github-output-injection.txt"
+: > "${injection_output}"
+injection_stdout="${TMPDIR}/stdout-injection.log"
+injection_exit=0
+env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  FULLSEND_FORGE="github" \
+  GH_TOKEN="fake-token" \
+  GITHUB_OUTPUT="${injection_output}" \
+  COMMENT_BODY=$'/fs-code --force\n::error::injected-workflow-command' \
+  bash "${PRE_SCRIPT}" > "${injection_stdout}" 2>&1 || injection_exit=$?
+
+if [[ ${injection_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${injection_exit}"
+  cat "${injection_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE '^::error::injected-workflow-command' "${injection_stdout}"; then
+  echo "FAIL: ${test_name} — injected workflow command appeared at start of a stdout line"
+  cat "${injection_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
+# --- Regression: OSC sequences and other control characters must not
+# survive sanitization into logged output ---
+# The sanitizer previously only stripped CSI escapes; OSC sequences and
+# raw control bytes like backspace survived into runner logs.
+test_name="force-check-strips-osc-and-control-chars-from-comment-body"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+control_output="${TMPDIR}/github-output-control.txt"
+: > "${control_output}"
+control_stdout="${TMPDIR}/stdout-control.log"
+control_exit=0
+env -u FULLSEND_PRESCRIPT_OUTPUT \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  FULLSEND_FORGE="github" \
+  GH_TOKEN="fake-token" \
+  GITHUB_OUTPUT="${control_output}" \
+  CODE_FORCE="true" \
+  COMMENT_BODY=$'line-one\n\x1b]0;evil-title\x07\x08trailing' \
+  bash "${PRE_SCRIPT}" > "${control_stdout}" 2>&1 || control_exit=$?
+
+if [[ ${control_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${control_exit}"
+  cat "${control_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q $'\x1b' "${control_stdout}" || grep -q $'\x08' "${control_stdout}"; then
+  echo "FAIL: ${test_name} — raw ESC/control byte survived sanitization"
+  cat "${control_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
+# --- Regression: horizontal tabs must not survive sanitization ---
+# The control-character deletion range previously skipped \011 (tab),
+# letting a tab in CODE_FORCE or COMMENT_BODY reach the logs.
+test_name="force-check-strips-tabs-from-code-force-and-comment-body"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+tab_output="${TMPDIR}/github-output-tab.txt"
+: > "${tab_output}"
+tab_stdout="${TMPDIR}/stdout-tab.log"
+tab_exit=0
+env -u FULLSEND_PRESCRIPT_OUTPUT \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  FULLSEND_FORGE="github" \
+  GH_TOKEN="fake-token" \
+  GITHUB_OUTPUT="${tab_output}" \
+  CODE_FORCE=$'true\textra' \
+  COMMENT_BODY=$'/fs-code\tstatus-update' \
+  bash "${PRE_SCRIPT}" > "${tab_stdout}" 2>&1 || tab_exit=$?
+
+if [[ ${tab_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${tab_exit}"
+  cat "${tab_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "Evaluating force override:" "${tab_stdout}"; then
+  echo "FAIL: ${test_name} — force override log line not found"
+  cat "${tab_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q $'\t' "${tab_stdout}"; then
+  echo "FAIL: ${test_name} — raw tab survived sanitization"
+  cat "${tab_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
+# --- Regression: the hardened sanitizer must apply on GitLab too,
+# regardless of forge-library load order ---
+# The GitLab path transitively loads an older, weaker _gha_sanitize; a
+# `declare -F` guard would keep it and leak control chars into logs.
+test_name="force-check-strips-osc-and-control-chars-from-comment-body-gitlab"
+gitlab_output="${TMPDIR}/github-output-gitlab.txt"
+: > "${gitlab_output}"
+gitlab_stdout="${TMPDIR}/stdout-gitlab.log"
+gitlab_exit=0
+env -u FULLSEND_PRESCRIPT_OUTPUT -u GH_TOKEN -u GITLAB_TOKEN \
+  PATH="${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  ISSUE_URL="https://gitlab.example.com/test-org/test-repo/-/issues/42" \
+  FULLSEND_FORGE="gitlab" \
+  CI_SERVER_HOST="gitlab.example.com" \
+  GITHUB_OUTPUT="${gitlab_output}" \
+  CODE_FORCE="true" \
+  COMMENT_BODY=$'line-one\n\x1b]0;evil-title\x07\x08trailing' \
+  bash "${PRE_SCRIPT}" > "${gitlab_stdout}" 2>&1 || gitlab_exit=$?
+
+if [[ ${gitlab_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${gitlab_exit}"
+  cat "${gitlab_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "Evaluating force override:" "${gitlab_stdout}"; then
+  echo "FAIL: ${test_name} — force override log line not found"
+  cat "${gitlab_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q $'\x1b' "${gitlab_stdout}" || grep -q $'\x08' "${gitlab_stdout}"; then
+  echo "FAIL: ${test_name} — raw ESC/control byte survived sanitization on the GitLab path"
+  cat "${gitlab_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
+# --- Regression: malformed ISSUE_URL must not inject a workflow command ---
+# ISSUE_URL is echoed raw in several places before validation; a malformed
+# value's second line must not reach stdout as its own workflow command.
+test_name="malformed-issue-url-does-not-inject-workflow-command"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+badurl_output="${TMPDIR}/github-output-badurl.txt"
+: > "${badurl_output}"
+badurl_stdout="${TMPDIR}/stdout-badurl.log"
+badurl_exit=0
+MALFORMED_ISSUE_URL=$'https://github.com/test-org/test-repo/issues/42\n::add-mask::injected-workflow-command'
+env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  ISSUE_URL="${MALFORMED_ISSUE_URL}" \
+  FULLSEND_FORGE="github" \
+  GH_TOKEN="fake-token" \
+  GITHUB_OUTPUT="${badurl_output}" \
+  bash "${PRE_SCRIPT}" > "${badurl_stdout}" 2>&1 || badurl_exit=$?
+
+if [[ ${badurl_exit} -ne 1 ]]; then
+  echo "FAIL: ${test_name} — expected exit 1 (validation failure), got ${badurl_exit}"
+  cat "${badurl_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE '^::add-mask::injected-workflow-command' "${badurl_stdout}"; then
+  echo "FAIL: ${test_name} — injected workflow command appeared at start of a stdout line"
+  cat "${badurl_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
+# --- Regression: missing-token bypass must not SIGPIPE on a long multiline
+# COMMENT_BODY (found during review of #1583) ---
+# Piping a large COMMENT_BODY through `head -1` could SIGPIPE the upstream
+# `printf`, which `set -euo pipefail` turns into a script-ending error
+# before runner setup runs.
+test_name="no-token-long-multiline-comment-reaches-precommit-install-section"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+sigpipe_output="${TMPDIR}/github-output-sigpipe.txt"
+: > "${sigpipe_output}"
+sigpipe_stdout="${TMPDIR}/stdout-sigpipe.log"
+sigpipe_exit=0
+LONG_COMMENT_BODY="$(printf '/fs-code status update\n%s\n' "$(printf 'A%.0s' $(seq 1 100000))")"
+env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u GH_TOKEN \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  FULLSEND_FORGE="github" \
+  GITHUB_OUTPUT="${sigpipe_output}" \
+  REPO_DIR="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}" \
+  GITHUB_WORKSPACE="" \
+  COMMENT_BODY="${LONG_COMMENT_BODY}" \
+  bash "${PRE_SCRIPT}" > "${sigpipe_stdout}" 2>&1 || sigpipe_exit=$?
+
+if [[ ${sigpipe_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${sigpipe_exit} (possible SIGPIPE regression)"
+  tail -c 2000 "${sigpipe_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "No github token set" "${sigpipe_stdout}"; then
+  echo "FAIL: ${test_name} — did not take the missing-token bypass path"
+  tail -c 2000 "${sigpipe_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "Pre-commit tool auto-install skipped: companion scripts not found" "${sigpipe_stdout}"; then
+  echo "FAIL: ${test_name} — did not reach pre-commit install section (PATH setup)"
+  tail -c 2000 "${sigpipe_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
 # --- Anchoring: --force counts only as the command's flag token ---
 # Mirrors the dispatch router's first-line tokenization. A comment that
 # merely mentions --force must not bypass the existing-PR check.
@@ -761,6 +977,28 @@ run_test_prescript_output "protocol-skip-on-sub-issues" \
   "${SUB_ISSUES_GQL_JSON}" \
   "skipped=true${NL}reason=issue #42 has sub-issue(s); implement the child issues instead${NL}" \
   0
+
+# --- Regression: force/no-token bypass must still reach runner setup
+# (issue #1583) ---
+# The force-override and missing-token guards previously used a bare
+# `exit 0`, which also skipped pre-commit tool resolution/install.
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+run_test_stdout "force-code-force-reaches-precommit-install-section" \
+  "${EMPTY_GQL_JSON}" \
+  "Pre-commit tool auto-install skipped: companion scripts not found" \
+  0 \
+  "CODE_FORCE=true
+REPO_DIR=${REPO_ROOT}
+GITHUB_WORKSPACE="
+
+run_test_stdout "no-gh-token-reaches-precommit-install-section" \
+  "${EMPTY_GQL_JSON}" \
+  "Pre-commit tool auto-install skipped: companion scripts not found" \
+  0 \
+  "GH_TOKEN=
+REPO_DIR=${REPO_ROOT}
+GITHUB_WORKSPACE="
 
 # Protocol: explicit zero sub-issues → proceed, file stays empty.
 run_test_prescript_output "protocol-empty-on-zero-sub-issues" \
