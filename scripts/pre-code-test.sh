@@ -737,6 +737,119 @@ run_test_prescript_output "protocol-empty-on-zero-sub-issues" \
   "" \
   0
 
+# --- GitLab forge_list_prs_for_issue — fail open on API error (issue #1585) ---
+# Exercises gitlab-code-ops.lib.sh directly, mocking the low-level API call.
+
+run_gl_list_prs_test() {
+  local test_name="$1"
+  local mock_body="$2"
+  local expect_exit="$3"
+  local expect_output="$4"
+
+  local gl_stderr_log="${TMPDIR}/gl-list-prs-stderr.log"
+  local gl_output
+  local gl_exit=0
+  gl_output=$(
+    unset GITLAB_CODE_OPS_SH_LOADED
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+
+    # Override _gitlab_code_api with the test mock (AFTER source).
+    eval "${mock_body}"
+
+    export REPO_ENCODED="test-group%2Ftest-project"
+    forge_list_prs_for_issue "42" "bot-login" "coder-bot-login" 2>"${gl_stderr_log}"
+  ) || gl_exit=$?
+
+  if [[ ${gl_exit} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${gl_exit}"
+    cat "${gl_stderr_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${gl_output}" != "${expect_output}" ]]; then
+    echo "FAIL: ${test_name} — expected output '${expect_output}', got '${gl_output}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# API failure on page 1 must fail open: exit 0, no PRs reported.
+run_gl_list_prs_test "gitlab-list-prs-api-failure-fails-open" '
+_gitlab_code_api() { return 1; }
+' 0 ""
+
+# Confirmed zero MRs (API succeeds, empty page) — same output, success path.
+run_gl_list_prs_test "gitlab-list-prs-zero-mrs-confirmed" '
+_gitlab_code_api() { echo "[]"; }
+' 0 ""
+
+# --- GitLab forge_list_prs_for_issue — production pre-script regression (#1585) ---
+# End-to-end run of pre-code.sh with FULLSEND_FORGE=gitlab and every curl
+# call failing; asserts the output file stays empty (run proceeds).
+
+build_gitlab_api_failure_mock() {
+  local mock_bin="${TMPDIR}/gl-bin"
+  rm -rf "${mock_bin}"
+  mkdir -p "${mock_bin}"
+  cat > "${mock_bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 1
+MOCKEOF
+  chmod +x "${mock_bin}/curl"
+  echo "${mock_bin}"
+}
+
+run_gitlab_prescript_output_test() {
+  local test_name="$1"
+  local expected_content="$2"
+  local expect_exit="$3"
+
+  local mock_bin
+  mock_bin="$(build_gitlab_api_failure_mock)"
+  local proto_out="${TMPDIR}/gl-prescript-output.txt"
+  : > "${proto_out}"
+
+  local env_cmd=(
+    env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY -u REPO_DIR -u CI_PROJECT_DIR
+    PATH="${mock_bin}:${PATH}"
+    ISSUE_NUMBER="42"
+    REPO_FULL_NAME="test-group/test-project"
+    ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+    CI_SERVER_HOST="gitlab.com"
+    FULLSEND_FORGE="gitlab"
+    GITLAB_TOKEN="fake-token"
+    FULLSEND_PRESCRIPT_OUTPUT="${proto_out}"
+  )
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/gl-stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${TMPDIR}/gl-stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! diff <(printf '%s' "${expected_content}") "${proto_out}" > "${TMPDIR}/gl-proto-diff.log" 2>&1; then
+    echo "FAIL: ${test_name} — protocol output mismatch"
+    cat "${TMPDIR}/gl-proto-diff.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# GitLab API failure during the existing-PR check must fail open: file stays empty.
+run_gitlab_prescript_output_test "protocol-empty-on-gitlab-api-failure" \
+  "" \
+  0
+
 # --- Summary ---
 
 echo ""
