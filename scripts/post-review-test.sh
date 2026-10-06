@@ -2064,6 +2064,13 @@ export MOCK_REVIEW_THREADS_JSON
 run_disposition_case "projection-dismissed-by-pr-author-other-case-stays-open" \
   "${DISMISSED_REVIEW}" "${DISMISSED_PRIOR}" "${DISMISSED_OPEN}"
 
+# A resolved thread the review agent never commented in is a human
+# conversation, not a dismissal of any finding.
+MOCK_REVIEW_THREADS_JSON="$(thread_json alice src/foo.go 4 "Shall we rename this?" true false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-dismissed-human-only-thread-stays-open" \
+  "${DISMISSED_REVIEW}" "${DISMISSED_PRIOR}" "${DISMISSED_OPEN}"
+
 # A high finding cannot be dismissed by a human, verified thread or not, and
 # an approval that leans on that dismissal is withheld.
 MOCK_REVIEW_THREADS_JSON="$(thread_json alice src/add.go 2 "Looks fine to me.")"
@@ -2140,6 +2147,31 @@ run_disposition_case "approve-kept-for-reclassified-with-finding" \
   '.findings == [{"severity":"info","category":"incorrect-doc","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "reclassified"}]'
 assert_last_result "approve-kept-for-reclassified-with-finding" \
   '.action == "approve"'
+
+# A row that supplies an id this review resolves is a new concern, not the
+# resolved one: it gets a fresh id and the resolved entry stays closed.
+run_disposition_case "projection-supplied-resolving-id-is-reminted" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"src/a.go",line:9,description:"new",id:"f_oldx"}] | .dispositions=[{id:"f_oldx",status:"resolved_by_change",rationale:"The check is in place.",evidence:"src/a.go:2 now returns early on nil"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"src/a.go","line":2,"id":"f_oldx"}]}' \
+  '([.findings[] | select(.id == "f_oldx" and .line == 2)] | length) == 1 and ([.findings[] | select(.line == 9 and .id != "f_oldx" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and ([.dispositions[] | select(.id == "f_oldx")] == [{id: "f_oldx", status: "resolved_by_change"}])'
+
+# Re-emitting an open prior high finding at a lower severity, without a
+# reclassification, neither downgrades the ledger nor clears the guard.
+run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"info",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
+assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
+  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+
+# Re-emitted at high with status open: the ledger keeps it and the review
+# posts as given (the approval logic elsewhere handles a high finding).
+run_disposition_case "projection-open-high-prior-finding-re-emitted-high" \
+  "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}]'
+assert_disposition_stdout "projection-open-high-prior-finding-re-emitted-high" \
+  "Approval withheld" "absent"
 
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.

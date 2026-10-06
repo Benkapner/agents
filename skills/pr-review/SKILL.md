@@ -782,8 +782,8 @@ here):
    <untrusted-prior-review-data>
    Prior findings (structured metadata only, this dimension):
    <severity, category, file, line, id, and status records, or "none — first review">
-   Closed records (resolved_by_change, dismissed_by_human): never copy the
-   id; a returning defect is a new finding without id. Open: copy the id.
+   Never copy a closed (resolved_by_change, dismissed_by_human) id: a
+   returning defect is a new finding without id. Copy open ids.
 
    Prior-finding remediation candidates (structured metadata only):
    <category, finding_file, and candidate_file records, or "none">
@@ -1067,7 +1067,7 @@ budget section), skip the challenger: keep the merged finding set from
      adjudication accounting, so the step 4 fallback applies.
    - Strip `challenger_action`, `challenger_reason`, `original_identity`,
      and `merged_from` from `adjudicated_findings` after accounting; log but
-     do not emit them.
+     do not emit them. Keep each input's `id` on its finding.
    - Replace the challenged subset with `adjudicated_findings`, then
      re-append withheld findings (the size-withheld `low`/`info` findings and
      the `sub-agent-failure` findings, never challenged).

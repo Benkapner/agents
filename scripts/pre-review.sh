@@ -293,9 +293,9 @@ forge_resolve_outdated_review_threads() {
 # dismissal of a prior finding: resolved by a user who is not the PR author
 # and holds write, maintain, or admin on the repository. Bots and logins
 # that cannot be checked are never eligible. Each entry carries the thread
-# path and lines plus any finding ids stamped in its comments
-# (`finding:f_…` markers), so the caller can match a thread to a ledger
-# entry. Prints [] when nothing qualifies or any lookup fails: a dismissal
+# path and lines, whether the review agent itself commented in it, and any
+# finding ids stamped in the agent's comments (`finding:f_…` markers), so
+# the caller can match a thread to a ledger entry. Prints [] when nothing qualifies or any lookup fails: a dismissal
 # the runner cannot verify stays open.
 forge_get_human_dismissals() {
   local owner name query cursor has_next page response page_nodes nodes_json
@@ -394,6 +394,7 @@ forge_get_human_dismissals() {
           line: .line,
           original_line: .originalLine,
           resolved_by: .resolvedBy.login,
+          agent_authored: ([ (.comments.nodes // [])[] | select(.viewerDidAuthor == true) ] | length > 0),
           ids: ([ (.comments.nodes // [])[] | select(.viewerDidAuthor == true) | .body // "" | scan("finding:(f_[A-Za-z0-9]+)") | .[0] ] | unique)
         }
     ]' <<< "${nodes_json}" 2>/dev/null) || candidates="[]"

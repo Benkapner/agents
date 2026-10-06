@@ -166,8 +166,9 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
 MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< "${MINT_IDS}")"
 
 # Id assignment for this review. A supplied id is kept only when it is an
-# open prior id no earlier row already took; a closed, foreign, or duplicate
-# id is replaced. Without a usable id, copy the open prior id whose file and
+# open prior id no earlier row already took and this review is not
+# resolving; a closed, resolving, foreign, or duplicate id is replaced (a
+# reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
 # category match: the exact line first, else the only candidate at that
 # place (a shifted line must not create a second ledger entry). Do not copy
 # an id this review is closing. Otherwise mint. Supplied open ids of later
@@ -190,6 +191,7 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       and (.evidence | type == "string" and length > 0);
     ($prior.open_ids) as $open
     | ([ (.dispositions // [])[] | select(resolving or reclassified) | .id | select(valid_id) ]) as $closing
+    | ([ (.dispositions // [])[] | select(resolving) | .id | select(valid_id) ]) as $resolving_ids
     | ([ $prior.findings[] | select(.id as $pid | $open | index($pid) != null) ]) as $open_findings
     | (.findings // []) as $rows
     | .findings = (
@@ -200,6 +202,7 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
           | ([ $state.done[].id ]) as $taken
           | (
               if ($f.id | valid_id) and ($open | index($f.id)) != null and ($taken | index($f.id)) == null
+                 and ($resolving_ids | index($f.id)) == null
               then {id: $f.id, mint_i: $state.mint_i}
               else
                 ([ $rows[($i + 1):][] | .id | select(valid_id) | select(. as $x | $open | index($x) != null) ]) as $reserved
@@ -640,8 +643,9 @@ fi
 #   open                — everything else, including a disposition aimed at
 #                         a closed id (a human dismissal or a recorded fix is
 #                         not the model's to undo).
-# Prior high or critical ids still open and absent from the current
-# findings block an approval.
+# A prior high or critical id still open blocks an approval unless this
+# review re-emits it at high or critical: absent, or re-emitted lower with
+# no supported reclassification, is not a fix.
 LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "${HUMAN_DISMISSALS}" --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" '
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
   def nonempty: type == "string" and length > 0;
@@ -654,11 +658,13 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
   def supported: (.rationale | nonempty) and (.evidence | nonempty);
   def dismissal_verified($f):
     # A thread stamped with finding ids binds only to those ids. An
-    # unstamped thread binds by file and line, and only when exactly one
-    # open prior finding sits there.
+    # unstamped thread the review agent commented in binds by file and
+    # line, and only when exactly one open prior finding sits there. A
+    # thread with no agent comment is not about any finding.
     any($dismissals[]?;
       if ((.ids // []) | length) > 0 then (.ids | index($f.id) != null)
-      else (.path | type == "string") and .path == $f.file
+      else (.agent_authored == true)
+        and (.path | type == "string") and .path == $f.file
         and ($f.line | type == "number")
         and (.line == $f.line or .original_line == $f.line)
         and ([ $prior.findings[]
@@ -694,8 +700,11 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
       dismissed_high: [ $effective[] | select(.why == "dismissed-high") | .id ],
       dismissed_unverified: [ $effective[] | select(.why == "dismissed-unverified") | .id ],
       blocking: [ $prior.findings[]
-                  | select(.id as $id | ($still_open | index($id) != null) and ($current_ids | index($id) == null))
-                  | select(.severity | IN("high", "critical")) | .id ],
+                  | select(.severity | IN("high", "critical"))
+                  | select(.id as $id | ($still_open | index($id) != null)
+                      and (([ ($unfiltered[0].findings // [])[] | select(.id == $id) | .severity ] | first // "absent")
+                           | IN("high", "critical") | not))
+                  | .id ],
       ignored_closed: [ (.dispositions // [])[] | select(type == "object") | .id
                         | select(type == "string") | select(. as $id | $closed | index($id) != null) ] | unique
     }
@@ -744,7 +753,9 @@ fi
 #
 # The projection is the ledger: every current finding plus every prior
 # finding not re-emitted, each with its id, and one {id, status} per prior
-# id. Closed findings keep their anchor so the next review can recognise
+# id. A prior id whose disposition stays open keeps its prior severity and
+# category; only a supported reclassification changes them. Closed
+# findings keep their anchor so the next review can recognise
 # them; the oldest closed entries are dropped past 100. Rationale and
 # evidence stay in the human-readable comment and never enter the marker.
 PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_LEDGER}" --argjson effective "${LEDGER_EFFECTIVE}" '
@@ -791,7 +802,13 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       ($effective) as $answered
       | ([ $prior.closed[] | {id, status} ]) as $carried
       | ($answered + $carried) as $accounted
-      | ([ $ledger_findings[] | select(is_closed($accounted; .id) | not) | project_finding ]) as $current
+      | ([ $ledger_findings[] | select(is_closed($accounted; .id) | not)
+           | . as $row
+           | (($prior.findings | map(select(.id == $row.id)) | first) // null) as $p
+           | (($answered | map(select(.id == $row.id)) | first) // null) as $a
+           | if $p != null and $a != null and $a.status == "open"
+             then $row + {severity: $p.severity, category: $p.category} else $row end
+           | project_finding ]) as $current
       | ([ $current[].id ]) as $current_ids
       | ([ $prior.findings[] | select(.id as $id | $current_ids | index($id) == null) | project_finding ]) as $carried_findings
       | ([ $carried_findings[] | select(is_closed($accounted; .id) | not) ]) as $carried_open
