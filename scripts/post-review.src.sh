@@ -613,45 +613,78 @@ else
 fi
 
 
-# Accounting report: which open prior ids this review did not answer, which
-# prior high or critical ids are still effectively open and absent from the
-# current findings (an approval must not slip past them), and dispositions
-# aimed at closed ids (ignored: a human dismissal or a recorded fix is not
-# the model's to undo).
-LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" '
+# Human dismissals are the runner's to verify, not the model's to assert:
+# a dismissed_by_human disposition counts only against a resolved review
+# thread from an eligible reviewer (not the PR author, write or above).
+# Fetched once, and only when the model used that status.
+HUMAN_DISMISSALS='[]'
+if jq -e '[.dispositions[]? | select(type == "object" and .status == "dismissed_by_human")] | length > 0' "${RESULT_FILE}" >/dev/null 2>&1; then
+  HUMAN_DISMISSALS="$(forge_get_human_dismissals)" || HUMAN_DISMISSALS='[]'
+  if ! jq -e 'type == "array"' <<< "${HUMAN_DISMISSALS}" >/dev/null 2>&1; then
+    HUMAN_DISMISSALS='[]'
+  fi
+fi
+
+# Ledger accounting. Each open prior id gets one effective status, decided
+# here and used by both the approval guard and the projection:
+#   resolved_by_change  — rationale and evidence given.
+#   reclassified        — rationale and evidence given, and this review
+#                         re-emits a finding with the same id (at its new
+#                         severity or category, below threshold or not).
+#                         Without that finding the id stays open: nothing
+#                         else carries the new classification.
+#   dismissed_by_human  — rationale and evidence given, the prior finding is
+#                         not high or critical, and a verified dismissal
+#                         thread matches it by stamped id or by file and line.
+#   open                — everything else, including a disposition aimed at
+#                         a closed id (a human dismissal or a recorded fix is
+#                         not the model's to undo).
+# Prior high or critical ids still open and absent from the current
+# findings block an approval.
+LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "${HUMAN_DISMISSALS}" --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" '
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
-  def closed_status: IN("resolved_by_change", "dismissed_by_human");
-  def resolving:
-    (.status | closed_status)
-    and (.rationale | type == "string" and length > 0)
-    and (.evidence | type == "string" and length > 0);
-  def reclassified:
-    .status == "reclassified"
-    and (.rationale | type == "string" and length > 0)
-    and (.evidence | type == "string" and length > 0);
+  def nonempty: type == "string" and length > 0;
   def well_formed_disposition:
     type == "object"
     and (.id | valid_id)
     and (.status | IN("open", "resolved_by_change", "reclassified", "dismissed_by_human"))
     and (.rationale | type == "string")
     and (.evidence | type == "string");
+  def supported: (.rationale | nonempty) and (.evidence | nonempty);
+  def dismissal_verified($f):
+    any($dismissals[]?;
+      ((.ids // []) | index($f.id) != null)
+      or ((.path | type == "string") and .path == $f.file
+          and ($f.line | type == "number")
+          and (.line == $f.line or .original_line == $f.line)));
   ($prior.open_ids) as $open
   | ([ $prior.closed[].id ]) as $closed
   | ([ (.dispositions // [])[] | select(well_formed_disposition) ]) as $given
+  | ([ ($unfiltered[0].findings // [])[] | .id | select(valid_id) ]) as $current_ids
   | ([
       $open[]
       | . as $id
+      | (($prior.findings | map(select(.id == $id)) | first) // {id: $id}) as $f
       | ($given | map(select(.id == $id)) | last) as $got
-      | if $got != null and ($got | resolving) then {id: $id, status: $got.status}
-        elif $got != null and ($got | reclassified) then {id: $id, status: "reclassified"}
+      | if $got == null then {id: $id, status: "open", why: "unanswered"}
+        elif $got.status == "resolved_by_change" and ($got | supported) then {id: $id, status: "resolved_by_change"}
+        elif $got.status == "reclassified" and ($got | supported) then
+          if ($current_ids | index($id)) != null then {id: $id, status: "reclassified"}
+          else {id: $id, status: "open", why: "reclassified-without-finding"} end
+        elif $got.status == "dismissed_by_human" and ($got | supported) then
+          if ($f.severity | IN("high", "critical")) then {id: $id, status: "open", why: "dismissed-high"}
+          elif dismissal_verified($f) then {id: $id, status: "dismissed_by_human"}
+          else {id: $id, status: "open", why: "dismissed-unverified"} end
         else {id: $id, status: "open"}
         end
     ]) as $effective
   | ([ $effective[] | select(.status == "open") | .id ]) as $still_open
-  | ([ ($unfiltered[0].findings // [])[] | .id | select(valid_id) ]) as $current_ids
-  | ([ $open[] | select(. as $id | ($given | map(.id) | index($id) == null)) ]) as $unanswered
   | {
-      unanswered: $unanswered,
+      effective: [ $effective[] | {id, status} ],
+      unanswered: [ $effective[] | select(.why == "unanswered") | .id ],
+      reclassified_without_finding: [ $effective[] | select(.why == "reclassified-without-finding") | .id ],
+      dismissed_high: [ $effective[] | select(.why == "dismissed-high") | .id ],
+      dismissed_unverified: [ $effective[] | select(.why == "dismissed-unverified") | .id ],
       blocking: [ $prior.findings[]
                   | select(.id as $id | ($still_open | index($id) != null) and ($current_ids | index($id) == null))
                   | select(.severity | IN("high", "critical")) | .id ],
@@ -659,9 +692,22 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --slurpfile unfiltered 
                         | select(type == "string") | select(. as $id | $closed | index($id) != null) ] | unique
     }
 ' "${RESULT_FILE}")"
+LEDGER_EFFECTIVE="$(jq -c '.effective' <<< "${LEDGER_REPORT}")"
 UNANSWERED_IDS="$(jq -r '.unanswered | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${UNANSWERED_IDS}" ]]; then
   echo "::warning::No disposition recorded for prior finding id(s) ${UNANSWERED_IDS}; recorded as open"
+fi
+RECLASSIFIED_WITHOUT_FINDING_IDS="$(jq -r '.reclassified_without_finding | join(", ")' <<< "${LEDGER_REPORT}")"
+if [[ -n "${RECLASSIFIED_WITHOUT_FINDING_IDS}" ]]; then
+  echo "::warning::Reclassified prior finding id(s) ${RECLASSIFIED_WITHOUT_FINDING_IDS} have no current finding with that id; recorded as open"
+fi
+DISMISSED_HIGH_IDS="$(jq -r '.dismissed_high | join(", ")' <<< "${LEDGER_REPORT}")"
+if [[ -n "${DISMISSED_HIGH_IDS}" ]]; then
+  echo "::warning::dismissed_by_human is not accepted for high or critical prior finding id(s) ${DISMISSED_HIGH_IDS}; recorded as open"
+fi
+DISMISSED_UNVERIFIED_IDS="$(jq -r '.dismissed_unverified | join(", ")' <<< "${LEDGER_REPORT}")"
+if [[ -n "${DISMISSED_UNVERIFIED_IDS}" ]]; then
+  echo "::warning::No resolved review thread from an eligible reviewer matches dismissed prior finding id(s) ${DISMISSED_UNVERIFIED_IDS}; recorded as open"
 fi
 IGNORED_CLOSED_IDS="$(jq -r '.ignored_closed | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${IGNORED_CLOSED_IDS}" ]]; then
@@ -693,7 +739,7 @@ fi
 # id. Closed findings keep their anchor so the next review can recognise
 # them; the oldest closed entries are dropped past 100. Rationale and
 # evidence stay in the human-readable comment and never enter the marker.
-PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_LEDGER}" '
+PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_LEDGER}" --argjson effective "${LEDGER_EFFECTIVE}" '
   def allowed_category:
     IN(
       "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
@@ -716,22 +762,7 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
     (.category == "sub-agent-failure" and .severity == "low");
   def projectable:
     (.category | type == "string" and allowed_category) and (.file == "N/A" or (.file | safe_path));
-  def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
   def closed_status: IN("resolved_by_change", "dismissed_by_human");
-  def resolving:
-    (.status | closed_status)
-    and (.rationale | type == "string" and length > 0)
-    and (.evidence | type == "string" and length > 0);
-  def reclassified:
-    .status == "reclassified"
-    and (.rationale | type == "string" and length > 0)
-    and (.evidence | type == "string" and length > 0);
-  def well_formed_disposition:
-    type == "object"
-    and (.id | valid_id)
-    and (.status | IN("open", "resolved_by_change", "reclassified", "dismissed_by_human"))
-    and (.rationale | type == "string")
-    and (.evidence | type == "string");
   def project_finding:
     {
       severity,
@@ -749,17 +780,7 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
   | if (.action | IN("approve", "request-changes", "comment", "reject"))
       and ($dimension_findings | all(.[]; projectable))
       and ($dimension_failed | not) then
-      ($prior.open_ids) as $open
-      | ([ (.dispositions // [])[] | select(well_formed_disposition) ]) as $given
-      | ([
-          $open[]
-          | . as $id
-          | ($given | map(select(.id == $id)) | last) as $got
-          | if $got != null and ($got | resolving) then {id: $id, status: $got.status}
-            elif $got != null and ($got | reclassified) then {id: $id, status: "reclassified"}
-            else {id: $id, status: "open"}
-            end
-        ]) as $answered
+      ($effective) as $answered
       | ([ $prior.closed[] | {id, status} ]) as $carried
       | ($answered + $carried) as $accounted
       | ([ $ledger_findings[] | select(is_closed($accounted; .id) | not) | project_finding ]) as $current

@@ -220,7 +220,7 @@ assert_contains "context assembly supplies provenance" "${SKILL}" \
 assert_contains "context assembly supplies incremental diff" "${SKILL}" \
   "incremental_diff"
 assert_contains "prior finding context includes id records" "${SKILL}" \
-  "severity, category, file, line, and id records"
+  "severity, category, file, line, id, and status records"
 assert_contains "prior review data is fenced as untrusted" "${SKILL}" \
   "UNTRUSTED PRIOR-REVIEW DATA"
 assert_contains "unsafe structured metadata is rejected" "${REREVIEW}" \

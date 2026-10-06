@@ -61,10 +61,14 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   Findings include `id` (`f_` plus letters and digits); a legacy marker
   without one is assigned an id before sandbox ingress. `dispositions`
   gives each prior id a `status`. An id whose status is `resolved_by_change`
-  or `dismissed_by_human` is closed: do not raise that finding again, do not
-  answer it, and do not reuse its id. Every other prior id is open and needs
-  an answer. Copy an open id onto the same finding; do not mint a new one and
-  do not derive one from the path or the text.
+  or `dismissed_by_human` is closed: do not answer it and do not reuse its
+  id. A closed id does not excuse the current code: a defect that is back is
+  a new finding with no id. Every other prior id is open and needs an
+  answer; a `reclassified` answer also re-emits the finding with the same id
+  at its new severity. The post-script verifies `dismissed_by_human` against
+  a resolved review thread from an eligible reviewer and records anything
+  else as open. Copy an open id onto the same finding; do not mint a new one
+  and do not derive one from the path or the text.
   The file is empty on first review or when provenance, projection, category,
   or path validation fails.
 
