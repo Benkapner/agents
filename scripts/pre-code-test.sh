@@ -561,6 +561,47 @@ else
   echo "PASS: ${test_name}"
 fi
 
+# --- Regression: horizontal tabs must not survive sanitization ---
+# _pre_code_sanitize_log's control-character deletion range previously
+# stopped at \010 and resumed at \013, skipping \011 (horizontal tab).
+# Both CODE_FORCE and COMMENT_BODY pass through this sanitizer, so a tab
+# embedded in either survived into the "Evaluating force override:" log
+# line. Embed a tab in both inputs to cover each logged value.
+test_name="force-check-strips-tabs-from-code-force-and-comment-body"
+mock_bin="$(build_mock "${EMPTY_GQL_JSON}")"
+tab_output="${TMPDIR}/github-output-tab.txt"
+: > "${tab_output}"
+tab_stdout="${TMPDIR}/stdout-tab.log"
+tab_exit=0
+env -u FULLSEND_PRESCRIPT_OUTPUT \
+  PATH="${mock_bin}:${PATH}" \
+  ISSUE_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  ISSUE_URL="https://github.com/test-org/test-repo/issues/42" \
+  FULLSEND_FORGE="github" \
+  GH_TOKEN="fake-token" \
+  GITHUB_OUTPUT="${tab_output}" \
+  CODE_FORCE=$'true\textra' \
+  COMMENT_BODY=$'/fs-code\tstatus-update' \
+  bash "${PRE_SCRIPT}" > "${tab_stdout}" 2>&1 || tab_exit=$?
+
+if [[ ${tab_exit} -ne 0 ]]; then
+  echo "FAIL: ${test_name} — expected exit 0, got ${tab_exit}"
+  cat "${tab_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "Evaluating force override:" "${tab_stdout}"; then
+  echo "FAIL: ${test_name} — force override log line not found"
+  cat "${tab_stdout}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q $'\t' "${tab_stdout}"; then
+  echo "FAIL: ${test_name} — raw tab survived sanitization"
+  cat "${tab_stdout}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${test_name}"
+fi
+
 # --- Regression: the hardened sanitizer must apply on GitLab too,
 # regardless of forge-library load order ---
 # code-ops.lib.sh (sourced near the top of pre-code.src.sh) transitively

@@ -48,7 +48,7 @@ source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 _pre_code_sanitize_log() {
   printf '%s' "$1" | tr -d '\n\r' \
     | sed -E 's/\x1b\][^\x1b\x07]*(\x07|\x1b\\)?//g; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b.?//g' \
-    | tr -d '\000-\010\013-\037\177' \
+    | tr -d '\000-\037\177' \
     | sed 's/%/%25/g; s/::/%3A%3A/g'
 }
 
