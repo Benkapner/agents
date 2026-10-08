@@ -6,13 +6,10 @@ labels:
   risk_label_required: false
 
 findings:
-  required_any:
-    - incorrect-doc
-    - stale-doc
-    - missing-doc
-    - incomplete-doc
-  forbidden:
-    - logic-error
+  # Posted review omits below-threshold rows, so a correct reclassify to
+  # info/docs is invisible here. Category is scored by review_quality.
+  required: []
+  forbidden: []
 
 max_cost_usd: 2.75
 
