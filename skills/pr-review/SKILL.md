@@ -528,10 +528,11 @@ be absent from the result JSON.
    assessment from the PR's sticky comment using the forge API:
 
    ```bash
-   # GitHub:
+   # GitHub — authenticate against the expected bot identity to prevent
+   # a contributor forging a low-score comment with the risk marker:
    PRIOR_RISK_COMMENT=$(gh api --paginate \
      "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
-     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->"))] | last // empty')
+     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->")) | select(.performed_via_github_app.slug == "fullsend-ai-review" or .user.login == "fullsend-ai-review[bot]")] | last // empty')
    ```
 
    If found, extract the prior score, level, and rationale from the
@@ -602,10 +603,12 @@ be absent from the result JSON.
 
 **Failure fallback:** If the risk-assessment sub-agent fails
 (timeout, parse error, empty response), log an info-level note and
-proceed without a risk score. The `risk_assessment` field is
-optional in the schema — its absence is not an error. Do not record
-a finding for this failure (risk assessment is informational, not
-safety-critical).
+proceed without a risk score. When risk assessment is enabled and
+`REVIEW_RISK_VERDICT_THRESHOLD` is not `6`, a
+missing or degraded risk score prevents automatic approval — the
+verdict must be `comment`. When threshold is `6` (disabled), missing
+or degraded risk assessment does not force `comment`.
+Do not record a finding for this failure.
 
 #### 3d. Prepare context packages
 
@@ -1278,6 +1281,15 @@ adjudicated set (step 6d) and evaluate:
   a non-empty `remediation` → `approve` (observations, confirmations,
   and analysis notes at any severity level)
 - No findings → `approve`
+- **Risk verdict gate**: When `REVIEW_RISK_ASSESSMENT_ENABLED` is
+  `true` and `REVIEW_RISK_VERDICT_THRESHOLD` is not `6`,
+  and the risk assessment score is at or above
+  `REVIEW_RISK_VERDICT_THRESHOLD`, or the risk assessment is missing or
+  degraded, the verdict must be `comment` — not `approve` — even if
+  there are no actionable findings. This overrides all approve paths and
+  the `comment-only` path. When `REVIEW_RISK_VERDICT_THRESHOLD` is `6`,
+  the risk verdict gate is disabled — missing, degraded, and high
+  scores do not force `comment`.
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought → `reject`.
   Use `reject` only when no amount of code-level iteration will make

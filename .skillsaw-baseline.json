@@ -1,7 +1,7 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-09-27T13:04:41.041924+00:00",
+  "generated_at": "2026-10-06T13:57:53.866809+00:00",
   "violations": [
     {
       "fingerprint": "34efa8521ae07039",
@@ -62,9 +62,9 @@
       "fingerprint": "43a3bb24cb22288e",
       "rule_id": "context-budget",
       "file_path": "skills/code-review/SKILL.md",
-      "message": "Estimated 3,846 tokens exceeds skill warn limit of 3,000",
+      "message": "Estimated 3,737 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3846,
+      "value": 3737,
       "baseline_mode": "ceiling"
     },
     {
@@ -80,18 +80,18 @@
       "fingerprint": "3841c25d67e33e68",
       "rule_id": "context-budget",
       "file_path": "skills/pr-risk-assessment/SKILL.md",
-      "message": "Estimated 3,778 tokens exceeds skill warn limit of 3,000",
+      "message": "Estimated 3,910 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3778,
+      "value": 3910,
       "baseline_mode": "ceiling"
     },
     {
       "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
       "file_path": "skills/pr-review/SKILL.md",
-      "message": "Estimated 16,806 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 16,889 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 16806,
+      "value": 16889,
       "baseline_mode": "ceiling"
     }
   ]

@@ -1141,6 +1141,149 @@ if [ "${ACTION}" = "approve" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Risk verdict gate: when risk assessment is enabled, downgrade approve to
+# comment if the risk score exceeds the threshold, the score is missing,
+# or the assessment is degraded. Runs after protected-path check so both
+# notices are appended when both gates trigger. The threshold is coerced
+# to a number via --argjson for safe numeric comparison (--arg creates a
+# string that compares as false with numbers in jq).
+# ---------------------------------------------------------------------------
+REVIEW_RISK_ASSESSMENT_ENABLED_RAW="${REVIEW_RISK_ASSESSMENT_ENABLED:-}"
+if [[ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" =~ [[:cntrl:]] ]]; then
+  echo "::error::REVIEW_RISK_ASSESSMENT_ENABLED contains control characters (only printable ASCII allowed)"
+  exit 1
+fi
+case "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" in
+  true) ;;
+  false) echo "Risk assessment disabled (REVIEW_RISK_ASSESSMENT_ENABLED=false)" ;;
+  "") ;;
+  *)
+    SAFE_ENABLED=$(printf '%s' "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" | tr -dc '[:print:]')
+    SAFE_ENABLED="${SAFE_ENABLED//::/}"
+    SAFE_ENABLED="${SAFE_ENABLED//%/%25}"
+    echo "::error::REVIEW_RISK_ASSESSMENT_ENABLED='${SAFE_ENABLED}' is unrecognized (expected 'true' or 'false')"
+    exit 1
+  ;;
+esac
+if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" = "true" ]; then
+  THRESHOLD="${REVIEW_RISK_VERDICT_THRESHOLD:-4}"
+  # Validate threshold is an integer 1-6; 6 disables the gate entirely (opt-out)
+  if [[ ! "${THRESHOLD}" =~ ^[1-6]$ ]]; then
+    SAFE_THRESHOLD=$(printf '%s' "${THRESHOLD}" | tr -dc '[:print:]')
+    SAFE_THRESHOLD="${SAFE_THRESHOLD//::/}"
+    SAFE_THRESHOLD="${SAFE_THRESHOLD//%/%25}"
+    echo "::error::REVIEW_RISK_VERDICT_THRESHOLD='${SAFE_THRESHOLD}' is invalid (expected integer 1-6)"
+    exit 1
+  fi
+
+  HAS_RISK_ASSESSMENT=$(jq 'has("risk_assessment")' "${RESULT_FILE}")
+
+  # Defense-in-depth: normalize structurally invalid risk_assessment to
+  # absent. The harness validation_loop (review-result.schema.json) runs
+  # before this post-script executes, so well-formed pipelines reject
+  # malformed assessments during validation. This block guards against
+  # direct script invocation (tests, debugging) and future schema changes
+  # that might relax the risk_assessment constraint.
+  if [ "${HAS_RISK_ASSESSMENT}" = "true" ]; then
+    RISK_STRUCT_VALID=$(jq '
+      .risk_assessment | type == "object"
+      and has("score") and (.score | type == "number" and floor == . and . >= 1 and . <= 5)
+      and has("level") and (.level | type == "string")
+      and has("rationale") and (.rationale | type == "string")
+    ' "${RESULT_FILE}")
+    if [ "${RISK_STRUCT_VALID}" != "true" ]; then
+      echo "::warning::risk_assessment is structurally invalid — normalizing to absent for fail-closed handling"
+      NORMALIZED_RESULT=$(mktemp)
+      CLEANUP_FILES+=("${NORMALIZED_RESULT}")
+      jq 'del(.risk_assessment)' "${RESULT_FILE}" > "${NORMALIZED_RESULT}"
+      RESULT_FILE="${NORMALIZED_RESULT}"
+      HAS_RISK_ASSESSMENT="false"
+    fi
+  fi
+
+  # Threshold=6 disables the verdict gate entirely (informational scoring only).
+  # Missing, degraded, invalid, and high scores all pass through as-is when
+  # disabled — risk labels and comments still apply but do not gate the verdict.
+  if [ "${THRESHOLD}" = "6" ]; then
+    echo "Risk verdict gate disabled (REVIEW_RISK_VERDICT_THRESHOLD=6) — informational scoring only"
+  else
+    # -----------------------------------------------------------------------
+    # Evaluate risk status once — shared between approve and comment actions.
+    # -----------------------------------------------------------------------
+    RISK_STATUS="ok"
+    RISK_NOTICE=""
+
+    if [ "${HAS_RISK_ASSESSMENT}" != "true" ]; then
+      RISK_STATUS="missing"
+      RISK_NOTICE=$'\n\n---\n\n'
+      RISK_NOTICE+=$'> **Risk assessment missing** — risk assessment is enabled but no score was\n'
+      RISK_NOTICE+=$'> produced. A human reviewer must evaluate this PR.\n'
+    else
+      RISK_HAS_DEGRADED=$(jq '.risk_assessment | has("degraded")' "${RESULT_FILE}")
+      RISK_HAS_SCORE=$(jq '.risk_assessment | has("score")' "${RESULT_FILE}")
+
+      if [ "${RISK_HAS_DEGRADED}" = "true" ]; then
+        RISK_DEGRADED_REASON=$(jq -r '.risk_assessment.degraded' "${RESULT_FILE}" | tr -dc '[:print:]')
+        RISK_STATUS="degraded"
+        RISK_NOTICE=$'\n\n---\n\n'
+        RISK_NOTICE+=$'> **Risk assessment degraded** — the risk score was not fully computed\n'
+        RISK_NOTICE+="> (${RISK_DEGRADED_REASON}). A human reviewer must evaluate this PR."$'\n'
+      elif [ "${RISK_HAS_SCORE}" != "true" ]; then
+        RISK_STATUS="missing_score"
+        RISK_NOTICE=$'\n\n---\n\n'
+        RISK_NOTICE+=$'> **Risk score missing** — risk assessment is present but contains no\n'
+        RISK_NOTICE+=$'> score. A human reviewer must evaluate this PR.\n'
+      else
+        # Validate score type in jq to prevent bash $(jq -r) re-canonicalization:
+        # strings ("1\n"), arrays, objects, null, booleans, and floats (1.5) are
+        # all rejected before they reach bash. Only integer numbers 1–5 pass.
+        SCORE_VALID=$(jq '.risk_assessment | has("score") and (.score | type == "number" and floor == . and . >= 1 and . <= 5)' "${RESULT_FILE}")
+        if [ "${SCORE_VALID}" != "true" ]; then
+          RISK_STATUS="invalid"
+          echo "::warning::Risk assessment score is invalid (expected integer 1-5)"
+          RISK_NOTICE=$'\n\n---\n\n'
+          RISK_NOTICE+="> **Risk score invalid** — the risk assessment produced an invalid"$'\n'
+          RISK_NOTICE+=$'> score. A human reviewer must evaluate this PR.\n'
+        else
+          RISK_SCORE=$(jq -r '.risk_assessment.score' "${RESULT_FILE}")
+          THRESHOLD_CHECK=$(jq -n --argjson score "${RISK_SCORE}" --argjson threshold "${THRESHOLD}" '$score >= $threshold')
+          if [ "${THRESHOLD_CHECK}" = "true" ]; then
+            RISK_STATUS="high"
+            RISK_NOTICE=$'\n\n---\n\n'
+            RISK_NOTICE+="> **Risk score ${RISK_SCORE}/5** — this PR has a risk score at or above the"$'\n'
+            RISK_NOTICE+="> threshold (${THRESHOLD}). Automatic approval is not permitted for high-risk PRs."$'\n'
+            RISK_NOTICE+=$'> A human reviewer must evaluate this PR.\n'
+          fi
+        fi
+      fi
+    fi
+
+    # Apply risk gate or notice based on action
+    if [ -n "${RISK_NOTICE}" ]; then
+      if [ "${ACTION}" = "approve" ]; then
+        echo "Risk gate triggered (${RISK_STATUS}) — downgrading approve to comment"
+        RISK_MODIFIED_RESULT=$(mktemp)
+        CLEANUP_FILES+=("${RISK_MODIFIED_RESULT}")
+        jq --arg notice "${RISK_NOTICE}" \
+          '.action = "comment" | .risk_gated = true | .body = (.body + $notice)' \
+          "${RESULT_FILE}" > "${RISK_MODIFIED_RESULT}"
+        RESULT_FILE="${RISK_MODIFIED_RESULT}"
+        DOWNGRADED=true
+      elif [ "${ACTION}" = "comment" ]; then
+        echo "Agent chose comment — appending risk notice (${RISK_STATUS}) to review body"
+        COMMENT_MODIFIED=$(mktemp)
+        CLEANUP_FILES+=("${COMMENT_MODIFIED}")
+        jq --arg notice "${RISK_NOTICE}" \
+          '.body = (.body + $notice)' \
+          "${RESULT_FILE}" > "${COMMENT_MODIFIED}"
+        RESULT_FILE="${COMMENT_MODIFIED}"
+      fi
+    fi
+
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Label-actions validation: the review agent may recommend contextual labels
 # (e.g. area/api, priority/high). Validate them here so the label reason
 # appears in the review body. Actual label API calls happen after posting.
@@ -1255,7 +1398,9 @@ fi
 
 # ---------------------------------------------------------------------------
 # Risk assessment: apply risk/* label and post breakdown comment.
-# Risk level is informational only — it does not gate the review outcome.
+# Risk level gates the review outcome when REVIEW_RISK_ASSESSMENT_ENABLED
+# is true (see risk verdict gate above). Labels are applied regardless so
+# the risk level is visible even when the gate downgrades the verdict.
 # Applied BEFORE forge_post_review so labels land even when the review
 # submission fails (e.g. 422 self-review in eval environments).
 # Label logic is mirrored in post-review-test.sh — update both.
