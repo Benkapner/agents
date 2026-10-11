@@ -19,6 +19,7 @@ EVAL_SETUP="${REPO_ROOT}/eval/scripts/setup-fixture.sh"
 EVAL_README="${REPO_ROOT}/eval/README.md"
 EVAL_CONFIG="${REPO_ROOT}/eval/review/eval.yaml"
 EVAL_RUNNER="${REPO_ROOT}/eval/scripts/run-fullsend.sh"
+EVAL_URL_BUNDLING="${REPO_ROOT}/eval/review/cases/014-multi-issue-url-bundling/input.yaml"
 EVAL_UNMATCHED="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/input.yaml"
 EVAL_UNMATCHED_EXPECTATIONS="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/annotations.yaml"
 EVAL009_EXPECTATIONS="${REPO_ROOT}/eval/review/cases/009-rereview-severity-anchor/annotations.yaml"
@@ -276,19 +277,35 @@ assert_not_contains "GitLab leaves commit-message context unsupported" "${GITLAB
 assert_contains "orchestrator requires forge commit-message fetch" "${SKILL}" \
   "forge's available **\"Commit messages\"** commands"
 assert_contains "orchestrator requires forge issue-context fetch" "${SKILL}" \
-  '**"Issue context"** commands for the PR'
+  '**"Issue context"** commands'
 assert_contains "context package names commit-message availability" "${SKILL}" \
   '`commit_messages_available`'
 assert_contains "context template names commit-message availability" "${SKILL}" \
   '### Commit messages'
 assert_contains "issue context collects title body and available commit references" "${SKILL}" \
-  'title/body/available commits'
+  'from title/body/commits'
+assert_contains "issue context accepts same-repository URLs" "${SKILL}" \
+  'same-repository issue URLs'
+assert_contains "issue context normalizes and deduplicates URLs" "${SKILL}" \
+  'normalize/deduplicate to `#N`'
+assert_contains "issue context rejects other repositories" "${SKILL}" \
+  'host/repository to PR'
+assert_contains "step heading describes context collection" "${SKILL}" \
+  '### 2b. Materialise PR head and context'
 assert_contains "issue context is fetched content rather than bare issue numbers" "${SKILL}" \
   'fetched title/body/comments'
 assert_not_contains "issue context does not fetch contributor-named repositories" "${SKILL}" \
   'an `owner/repo#N` reference uses the named repository'
 assert_contains "issue context stays in the reviewed repository" "${GITHUB_FORGE}" \
   'repos/${REPO_FULL_NAME}/issues/<issue-number>'
+assert_contains "GitHub issue context accepts same-repository URLs" "${GITHUB_FORGE}" \
+  'same-repository issue URLs'
+assert_contains "GitLab issue context accepts same-repository URLs" "${GITLAB_FORGE}" \
+  'same-repository issue URLs'
+assert_contains "URL bundling fixture uses the reviewed repository" "${EVAL_URL_BUNDLING}" \
+  'Closes ${REPO_URL}/issues/1'
+assert_contains "fixture setup materializes the reviewed repository URL" "${EVAL_SETUP}" \
+  'FIXTURE_BODY=${FIXTURE_BODY//\$\{REPO_URL\}/https://github.com/${EPHEMERAL_REPO}}'
 assert_contains "eval guide documents commit-message fixtures" "${EVAL_README}" \
   '`commit_message`'
 assert_contains "review eval schema documents commit-message fixtures" "${EVAL_CONFIG}" \

@@ -80,6 +80,7 @@ dataset:
   schema: |
     Each case directory contains:
     - input.yaml: Fixture definition with forge, fixture type, title, body, and PR files.
+      `${REPO_URL}` in a body is the ephemeral GitHub repository URL.
       PR fixtures may include followup_files, commit_message (default
       'eval: fixture changes'), plus prior_review body/provenance to exercise
       re-review behavior.

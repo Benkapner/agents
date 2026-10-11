@@ -151,7 +151,8 @@ the ability to create PRs and post comments during the agent run.
 Each case directory under `eval/<agent>/cases/` contains:
 
 - `input.yaml` — fixture definition (forge, fixture type, title, body,
-  PR files). Issue cases may set `labels`, applied before the agent runs
+  PR files). `${REPO_URL}` in a fixture body expands to the ephemeral GitHub
+  repository URL. Issue cases may set `labels`, applied before the agent runs
   (e.g. `ready-to-code` for a code case). Pull-request cases may add
   `followup_files`, `commit_message` (default `eval: fixture changes`),
   and a `prior_review` body/provenance to exercise a re-review. Each PR

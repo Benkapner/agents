@@ -94,8 +94,8 @@ echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata from the PR repository. Step 2b only
-# resolves bare `#N` references; never fetch contributor-named repos.
+# Fetch linked issue metadata from the PR repository. Step 2b resolves bare
+# `#N` and same-repository issue URLs; never fetch contributor-named repos.
 gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
 
 # Fetch issue comments

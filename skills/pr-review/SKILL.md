@@ -154,23 +154,24 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
 
-### 2b. Materialise the PR head
+### 2b. Materialise PR head and context
 
-Checkout is the base branch. Before dispatching, use the forge skill's
+Checkout is base; use the forge skill's
 "Materialise PR head files" command to fetch every changed `HEAD_SHA` file
 outside it into `/sandbox/workspace/pr-head/<path>`. Use one Bash call (600 s
-timeout, parallel fetches; GitLab scrubs token later), even for one file: the
-sandbox blocks hand-rolled `[ ]` and one-line `if` fetches.
+timeout, parallel; GitLab scrubs token later), even for one file: the sandbox
+blocks hand-rolled `[ ]` and one-line `if` fetches.
 
 It writes `/sandbox/workspace/pr-head.manifest` beside the tree, one
 `<status> <path>` per line: `ok`, `too-large` (>2 MB), `binary`, `failed`,
 `removed`, or `unsafe` (JSON-quoted paths with newline, leading `/`, or `..`;
-never fetch). Only `ok` files are verifiable. Carry manifest lines in context
-packages; never inline contents—sub-agents Read the tree.
+never fetch). Only `ok` files are verifiable; contexts carry manifest lines,
+never contents—sub-agents Read the tree.
 
 Run the forge's available **"Commit messages"** commands; failure is unavailable.
-Collect `#N` from title/body/available commits; deduplicate and run the forge
-skill's **"Issue context"** commands for the PR.
+Collect bare `#N` and same-repository issue URLs from title/body/commits;
+match host/repository to PR, normalize/deduplicate to `#N`, then run forge
+**"Issue context"** commands.
 
 PR description is not truth; verify claims against the diff.
 

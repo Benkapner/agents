@@ -62,6 +62,7 @@ uuid=$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)
 CASE_ID_SAFE=$(basename "$CASE_SOURCE_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
 repo_name="eval-${CASE_ID_SAFE}-${uuid}"
 EPHEMERAL_REPO="${EVAL_ORG}/${repo_name}"
+FIXTURE_BODY=${FIXTURE_BODY//\$\{REPO_URL\}/https://github.com/${EPHEMERAL_REPO}}
 
 gh repo create "$EPHEMERAL_REPO" --public --description "Ephemeral eval repo (auto-deleted)"
 echo "Created repo: $EPHEMERAL_REPO"
