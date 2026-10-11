@@ -452,7 +452,7 @@ REREVIEW_CURRENT_MEDIUM_PLUS_COUNT="$(jq -r '[.findings[]? | select(.severity | 
 if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]] \
     && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
     && [[ "${ACTION}" = "request-changes" || \
-         ( "${ACTION}" = "comment" && "${PRIOR_ACTION}" = "approve" ) ]]; then
+         ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" ) ]]; then
   REREVIEW_SAFETY_CANDIDATE=true
   ACTION="approve"
 fi
@@ -1101,9 +1101,9 @@ fi
 # Re-review severity gate. A verified prior ledger means this is a re-review;
 # do not let a newly discovered low/info finding start a fix run or block the
 # PR. Prior high/critical findings remain blocking; prior medium findings block
-# when the prior review requested changes or the finding was actionable. The
-# global default remains low, so first reviews still report low findings
-# normally.
+# when the prior review requested changes or the finding was actionable, subject
+# to the configured global severity threshold. The global default remains low,
+# so first reviews still report low findings normally.
 PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" --argjson rank "${REREVIEW_BLOCKING_RANK}" --arg prior_action "${PRIOR_ACTION}" '
   def severity_rank:
     if . == "info" then 0
@@ -1113,10 +1113,10 @@ PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" 
     elif . == "critical" then 4
     else 1 end;
   [ .findings[]
-    | select((.severity | severity_rank) >= $rank or (.actionable // false) == true)
+    | select((.severity | severity_rank) >= $rank)
     | select(.id as $id | any($effective[]; .id == $id and .status == "open"))
     | select((.severity == "high" or .severity == "critical")
-             or (.actionable // false) == true
+             or (.severity == "medium" and (.actionable // false) == true)
              or $prior_action == "request-changes"
              or ($prior_action == "" and (.severity | IN("medium", "high", "critical"))))
     | {
@@ -1245,7 +1245,16 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
   | ($findings | map(select(non_dimensional_finding | not))) as $dimension_findings
   | (($unfiltered[0].findings // [])
       | any(.[]; .category == "sub-agent-failure" and (non_dimensional_finding | not))) as $dimension_failed
-  | (($unfiltered[0].findings // []) | map(select((non_dimensional_finding | not) and projectable))) as $ledger_findings
+  | (($unfiltered[0].findings // [])
+      | map(select((non_dimensional_finding | not) and projectable))
+      | map(
+          . as $raw
+          | (($findings | map(select(.id == $raw.id)) | first) // null) as $normalized
+          | if $normalized != null then
+              $raw + (if ($normalized.actionable | type) == "boolean" then {actionable: $normalized.actionable} else {} end)
+            else $raw
+            end
+        )) as $ledger_findings
   | if (.action | IN("approve", "request-changes", "comment", "reject"))
       and ($dimension_findings | all(.[]; projectable))
       and ($dimension_failed | not) then
@@ -1256,8 +1265,10 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
            | . as $row
            | (($prior.findings | map(select(.id == $row.id)) | first) // null) as $p
            | (($answered | map(select(.id == $row.id)) | first) // null) as $a
-           | if $p != null and $a != null and $a.status == "open"
-             then $row + {severity: $p.severity, category: $p.category} else $row end
+           | if $p != null and ($a == null or $a.status == "open")
+             then $row + {severity: $p.severity, category: $p.category}
+               + (if ($p.actionable | type) == "boolean" then {actionable: $p.actionable} else {} end)
+             else $row end
            | project_finding ]) as $current
       | ([ $current[].id ]) as $current_ids
       | ([ $prior.findings[] | select(.id as $id | $current_ids | index($id) == null) | project_finding ]) as $carried_findings

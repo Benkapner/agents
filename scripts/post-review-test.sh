@@ -1880,11 +1880,11 @@ run_rereview_gate_case "rereview-legacy-medium-fails-closed" \
   "request-changes" \
   "prior medium-or-higher findings remain open"
 
-run_rereview_gate_case "rereview-carried-actionable-low-still-blocks" \
-  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"old.go",line:1,id:"f_actionable_low",description:"still actionable",actionable:true}]' <<< "${BASE_REVIEW}")" \
+run_rereview_gate_case "rereview-carried-actionable-low-respects-threshold" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"logic-error",file:"old.go",line:1,id:"f_actionable_low",description:"still actionable",actionable:true}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"action":"approve","findings":[{"severity":"low","category":"logic-error","file":"old.go","line":1,"id":"f_actionable_low","actionable":true}]}' \
-  "request-changes" \
-  "prior blocking findings remain open"
+  "approve" \
+  "No findings at or above the effective blocking threshold remain open"
 
 run_rereview_gate_case "rereview-prior-blocker-adds-schema-valid-finding" \
   "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
@@ -2053,6 +2053,14 @@ run_rereview_gate_case "rereview-stricter-threshold-ignores-prior-medium" \
   "prior medium-or-higher findings remain open" \
   "high"
 
+run_rereview_gate_case "rereview-stricter-threshold-ignores-actionable-low" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[{"severity":"low","category":"logic-error","file":"old.go","line":1,"id":"f_actionable_below_threshold","actionable":true}]}' \
+  "approve" \
+  "Review" \
+  "prior blocking findings remain open" \
+  "high"
+
 run_rereview_gate_case "rereview-promotion-respects-protected-paths" \
   "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"action":"request-changes","findings":[]}' \
@@ -2180,6 +2188,16 @@ run_disposition_case "projection-copies-prior-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_same1"}]}' \
   '.findings[0].id == "f_same1" and (.findings | length) == 1 and .dispositions == [{id: "f_same1", status: "open"}]'
+
+run_disposition_case "projection-persists-host-normalized-actionable" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"logic-error",file:"old.go",line:1,id:"f_new_low",description:"minor",actionable:true}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  '.findings | any(.severity == "low" and .actionable == false)'
+
+run_disposition_case "projection-preserves-open-prior-actionable" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"low",category:"logic-error",file:"old.go",line:1,id:"f_prior_actionable",description:"still present",actionable:false}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[{"severity":"low","category":"logic-error","file":"old.go","line":1,"id":"f_prior_actionable","actionable":true}]}' \
+  '.findings | any(.severity == "low" and .actionable == true)'
 
 run_disposition_case "projection-carries-undispositioned-prior-finding" \
   "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d"}]' <<< "${BASE_REVIEW}")" \
