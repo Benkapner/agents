@@ -465,6 +465,8 @@ assert_contains "eval setup gates prior review SHA" "${EVAL_SETUP}" \
   'PRIOR_REVIEW_SHA="${FIXTURE_INITIAL_SHA:-}"'
 assert_contains "eval runner forwards prior review input" "${EVAL_RUNNER}" \
   "PRIOR_REVIEW_FILE"
+assert_contains "eval runner defaults app-set identity" "${EVAL_RUNNER}" \
+  'emit_env "FULLSEND_APP_SET" "${FULLSEND_APP_SET:-fullsend-ai}"'
 assert_contains "re-review fixed-scope heading covers conditional intent" "${SKILL}" \
   "Fixed-scope sub-agent assignments WITHOUT prior findings"
 assert_contains "isolated unmatched-file eval changes only changelog" "${EVAL_UNMATCHED}" \
