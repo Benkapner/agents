@@ -82,7 +82,7 @@ NON_ENV_TOKENS=(
   FETCH_END FETCH_START FILE_COUNT FILES_CHANGED GITLAB_HOST
   HEAD_PIPELINE_ID HEAD_PIPELINE_SHA HEAD_SHA
   IID INCOMPLETE_COMPARE INCREMENTAL_DIFF
-  IS_DRAFT ISSUE_KEY ISSUE_NUMBER
+  IS_DRAFT ISSUE_KEY
   JOB_ID LINE_COUNT LINES_CHANGED LOGIN_SELECT
   MERGE_BASE_FILE MR_DATA MR_IID MR_JSON MR_SHA
   NOW NUMBER OLD_NAME ORG OTHER OTHER_PROJECT_ID
@@ -114,6 +114,11 @@ declare -A KNOWN_GAPS=(
   # retro-analysis references MAX_RETRIES but retro.yaml does not declare it
   # in env.sandbox; the skill reads it with a fallback default.
   ["retro-analysis:MAX_RETRIES"]="#1664 — retro-analysis reads MAX_RETRIES with fallback default; not in retro.yaml env.sandbox"
+  # Forge skills derive ISSUE_NUMBER locally from ISSUE_URL via basename;
+  # only code.yaml passes it through env.sandbox directly.
+  ["github-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
+  ["gitlab-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
+  ["issue-labels/gitlab:ISSUE_NUMBER"]="#1664 — label skill derives ISSUE_NUMBER locally from ISSUE_URL; review/triage harnesses do not supply it"
 )
 
 # ---------------------------------------------------------------------------
