@@ -71,7 +71,12 @@ PR here can deliver it. When you find this:
    repository is not the target unless the reference resolves to it.
 2. Add `pr_body` to the structured output naming the external repository,
    the file, and the exact change needed. Leave the working tree clean and
-   make no commit — the post-script then posts `pr_body` on the issue.
+   make no commit. For a same-forge issue, the post-script posts `pr_body`
+   on the issue as "Agent context". For an external-tracker run (for
+   example a Jira work item), the post-script does not read `pr_body` — it
+   emits only a generic "no PR created" notice — so also state the external
+   repository, file, and change in your final message, where the run
+   transcript preserves it.
 3. Validate the structured output and stop.
 
 Report the upstream change instead of copying the external file into this
@@ -110,7 +115,9 @@ point at a different repository — that change lives here; implement it.
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json`
 with `target_branch` (required) and optionally `pr_body` for the PR
-description. The `code-implementation` skill describes the schema and
+description. When you make no commit (see "Repository boundary"), the
+post-script posts `pr_body` on the issue as "Agent context" instead of using
+it as a PR description. The `code-implementation` skill describes the schema and
 the exact steps where you write each field. The post-script reads this
 file to determine the PR target branch and description. Without this
 file, the validation loop rejects the run and retries.
@@ -137,7 +144,9 @@ Your exit state is the handoff contract:
   scan).
 - **No commit** → the post-script reads your transcript and exit code to
   report the failure. Structured output should still be written when possible
-  so the post-script knows which branch was targeted.
+  so the post-script knows which branch was targeted. For a repository-boundary
+  escalation, the structured output's `pr_body` carries the upstream change
+  to report.
 
 ## Validation retry behavior
 
