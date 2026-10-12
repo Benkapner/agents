@@ -315,6 +315,7 @@ severity_rank() {
 EFFECTIVE_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD}"
 threshold_rank=$(severity_rank "$EFFECTIVE_FINDING_SEVERITY_THRESHOLD")
 REREVIEW_FILTERED_TO_ZERO=false
+REREVIEW_FILTER_ORIGINAL_ACTION=""
 
 if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
@@ -344,11 +345,11 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
     # the PR gets requires-manual-review, not ready-for-merge.
     if [ "${filtered_count}" -eq 0 ]; then
       REREVIEW_FILTERED_TO_ZERO=true
-      original_action=$(jq -r '.action' "${FILTERED_RESULT}")
+      REREVIEW_FILTER_ORIGINAL_ACTION=$(jq -r '.action' "${FILTERED_RESULT}")
       DOWNGRADE_RESULT=$(mktemp)
       CLEANUP_FILES+=("${DOWNGRADE_RESULT}")
-      if [ "${original_action}" = "request-changes" ] || [ "${original_action}" = "reject" ]; then
-        echo "All findings removed by severity filter — downgrading '${original_action}' to 'comment'"
+      if [ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" ] || [ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]; then
+        echo "All findings removed by severity filter — downgrading '${REREVIEW_FILTER_ORIGINAL_ACTION}' to 'comment'"
         jq 'del(.findings) | .action = "comment"' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
       else
         jq 'del(.findings)' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
@@ -379,7 +380,9 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]] \
     && [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
     && [[ "${PRIOR_REJECT_HOLD}" != "true" ]] \
     && [[ "${ACTION}" = "request-changes" || \
-         ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" ) ]]; then
+         ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
+           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
+                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) ) ]]; then
   REREVIEW_SAFETY_CANDIDATE=true
   ACTION="approve"
 fi
@@ -1116,7 +1119,10 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
     ACTION="comment"
     DOWNGRADED=true
   elif [[ "${ACTION}" = "request-changes" \
-      || ( "${ACTION}" = "comment" && "${PRIOR_ACTION}" = "approve" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" && "${DOWNGRADED}" = "false" ) ]] \
+      || ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
+           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
+                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) \
+           && "${DOWNGRADED}" = "false" ) ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
       && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
       && [[ "${DOWNGRADED}" = "false" ]]; then
@@ -1193,7 +1199,18 @@ fi
 # findings keep their anchor so the next review can recognise
 # them; the oldest closed entries are dropped past 100. Rationale and
 # evidence stay in the human-readable comment and never enter the marker.
-PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_LEDGER}" --argjson effective "${LEDGER_EFFECTIVE}" '
+# A prior reject is a human-decision hold. The posted review may be changed to
+# comment so it cannot itself reject the PR, but the ledger must retain reject
+# until a human acts; otherwise the hold disappears on the next round.
+LEDGER_ACTION="${ACTION}"
+case "${ACTION}" in
+  approve|request-changes|comment|reject)
+    if [[ "${PRIOR_REJECT_HOLD}" = "true" ]]; then
+      LEDGER_ACTION="reject"
+    fi
+    ;;
+esac
+PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" --argjson prior "${PRIOR_LEDGER}" --argjson effective "${LEDGER_EFFECTIVE}" --arg ledger_action "${LEDGER_ACTION}" '
   def allowed_category:
     IN(
       "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
@@ -1265,7 +1282,7 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       | ([ $carried_closed[].id ]) as $kept_closed
       | {
           version: 2,
-          action: .action,
+          action: $ledger_action,
           findings: ($current + $carried_open + $carried_closed)
         }
         + (if ($accounted | length) > 0 then

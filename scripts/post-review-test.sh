@@ -1845,6 +1845,93 @@ run_rereview_gate_case() {
   echo "PASS: ${test_name}"
 }
 
+# Verify that a prior reject remains a human-review hold across two rounds.
+# The posted result is comment in both rounds, but the marker must retain the
+# prior reject action so a later re-review cannot promote itself to approval.
+run_two_round_prior_reject_case() {
+  local test_name="$1"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local prior_round_one="${run_dir}/prior-round-one.json"
+  local prior_round_two="${run_dir}/prior-round-two.json"
+  local round_one_result round_two_result
+  local exit_code=0
+
+  mkdir -p "${run_dir}/iteration-1/output"
+  printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review"}' \
+    > "${run_dir}/iteration-1/output/agent-result.json"
+  printf '%s' '{"version":2,"action":"reject","findings":[]}' > "${prior_round_one}"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_PR_FILES="src/main.go"
+    export PRIOR_REVIEW_FILE="${prior_round_one}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}-round-one.log" 2>&1 || exit_code=$?
+
+  round_one_result="${TMPDIR}/last-result.json"
+  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action' "${round_one_result}" 2>/dev/null || true)" != "comment" ]]; then
+    echo "FAIL: ${test_name} — first round did not require human review"
+    cat "${TMPDIR}/stdout-${test_name}-round-one.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local marker encoded projection_action
+  marker="$(jq -r '.body // ""' "${round_one_result}" | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
+  encoded="${marker#<!-- fullsend:review-findings-v2:}"
+  encoded="${encoded% -->}"
+  projection_action="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -r '.action // empty' 2>/dev/null || true)"
+  if [[ "${projection_action}" != "reject" ]]; then
+    echo "FAIL: ${test_name} — first-round projection lost reject action"
+    echo "  projection action: ${projection_action}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  printf '%s' "$(printf '%s' "${encoded}" | base64 --decode)" > "${prior_round_two}"
+  mkdir -p "${run_dir}/iteration-2/output"
+  printf '%s' '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review","findings":[{"severity":"low","category":"style","file":"new.go","line":1,"description":"minor"}]}' \
+    > "${run_dir}/iteration-2/output/agent-result.json"
+  rm -f "${TMPDIR}/last-result.json"
+  exit_code=0
+
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_PR_FILES="src/main.go"
+    export PRIOR_REVIEW_FILE="${prior_round_two}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}-round-two.log" 2>&1 || exit_code=$?
+
+  round_two_result="${TMPDIR}/last-result.json"
+  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action' "${round_two_result}" 2>/dev/null || true)" != "comment" ]] || \
+     ! grep -qF -- "Automatic re-review promotion withheld" <(jq -r '.body // ""' "${round_two_result}") || \
+     grep -qF -- "/fs-fix" <(jq -r '.body // ""' "${round_two_result}"); then
+    echo "FAIL: ${test_name} — second round escaped the prior reject hold"
+    cat "${TMPDIR}/stdout-${test_name}-round-two.log"
+    echo "Result: $(cat "${round_two_result}" 2>/dev/null || true)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 BASE_REVIEW='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review"}'
 
 run_rereview_gate_case "rereview-new-low-does-not-request-changes" \
@@ -1931,6 +2018,13 @@ run_rereview_gate_case "rereview-approved-comment-low-becomes-approve" \
   '{"version":2,"action":"approve","findings":[]}' \
   "comment" \
   "Review"
+
+run_rereview_gate_case "rereview-agent-comment-info-failure-stays-comment" \
+  "$(jq -c '.action="comment" | .findings=[{severity:"info",category:"sub-agent-failure",file:"N/A",description:"dimension failed"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "comment" \
+  "Review" \
+  "No findings at or above the effective blocking threshold remain open"
 
 run_rereview_gate_case "rereview-approved-empty-comment-stays-comment" \
   "$(jq -c '.action="comment" | del(.findings) | .body="Scope is unclear; a human should confirm."' <<< "${BASE_REVIEW}")" \
@@ -2074,6 +2168,8 @@ run_rereview_gate_case "rereview-prior-reject-without-open-medium-requires-human
   "comment" \
   "Automatic re-review promotion withheld" \
   "/fs-fix"
+
+run_two_round_prior_reject_case "rereview-prior-reject-hold-persists"
 
 run_rereview_gate_case "rereview-promotion-respects-protected-paths" \
   "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
