@@ -99,7 +99,8 @@ timed out — scrub the token: `: > /tmp/pr-head.curlrc`.
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata
+# Fetch linked issue metadata. Step 2b resolves bare `#N` and
+# same-repository issue URLs only.
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>" \
