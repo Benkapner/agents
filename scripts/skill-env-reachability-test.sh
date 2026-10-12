@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# skill-env-reachability-test.sh — Verify that every SKILL.md file
+# references only env vars reachable from its delivering harness's
+# env.sandbox (or from sandbox runtime injection / provider credentials).
+#
+# For each harness file, extract the union of all env.sandbox keys
+# (top-level, forge blocks, and overlays), then extract all skill
+# paths.  For each skill that resolves to a local SKILL.md, extract
+# env var references via two patterns (backtick-delimited uppercase
+# identifiers and ${VAR} template expansions) and verify every
+# reference is reachable.
+#
+# Run from the repo root: bash scripts/skill-env-reachability-test.sh
+
+set -euo pipefail
+
+# Bash 4+ required for associative arrays (declare -A KNOWN_GAPS)
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  echo "ERROR: Bash 4+ required (found ${BASH_VERSION}). On macOS: brew install bash"
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+FAILURES=0
+
+# ---------------------------------------------------------------------------
+# Sandbox runtime vars — injected by sandbox bootstrap or providers,
+# not declared in env.sandbox
+# ---------------------------------------------------------------------------
+SANDBOX_RUNTIME_VARS=(
+  CLAUDE_CONFIG_DIR
+  FULLSEND_OUTPUT_DIR
+  FULLSEND_OUTPUT_SCHEMA
+  FULLSEND_ROLE
+  GH_TOKEN
+  GIT_BOT_EMAIL
+  GITLAB_TOKEN
+  GOOGLE_APPLICATION_CREDENTIALS
+  GCP_OIDC_TOKEN_FILE
+  JIRA_TOKEN
+  PATH
+)
+
+# ---------------------------------------------------------------------------
+# Non-env tokens — uppercase tokens that appear in backtick text or
+# code blocks but are NOT env vars (field names, keywords, local
+# variables, file names, etc.)
+# ---------------------------------------------------------------------------
+NON_ENV_TOKENS=(
+  # Status / severity / verdict tokens
+  APPROVE CHANGES CRITICAL HIGH MEDIUM LOW WARN PASS FAIL
+  BEHIND BLOCKED CONFLICTING MERGEABLE UNSTABLE FAILED
+  INCOMPLETE
+  # Format / protocol / language tokens
+  JSON JSONL YAML CSV HTTP HTTPS URL API CLI EOF CRLF UTF JQL
+  # Boolean / logic / keyword tokens
+  TRUE FALSE NULL NOT ONLY BREAKING UNKNOWN AND ALL EMPTY
+  # SQL / query tokens
+  ASC DESC LIMIT ORDER
+  # HTTP methods / API tokens
+  PRIVATE POST TOKEN MATCH NO_MATCH FETCH PARSE DIFF ENDPOINT
+  # Git concepts
+  HEAD SHA BRANCH COMMITS COMMIT MANIFEST
+  # File / directory / product names
+  AGENTS CLAUDE CONTRIBUTING README SKILL TODO FILL STEP
+  SYSTEM HARD CURLRC FILES WORK MESSAGES
+  # Ruff / linter rule codes
+  SIM401 UP038
+  # Bash special variables
+  IFS OLDMASK
+  # Local variables set within SKILL.md code examples
+  AGENT_START BASE_BRANCH BLAST_RADIUS BRANCH_NAME
+  CHANGED_FILES CHANGED_FILES_FILE
+  CI_WORKFLOW_CHANGED CODE_ALLOWED_TARGET_BRANCHES
+  COMMIT_MESSAGES_AVAILABLE_FILE COMMIT_MESSAGES_FILE
+  COMMIT_MESSAGES_INCOMPLETE_FILE COMMITS_FILE
+  COMPARE_COMPLETE_FILTER COMPARE_FILE COMPARE_INCOMPLETE_FILE
+  DEFAULT_BRANCH DEPENDENCY_FILES_CHANGED
+  DISPATCH_ENCODED DISPATCH_REPO DISPATCH_REPO_ENCODED
+  ELAPSED FEATURE_X_ENABLED
+  FETCH_END FETCH_START FILE_COUNT FILES_CHANGED GITLAB_HOST
+  HEAD_PIPELINE_ID HEAD_PIPELINE_SHA HEAD_SHA
+  IID INCOMPLETE_COMPARE INCREMENTAL_DIFF
+  IS_DRAFT ISSUE_KEY ISSUE_NUMBER ISSUE_URL
+  JOB_ID LINE_COUNT LINES_CHANGED LOGIN_SELECT
+  MAX_RETRIES MERGE_BASE_FILE MR_DATA MR_IID MR_JSON MR_SHA
+  NOW NUMBER OLD_NAME ORG OTHER OTHER_PROJECT_ID
+  OTHERPROJ OWNER PIPELINE_ID PKG POLL_INTERVAL
+  PR_COMMIT_COUNT PR_COMMIT_COUNT_FILE PR_DATA PR_HEAD PRBODY
+  PR_NUMBER_OR_URL PROJECT_KEY PROTECTED_PATH_COUNT
+  REMAINING REPO REPO_ENCODED REVIEW_BODY_FILE REVIEW_COMMENT
+  REVIEW_SUB_AGENT_TRUE RUN_FALLBACK RUN_ID
+  SECURITY_SENSITIVE_COUNT TARGET_ENCODED TEST_FILE_RATIO
+  # Field names / parameter names in risk assessment
+  AUTHOR_IS_BOT AUTHOR_IS_FIRST_TIME
+  # GitHub Actions env var name referenced in prose
+  ACTIONS_ALLOW_UNSECURE_COMMANDS
+  # Review keyword (as in "REQUEST CHANGES")
+  REQUEST
+)
+
+# ---------------------------------------------------------------------------
+# Known gaps — associative array mapping skill:VAR to tracking reference
+# ---------------------------------------------------------------------------
+declare -A KNOWN_GAPS=(
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+assert_pass() { echo "PASS: $1"; }
+assert_fail() {
+  local test_name="$1" detail="$2"
+  echo "FAIL: ${test_name} — ${detail}"
+  FAILURES=$((FAILURES + 1))
+}
+assert_warn() {
+  local test_name="$1" detail="$2"
+  echo "WARN: ${test_name} — ${detail}"
+}
+
+# is_sandbox_runtime_var VAR — return 0 if VAR is a sandbox runtime var
+is_sandbox_runtime_var() {
+  local var="$1"
+  for rtvar in "${SANDBOX_RUNTIME_VARS[@]}"; do
+    [[ "$var" == "$rtvar" ]] && return 0
+  done
+  return 1
+}
+
+# is_non_env_token TOKEN — return 0 if TOKEN is a non-env token
+is_non_env_token() {
+  local token="$1"
+  for t in "${NON_ENV_TOKENS[@]}"; do
+    [[ "$token" == "$t" ]] && return 0
+  done
+  return 1
+}
+
+# extract_env_sandbox_keys HARNESS_FILE — print the union of all
+# env.sandbox keys from top-level, forge blocks, and overlays
+extract_env_sandbox_keys() {
+  local harness_file="$1"
+  yq -r '[
+    (.env.sandbox // {} | keys),
+    (.forge[]? | .env.sandbox // {} | keys),
+    (.overlays[]? | .env.sandbox // {} | keys)
+  ] | flatten | .[]' "${harness_file}" 2>/dev/null | sort -u
+  # 2>/dev/null: yq emits benign warnings when optional key paths
+  # (forge, overlays) are absent. Empty output here is fail-closed:
+  # all skill vars will fail the env.sandbox check.
+}
+
+# extract_skill_paths HARNESS_FILE — print the union of all skill
+# paths from top-level, forge blocks, and overlays
+extract_skill_paths() {
+  local harness_file="$1"
+  local output rc=0
+  output=$(yq -r '[
+    (.skills // []),
+    (.forge[]? | .skills // []),
+    (.overlays[]? | .skills // [])
+  ] | flatten | .[]' "${harness_file}" 2>/dev/null) || rc=$?
+  # 2>/dev/null: yq emits benign warnings when optional key paths
+  # (forge, overlays) are absent. A non-zero exit code from yq
+  # indicates a real failure — fail-close rather than skip.
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR: yq failed on ${harness_file} (exit $rc)" >&2
+    return 1
+  fi
+  echo "$output" | sort -u
+}
+
+# extract_env_var_refs SKILL_FILE — print all env var references
+# extracted from a SKILL.md file using two patterns:
+#   1. Backtick-delimited uppercase identifiers (inline + code blocks)
+#   2. ${VAR} template expansions
+extract_env_var_refs() {
+  local skill_file="$1"
+
+  # Pattern 1a: inline backtick text
+  local backtick_vars
+  # 2>/dev/null: file existence is pre-checked; suppresses only
+  # benign encoding warnings from grep on binary-like content.
+  backtick_vars=$(grep -oE '`[^`]+`' "${skill_file}" 2>/dev/null \
+    | grep -oE '[A-Z][A-Z0-9_]{2,}' || true)
+
+  # Pattern 1b: code block text (between ``` markers)
+  local code_block_vars
+  code_block_vars=$(awk '/^```/{inside=!inside; next} inside{print}' "${skill_file}" \
+    | grep -oE '[A-Z][A-Z0-9_]{2,}' || true)
+
+  # Pattern 2: ${VAR} template expansions
+  local template_vars
+  # 2>/dev/null: file existence is pre-checked; suppresses only
+  # benign encoding warnings from grep on binary-like content.
+  template_vars=$(grep -oE '\$\{[A-Z][A-Z0-9_]{2,}\}' "${skill_file}" 2>/dev/null \
+    | sed 's/\${//;s/}//' || true)
+
+  # Combine and deduplicate — word splitting is intentional here to
+  # split multi-line strings from grep output into individual tokens.
+  # shellcheck disable=SC2086
+  printf '%s\n' ${backtick_vars} ${code_block_vars} ${template_vars} | sort -u
+}
+
+# ---------------------------------------------------------------------------
+# Discover harness files
+# ---------------------------------------------------------------------------
+HARNESS_DIR="${REPO_ROOT}/harness"
+HARNESS_FILES=()
+for f in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/examples/*/harness/*.yaml; do
+  [[ -f "$f" ]] && HARNESS_FILES+=("$f")
+done
+
+if [[ ${#HARNESS_FILES[@]} -eq 0 ]]; then
+  echo "ERROR: no harness YAML files found in ${HARNESS_DIR}"
+  exit 1
+fi
+
+echo "Scanning ${#HARNESS_FILES[@]} harness file(s) for skill env var reachability"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Test: each skill's env var references must be reachable from its
+# delivering harness's env.sandbox (or allowlisted)
+# ---------------------------------------------------------------------------
+for harness in "${HARNESS_FILES[@]}"; do
+  harness_name="$(basename "$harness" .yaml)"
+
+  # 1. Extract union of ALL env.sandbox keys
+  env_sandbox_keys="$(extract_env_sandbox_keys "$harness")"
+
+  # 2. Extract skill paths
+  skill_paths="$(extract_skill_paths "$harness")"
+
+  [[ -z "$skill_paths" ]] && continue
+
+  # 3. For each skill path, resolve and validate
+  while IFS= read -r skill_path; do
+    [[ -z "$skill_path" ]] && continue
+
+    # Resolve SKILL.md
+    skill_file="${REPO_ROOT}/${skill_path}/SKILL.md"
+    if [[ ! -f "$skill_file" ]]; then
+      echo "INFO: ${skill_path} — no local SKILL.md (upstream platform skill), skipping"
+      continue
+    fi
+
+    skill_name="${skill_path#skills/}"
+
+    # Extract env var references from SKILL.md
+    all_vars="$(extract_env_var_refs "$skill_file")"
+
+    if [[ -z "$all_vars" ]]; then
+      assert_pass "${skill_name}/${harness_name}"
+      continue
+    fi
+
+    # Cross-reference each var
+    local_pass=true
+    while IFS= read -r var; do
+      [[ -z "$var" ]] && continue
+
+      # Skip non-env tokens
+      if is_non_env_token "$var"; then
+        continue
+      fi
+
+      # Skip sandbox runtime vars
+      if is_sandbox_runtime_var "$var"; then
+        continue
+      fi
+
+      # Check if it's in env.sandbox
+      if echo "$env_sandbox_keys" | grep -qxF "$var"; then
+        continue
+      fi
+
+      # Check known gaps
+      gap_key="${skill_name}:${var}"
+      if [[ -n "${KNOWN_GAPS[$gap_key]+x}" ]]; then
+        assert_warn "${skill_name}/${harness_name}" "${var} unreachable (tracked: ${KNOWN_GAPS[$gap_key]})"
+        local_pass=false
+        continue
+      fi
+
+      # FAIL — not reachable
+      assert_fail "${skill_name}/${harness_name}" "${var} not in env.sandbox"
+      local_pass=false
+    done <<< "$all_vars"
+
+    if $local_pass; then
+      assert_pass "${skill_name}/${harness_name}"
+    fi
+
+  done <<< "$skill_paths"
+done
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo ""
+if [[ ${FAILURES} -gt 0 ]]; then
+  echo "${FAILURES} test(s) failed"
+  exit 1
+fi
+echo "All skill env var reachability tests passed"
