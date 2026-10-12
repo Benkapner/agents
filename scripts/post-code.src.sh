@@ -373,16 +373,25 @@ post_noop_comment() {
 
   local detail_block=""
   if [ -n "${agent_context}" ]; then
-    local sanitized_context
-    sanitized_context="$(sanitize_failure_detail "${agent_context}")"
-    detail_block="
+    local context_file
+    context_file="$(mktemp)"
+    printf '%s\n' "${agent_context}" > "${context_file}"
+    if ! install_gitleaks \
+      || ! gitleaks detect --source "${context_file}" --no-git --redact >/dev/null 2>&1; then
+      gha_echo warning "Agent context omitted because its secret scan did not pass"
+    else
+      local sanitized_context
+      sanitized_context="$(sanitize_failure_detail "${agent_context}")"
+      detail_block="
 
 **Agent context:**
 ${sanitized_context}"
+    fi
+    rm -f "${context_file}"
   fi
 
   local body
-  body="ℹ️ **No PR created** — agent determined no changes needed
+  body="ℹ️ **No PR created**
 
 The code agent ran and evaluated issue #${safe_issue_number}, but did not produce changes to submit as a pull request.
 
