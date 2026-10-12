@@ -82,9 +82,9 @@ NON_ENV_TOKENS=(
   FETCH_END FETCH_START FILE_COUNT FILES_CHANGED GITLAB_HOST
   HEAD_PIPELINE_ID HEAD_PIPELINE_SHA HEAD_SHA
   IID INCOMPLETE_COMPARE INCREMENTAL_DIFF
-  IS_DRAFT ISSUE_KEY ISSUE_NUMBER ISSUE_URL
+  IS_DRAFT ISSUE_KEY ISSUE_NUMBER
   JOB_ID LINE_COUNT LINES_CHANGED LOGIN_SELECT
-  MAX_RETRIES MERGE_BASE_FILE MR_DATA MR_IID MR_JSON MR_SHA
+  MERGE_BASE_FILE MR_DATA MR_IID MR_JSON MR_SHA
   NOW NUMBER OLD_NAME ORG OTHER OTHER_PROJECT_ID
   OTHERPROJ OWNER PIPELINE_ID PKG POLL_INTERVAL
   PR_COMMIT_COUNT PR_COMMIT_COUNT_FILE PR_DATA PR_HEAD PRBODY
@@ -104,6 +104,16 @@ NON_ENV_TOKENS=(
 # Known gaps — associative array mapping skill:VAR to tracking reference
 # ---------------------------------------------------------------------------
 declare -A KNOWN_GAPS=(
+  ["pr-risk-assessment:REVIEW_GIT_FETCH_DEPTH"]="#1621 — runner-side var; post-script detects shallow-repo independently (#1624)"
+  # Multi-context forge skills document ISSUE_URL for triage context; fix,
+  # retro, and review harnesses don't supply it because those workflows
+  # don't operate on standalone issues.
+  ["github-forge:ISSUE_URL"]="#1664 — forge skill documents triage-context var; not supplied by fix/retro/review harnesses"
+  ["gitlab-forge:ISSUE_URL"]="#1664 — forge skill documents triage-context var; not supplied by fix/retro/review harnesses"
+  ["issue-labels/gitlab:ISSUE_URL"]="#1664 — label skill references ISSUE_URL for triage; review harness does not supply it"
+  # retro-analysis references MAX_RETRIES but retro.yaml does not declare it
+  # in env.sandbox; the skill reads it with a fallback default.
+  ["retro-analysis:MAX_RETRIES"]="#1664 — retro-analysis reads MAX_RETRIES with fallback default; not in retro.yaml env.sandbox"
 )
 
 # ---------------------------------------------------------------------------
@@ -139,7 +149,12 @@ is_non_env_token() {
 }
 
 # extract_env_sandbox_keys HARNESS_FILE — print the union of all
-# env.sandbox keys from top-level, forge blocks, and overlays
+# env.sandbox keys from top-level, forge blocks, and overlays.
+#
+# NOTE: unions all forge/overlay keys — does not track per-composition
+# isolation. A var present in only one forge (e.g. GitHub) appears
+# reachable for all compositions. Per-forge validation is a v2
+# enhancement. See #1664.
 extract_env_sandbox_keys() {
   local harness_file="$1"
   yq -r '[
