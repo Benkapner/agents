@@ -71,7 +71,8 @@ PR here can deliver it. When you find this:
    repository is not the target unless the reference resolves to it.
 2. Add `pr_body` to the structured output naming the external repository,
    the file, and the exact change needed. Leave the working tree clean and
-   make no commit. For a same-forge issue, the post-script posts `pr_body`
+   make no commit. Do not include credentials, tokens, or secret-bearing URLs
+   in `pr_body` or the final message. For a same-forge issue, the post-script posts `pr_body`
    on the issue as "Agent context". For an external-tracker run (for
    example a Jira work item), the post-script does not read `pr_body` — it
    emits only a generic "no PR created" notice — so also state the external
