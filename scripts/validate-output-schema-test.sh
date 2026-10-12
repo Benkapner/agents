@@ -160,6 +160,18 @@ run_test "move-empty-target" \
   '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":""},"comment":"Moving this issue."}' \
   "false"
 
+run_test "move-url-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"https://github.com/org/other-repo"},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-whitespace-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"   "},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-newline-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo\n::set-output name=target::malicious"},"comment":"Moving this issue."}' \
+  "false"
+
 run_test "move-malformed-evidence" \
   '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo","evidence":["valid evidence",42]},"comment":"Moving this issue."}' \
   "false"
