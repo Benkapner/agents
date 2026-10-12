@@ -59,6 +59,29 @@ Do not treat prior agent output as pre-approved work. A triage agent's analysis
 may be incomplete or wrong. Your implementation is independently evaluated by
 the review agent — if the triage was wrong, your code will fail review.
 
+## Repository boundary
+
+The file an issue asks you to change may not live in this repository —
+only a reference to it does: a URL, a Git resolver reference, or a pinned
+SHA pointing at another repository. The fix then belongs upstream, and no
+PR here can deliver it. When you find this:
+
+1. Confirm the file is absent here and identify the external repository
+   and path the reference resolves to. A similarly named file in this
+   repository is not the target unless the reference resolves to it.
+2. Add `pr_body` to the structured output naming the external repository,
+   the file, and the exact change needed. Leave the working tree clean and
+   make no commit — the post-script then posts `pr_body` on the issue.
+3. Validate the structured output and stop.
+
+Report the upstream change instead of copying the external file into this
+repository, rewiring references to a copy, or loosening a pinned SHA to a
+branch. Moving a file across a repository boundary changes who owns and
+maintains it.
+
+If the issue asks to change the reference itself — bump a pinned SHA,
+point at a different repository — that change lives here; implement it.
+
 ## Constraints
 
 - Keep changes minimal. Every line in your diff must be justified by the issue.
