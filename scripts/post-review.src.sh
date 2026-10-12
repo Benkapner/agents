@@ -1098,7 +1098,7 @@ CURRENT_HIGH_CRITICAL_COUNT="$(jq -r '[.findings[]? | select(.severity | IN("hig
 if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
   if [[ "${ACTION}" = "approve" || "${ACTION}" = "request-changes" ]] \
       && [[ "${CURRENT_HIGH_CRITICAL_COUNT}" -eq 0 ]] \
-      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
+      && { [[ "${ACTION}" = "approve" ]] || [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]]; } \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
       && [[ "${DOWNGRADED}" = "false" ]] \
       && { [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" = "true" ]] || [[ "${PRIOR_REJECT_HOLD}" = "true" ]]; }; then

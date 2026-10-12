@@ -2054,6 +2054,20 @@ run_rereview_gate_case "rereview-prior-reject-requires-human" \
   "Automatic re-review promotion withheld" \
   "/fs-fix"
 
+run_rereview_gate_case "rereview-prior-reject-current-medium-requires-human" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"medium",category:"logic-error",file:"new.go",line:1,description:"new medium"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"reject","findings":[{"severity":"medium","category":"design-direction","file":"old.go","line":1,"id":"f_rejected_medium","actionable":false}]}' \
+  "comment" \
+  "Automatic re-review promotion withheld" \
+  "/fs-fix"
+
+run_rereview_gate_case "rereview-legacy-current-medium-requires-human" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"medium",category:"logic-error",file:"new.go",line:1,description:"new medium"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_legacy_medium"}]}' \
+  "comment" \
+  "Automatic re-review promotion withheld" \
+  "/fs-fix"
+
 run_rereview_gate_case "rereview-prior-reject-without-open-medium-requires-human" \
   "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"action":"reject","findings":[]}' \
