@@ -99,14 +99,16 @@ findings regardless of the `actionable` flag.
 
 On a verified re-review with a prior findings ledger, newly reported
 `info`/`low` findings must not produce a `request-changes` verdict or start the
-fix agent. They may remain visible in the posted review, but are marked
-non-actionable by the host when the review is promoted to approval. Prior
-high/critical findings remain blocking. A prior medium finding blocks when the
-prior review was itself `request-changes` or the finding was explicitly marked
-actionable; a legacy projection with unknown prior action is treated as
-blocking. An advisory comment-only medium remains advisory when its prior
-action is known. This does not change the global severity threshold or treat a
-missing finding as resolved.
+fix agent. They may remain visible in the posted review. Prior high/critical
+findings always remain blocking, regardless of the configured posting
+threshold. A prior medium finding blocks when it was explicitly marked
+actionable, or when its actionable state is absent and the prior review was
+`request-changes`; an explicitly non-actionable medium remains advisory. A
+legacy projection with unknown prior action is held for a human and is not
+promoted into an automatic fix loop. Carried actionable findings at or above
+the configured threshold remain blocking. A prior `reject` verdict is also
+held for human review and is never automatically promoted. This does not
+change the global severity threshold or treat a missing finding as resolved.
 
 ## Identity
 

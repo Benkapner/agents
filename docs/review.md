@@ -130,20 +130,16 @@ the `actionable` flag, respecting the user's configured threshold throughout.
 
 On a verified re-review with a prior findings ledger, newly reported
 `info`/`low` findings do not block the review or start a fix run. They may
-remain visible in the posted review, but are marked non-actionable by the host
-when the review is promoted to approval. Prior high/critical findings remain
-blocking. A prior medium finding blocks when the prior review was itself
-`request-changes` or the finding was explicitly marked actionable; a legacy
-projection with unknown prior action is treated as blocking. An advisory
-comment-only medium remains advisory when its prior action is known. This does
-not change the global severity threshold or treat a missing finding as
-resolved.
-
-When an approved re-review is filtered, the post-script removes only the
-canonical severity sections for findings that were filtered out, preserving
-unrelated review context. If the body cannot be safely normalized, it falls
-back to a generated body from the retained findings rather than posting
-filtered finding text.
+remain visible in the posted review. Prior high/critical findings always
+remain blocking, regardless of the configured posting threshold. A prior
+medium finding blocks when it was explicitly marked actionable, or when its
+actionable state is absent and the prior review was `request-changes`; an
+explicitly non-actionable medium remains advisory. A legacy projection with
+unknown prior action is held for a human and is not promoted into an
+automatic fix loop. Carried actionable findings at or above the configured
+threshold remain blocking. A prior `reject` verdict is also held for human
+review and is never automatically promoted. This does not change the global
+severity threshold or treat a missing finding as resolved.
 
 ### GitLab host validation
 

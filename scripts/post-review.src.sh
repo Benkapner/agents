@@ -125,6 +125,9 @@ UNFILTERED_RESULT_FILE="${RESULT_FILE}"
 PRIOR_JSON='{"findings":[]}'
 HAS_VALID_PRIOR_REVIEW=false
 PRIOR_ACTION=""
+LEGACY_UNKNOWN_MEDIUM_HOLD=false
+PRIOR_REJECT_HOLD=false
+REREVIEW_SAFETY_CHECK_FAILED=false
 if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
   if parsed_prior="$(jq -ce 'select(type == "object" and (.findings | type) == "array")' "${PRIOR_REVIEW_FILE}" 2>/dev/null)"; then
     PRIOR_JSON="${parsed_prior}"
@@ -233,6 +236,44 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   mv "${ID_RESULT}" "${RESULT_FILE}"
 fi
 
+# A legacy projection may have valid findings but no prior verdict. Do not
+# reinterpret that missing metadata as request-changes: hold automatic
+# promotion for human review instead. A prior reject likewise requires a
+# human decision while its medium-or-higher findings remain open. Evaluate
+# this after id assignment so a valid current resolution is not mistaken for
+# an unresolved carried finding.
+CURRENT_SETTLED_IDS="$(jq -c '
+  ([.findings[]?.id | select(type == "string")]) as $current_ids
+  | [.dispositions[]?
+     | select(type == "object")
+     | . as $d
+     | select(
+         ($d.status == "resolved_by_change"
+          and ($d.rationale | type == "string" and length > 0)
+          and ($d.evidence | type == "string" and length > 0))
+         or ($d.status == "reclassified"
+          and ($d.rationale | type == "string" and length > 0)
+          and ($d.evidence | type == "string" and length > 0)
+          and ($current_ids | index($d.id) != null))
+       )
+     | $d.id
+     | select(type == "string")]
+' "${RESULT_FILE}")"
+PRIOR_OPEN_MEDIUM_PLUS_COUNT="$(jq -r --argjson settled "${CURRENT_SETTLED_IDS}" '
+  (.open_ids // []) as $open_ids
+  | [ .findings[]
+      | select(.id as $id | ($open_ids | index($id) != null))
+      | select(.id as $id | ($settled | index($id) == null))
+      | select(.severity | IN("medium", "high", "critical"))
+    ] | length
+' <<< "${PRIOR_LEDGER}")"
+if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" && -z "${PRIOR_ACTION}" && "${PRIOR_OPEN_MEDIUM_PLUS_COUNT}" -gt 0 ]]; then
+  LEGACY_UNKNOWN_MEDIUM_HOLD=true
+fi
+if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" && "${PRIOR_ACTION}" = "reject" ]]; then
+  PRIOR_REJECT_HOLD=true
+fi
+
 
 # ---------------------------------------------------------------------------
 # Severity filtering: drop findings below the configured threshold.
@@ -273,7 +314,6 @@ severity_rank() {
 
 EFFECTIVE_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD}"
 threshold_rank=$(severity_rank "$EFFECTIVE_FINDING_SEVERITY_THRESHOLD")
-FILTERED_FINDINGS=false
 REREVIEW_FILTERED_TO_ZERO=false
 
 if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
@@ -293,7 +333,6 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   filtered_count=$(jq '.findings | length' "${FILTERED_RESULT}")
 
   if [ "${filtered_count}" -lt "${original_count}" ]; then
-    FILTERED_FINDINGS=true
     echo "Severity filter (threshold=${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}): kept ${filtered_count}/${original_count} findings"
     RESULT_FILE="${FILTERED_RESULT}"
 
@@ -321,120 +360,6 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   fi
 fi
 
-# A severity filter can remove structured findings while leaving their prose
-# in the model-authored body. After an approval, replace canonical severity
-# sections with sections generated from the retained findings. Preserve other
-# sections; if the body is not in the documented format, rebuild it completely
-# so filtered findings cannot leak back into the review.
-if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" && "${PRIOR_ACTION}" = "approve" ]] \
-    && [[ "${FILTERED_FINDINGS}" = "true" ]] \
-    && [[ "$(jq -r '.action // empty' "${RESULT_FILE}")" != "failure" ]]; then
-  ORIGINAL_REVIEW_BODY=$(mktemp)
-  FILTERED_FINDINGS_FILE=$(mktemp)
-  RETAINED_FINDINGS_BODY=$(mktemp)
-  CONTEXT_ONLY_REVIEW_BODY=$(mktemp)
-  PRESERVED_REVIEW_BODY=$(mktemp)
-  NORMALIZED_RESULT=$(mktemp)
-  CLEANUP_FILES+=("${FILTERED_FINDINGS_FILE}" "${ORIGINAL_REVIEW_BODY}" "${RETAINED_FINDINGS_BODY}" "${CONTEXT_ONLY_REVIEW_BODY}" "${PRESERVED_REVIEW_BODY}" "${NORMALIZED_RESULT}")
-  jq --argjson rank "${threshold_rank}" '
-    [ .findings[]
-      | (if .severity == "info" then 0
-         elif .severity == "low" then 1
-         elif .severity == "medium" then 2
-         elif .severity == "high" then 3
-         elif .severity == "critical" then 4
-         else 1 end) as $finding_rank
-      | select($finding_rank < $rank)
-      | {description: (.description // ""), remediation: (.remediation // "")}
-    ]
-  ' "${UNFILTERED_RESULT_FILE}" > "${FILTERED_FINDINGS_FILE}"
-  jq -r '.body // ""' "${RESULT_FILE}" > "${ORIGINAL_REVIEW_BODY}"
-  jq -r --arg threshold "${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}" '
-    def severity_title:
-      if . == "critical" then "Critical"
-      elif . == "high" then "High"
-      elif . == "medium" then "Medium"
-      elif . == "low" then "Low"
-      elif . == "info" then "Info"
-      else . end;
-    def finding_section:
-      "#### \(.severity | severity_title)\n\n- **\(.category)** in \(.file // "PR-level")"
-      + (if (.line | type) == "number" then ":\(.line)" else "" end)
-      + (if (.description | type) == "string" and (.description | length) > 0 then " — \(.description)" else "" end)
-      + (if (.remediation | type) == "string" and (.remediation | length) > 0 then "\n  Remediation: \(.remediation)" else "" end);
-    if ((.findings // []) | length) == 0 then
-      "Review completed; no findings at or above the configured \($threshold) severity threshold remain in the posted review."
-    else
-      [.findings[] | finding_section] | join("\n\n")
-    end
-  ' "${RESULT_FILE}" > "${RETAINED_FINDINGS_BODY}"
-
-  REVIEW_BODY_STRUCTURE_VALID=false
-  if awk '
-    function is_severity_heading(line, lower) {
-      lower = tolower(line)
-      return lower ~ /^####[[:space:]]*(critical|high|medium|low|info)([[:space:]]*\/[[:space:]]*(critical|high|medium|low|info))*[[:space:]]*$/
-    }
-    {
-      if (is_severity_heading($0)) {
-        found_severity = 1
-        skipping = 1
-        next
-      }
-      if (skipping && $0 ~ /^#{1,4}[[:space:]]+/) skipping = 0
-      if (skipping) next
-      print
-      if (tolower($0) ~ /^###[[:space:]]+findings[[:space:]]*$/) found_findings = 1
-    }
-    END {
-      if (!found_findings || !found_severity) exit 1
-    }
-  ' "${ORIGINAL_REVIEW_BODY}" > "${CONTEXT_ONLY_REVIEW_BODY}"; then
-    REVIEW_BODY_STRUCTURE_VALID=true
-  fi
-
-  PRESERVED_BODY_SAFE=false
-  if [[ "${REVIEW_BODY_STRUCTURE_VALID}" = "true" ]] \
-      && [[ "$(jq -nr --rawfile body "${CONTEXT_ONLY_REVIEW_BODY}" --slurpfile removed "${FILTERED_FINDINGS_FILE}" '
-      ((($removed | add) // [])) as $removed_findings
-      | any($removed_findings[] | [.description, .remediation][]
-        | select(type == "string" and length > 0);
-        . as $text | ($body | contains($text)))
-    ')" != "true" ]]; then
-    if awk -v retained_file="${RETAINED_FINDINGS_BODY}" '
-      function insert_retained(    line) {
-        print ""
-        while ((getline line < retained_file) > 0) print line
-        close(retained_file)
-        inserted = 1
-      }
-      {
-        print
-        if (!inserted && tolower($0) ~ /^###[[:space:]]+findings[[:space:]]*$/) insert_retained()
-      }
-      END {
-        if (!inserted) exit 1
-      }
-    ' "${CONTEXT_ONLY_REVIEW_BODY}" > "${PRESERVED_REVIEW_BODY}"; then
-      PRESERVED_BODY_SAFE=true
-    fi
-  fi
-
-  if [[ "${PRESERVED_BODY_SAFE}" = "true" ]]; then
-    jq --rawfile body "${PRESERVED_REVIEW_BODY}" '.body = $body' \
-      "${RESULT_FILE}" > "${NORMALIZED_RESULT}"
-  else
-    jq --rawfile retained "${RETAINED_FINDINGS_BODY}" '
-      .body = if ((.findings // []) | length) == 0 then
-        ($retained | sub("\\n$"; ""))
-      else
-        "## Review\n\n### Findings\n\n" + ($retained | sub("\\n$"; ""))
-      end
-    ' "${RESULT_FILE}" > "${NORMALIZED_RESULT}"
-  fi
-  RESULT_FILE="${NORMALIZED_RESULT}"
-fi
-
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # ACTION retains the original value for the entire script — not re-read after protected-path downgrade.
 
@@ -451,6 +376,8 @@ fi
 REREVIEW_CURRENT_MEDIUM_PLUS_COUNT="$(jq -r '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${UNFILTERED_RESULT_FILE}")"
 if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]] \
     && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
+    && [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
+    && [[ "${PRIOR_REJECT_HOLD}" != "true" ]] \
     && [[ "${ACTION}" = "request-changes" || \
          ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" ) ]]; then
   REREVIEW_SAFETY_CANDIDATE=true
@@ -466,10 +393,16 @@ fi
 DOWNGRADED=false
 fail_rereview_safety_check() {
   local detail="$1"
+  local task_failure="${2:-false}"
   local notice
   local modified_result
 
-  echo "::warning::${detail} — automatic re-review approval unavailable; requiring human review" >&2
+  if [[ "${task_failure}" = "true" ]]; then
+    echo "::error::${detail} — automatic re-review approval unavailable; requiring human review" >&2
+    REREVIEW_SAFETY_CHECK_FAILED=true
+  else
+    echo "::warning::${detail} — automatic re-review approval unavailable; requiring human review" >&2
+  fi
   notice=$'\n\n---\n\n> **Automatic re-review approval unavailable** — required safety checks could not be completed.\n> A human reviewer must evaluate this PR.'
   modified_result=$(mktemp)
   CLEANUP_FILES+=("${modified_result}")
@@ -497,7 +430,7 @@ if [ "${ACTION}" = "approve" ]; then
   # indicates a genuine misconfiguration rather than an intentional opt-out.
   if [[ "${REVIEW_PROTECTED_PATHS+set}" != "set" ]]; then
     if [[ "${REREVIEW_SAFETY_CANDIDATE}" = "true" ]]; then
-      fail_rereview_safety_check "REVIEW_PROTECTED_PATHS is not set"
+      fail_rereview_safety_check "REVIEW_PROTECTED_PATHS is not set" true
       REREVIEW_SAFETY_CHECK_READY=false
     else
       echo "::error::REVIEW_PROTECTED_PATHS is not set — check harness/review.yaml" >&2
@@ -532,7 +465,7 @@ if [ "${ACTION}" = "approve" ]; then
       invalid_paths_message="REVIEW_PROTECTED_PATHS=\"${sanitized_paths}\" contains no valid path entries after trimming"
       unset sanitized_paths
       if [[ "${REREVIEW_SAFETY_CANDIDATE}" = "true" ]]; then
-        fail_rereview_safety_check "${invalid_paths_message}"
+        fail_rereview_safety_check "${invalid_paths_message}" true
         REREVIEW_SAFETY_CHECK_READY=false
       else
         echo "::error::${invalid_paths_message} — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
@@ -574,7 +507,7 @@ if [ "${ACTION}" = "approve" ]; then
   if [[ "${REREVIEW_SAFETY_CHECK_READY}" = "true" ]] \
       && { [ "${PR_FILES_FETCH_FAILED}" = true ] || [ -z "${PR_FILES}" ]; }; then
     if [[ "${REREVIEW_SAFETY_CANDIDATE}" = "true" ]]; then
-      fail_rereview_safety_check "Failed to fetch PR files or PR has no changed files"
+      fail_rereview_safety_check "Failed to fetch PR files or PR has no changed files" true
       REREVIEW_SAFETY_CHECK_READY=false
     else
       echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve (forge_get_pr_files)" >&2
@@ -875,7 +808,9 @@ fi
 # Append action-hints footer (request-changes only)
 # ---------------------------------------------------------------------------
 
-if [ "${ACTION}" = "request-changes" ]; then
+if [ "${ACTION}" = "request-changes" ] \
+    && [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
+    && [[ "${PRIOR_REJECT_HOLD}" != "true" ]]; then
   ACTION_HINTS_FOOTER=$'\n\n---\n**Next steps:**\n- `/fs-fix` — agent addresses review findings automatically\n- `/fs-fix <your instruction>` — agent fixes with your specific guidance\n- Push commits directly — review re-runs automatically on push\n- `/fs-fix-stop` — disable automatic fix runs for this PR'
   FOOTER_RESULT=$(mktemp)
   CLEANUP_FILES+=("${FOOTER_RESULT}")
@@ -988,13 +923,11 @@ fi
 #   open                — everything else, including a disposition aimed at
 #                         a closed id (a human dismissal or a recorded fix is
 #                         not the model's to undo).
-# An open prior high or critical id blocks approval only when its original
-# severity meets the effective configured threshold. Re-emitting it lower
-# without a supported reclassification is not a fix.
-LEDGER_APPROVAL_BLOCKING_RANK="${threshold_rank}"
-if [[ "${LEDGER_APPROVAL_BLOCKING_RANK}" -lt "$(severity_rank high)" ]]; then
-  LEDGER_APPROVAL_BLOCKING_RANK="$(severity_rank high)"
-fi
+# An open prior high or critical id always blocks approval, regardless of the
+# configured finding-posting threshold. Re-emitting it lower without a
+# supported reclassification is not a fix. The threshold controls what is
+# posted, not whether an unresolved high/critical finding can be approved.
+LEDGER_APPROVAL_BLOCKING_RANK="$(severity_rank high)"
 LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "${HUMAN_DISMISSALS}" --argjson blocking_rank "${LEDGER_APPROVAL_BLOCKING_RANK}" --slurpfile unfiltered "${UNFILTERED_RESULT_FILE}" '
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
   def nonempty: type == "string" and length > 0;
@@ -1100,11 +1033,12 @@ fi
 
 # Re-review severity gate. A verified prior ledger means this is a re-review;
 # do not let a newly discovered low/info finding start a fix run or block the
-# PR. Prior high/critical findings remain blocking; prior medium findings block
-# when the prior review requested changes or the finding was actionable, subject
-# to the configured global severity threshold. The global default remains low,
-# so first reviews still report low findings normally.
-PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" --argjson rank "${REREVIEW_BLOCKING_RANK}" --arg prior_action "${PRIOR_ACTION}" '
+# PR. Prior high/critical findings remain blocking regardless of the posting
+# threshold; prior medium findings block when they were actionable, or when
+# actionable metadata is absent and the prior verdict requested changes.
+# Explicitly advisory medium findings stay advisory. Carried actionable
+# low/info findings remain blocking when they meet the configured threshold.
+PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" --argjson rank "${REREVIEW_BLOCKING_RANK}" --argjson threshold "${threshold_rank}" --arg prior_action "${PRIOR_ACTION}" '
   def severity_rank:
     if . == "info" then 0
     elif . == "low" then 1
@@ -1113,27 +1047,75 @@ PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" 
     elif . == "critical" then 4
     else 1 end;
   [ .findings[]
-    | select((.severity | severity_rank) >= $rank)
+    | select((.severity == "high" or .severity == "critical")
+             or ((.severity | severity_rank) >= $rank)
+             or ((.actionable // false) == true and (.severity | severity_rank) >= $threshold))
     | select(.id as $id | any($effective[]; .id == $id and .status == "open"))
     | select((.severity == "high" or .severity == "critical")
-             or (.severity == "medium" and (.actionable // false) == true)
-             or $prior_action == "request-changes"
-             or ($prior_action == "" and (.severity | IN("medium", "high", "critical"))))
+             or (.severity == "medium" and (
+                   (.actionable // false) == true
+                   or ((.actionable | type) != "boolean" and $prior_action == "request-changes")
+                 ))
+             or ((.actionable // false) == true and (.severity | severity_rank) >= $threshold))
     | {
         severity,
         category,
         file: (.file // "N/A"),
-        description: ("Previously reported finding " + .id + " remains open."),
+        description: (
+          if (.description | type == "string" and length > 0) then .description
+          else ("Previously reported finding " + .id + " remains open: "
+            + .severity + " " + .category + " in " + (.file // "PR-level")
+            + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end) + ".")
+          end
+        ),
         id
       } + (if (.line | type) == "number" then {line} else {} end)
+        + (if (.remediation | type == "string" and length > 0) then {remediation: .remediation} else {} end)
+        + (if (.actionable | type) == "boolean" then {actionable} else {} end)
   ]
 ' <<< "${PRIOR_LEDGER}")"
 PRIOR_OPEN_BLOCKING_COUNT="$(jq 'length' <<< "${PRIOR_OPEN_BLOCKING_FINDINGS}")"
 PRIOR_OPEN_MEDIUM_PLUS_COUNT="$(jq '[.[] | select(.severity | IN("medium", "high", "critical"))] | length' <<< "${PRIOR_OPEN_BLOCKING_FINDINGS}")"
+FINDING_COMMENT_LINKS='{}'
+if [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -gt 0 ]]; then
+  FINDING_COMMENT_LINKS="$(forge_get_finding_comment_links)" || FINDING_COMMENT_LINKS='{}'
+  if ! jq -e 'type == "object"' <<< "${FINDING_COMMENT_LINKS}" >/dev/null 2>&1; then
+    FINDING_COMMENT_LINKS='{}'
+  fi
+fi
+PRIOR_BLOCKING_SUMMARY="$(jq -r --argjson links "${FINDING_COMMENT_LINKS}" '
+  map("- " + .id + ": " + .severity + " " + .category + " at "
+      + (.file // "PR-level")
+      + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end)
+      + (if ($links[.id] | type) == "string" then
+           " ([original inline comment](" + $links[.id] + "))"
+         else ""
+         end))
+  | join("\n")
+' <<< "${PRIOR_OPEN_BLOCKING_FINDINGS}")"
 CURRENT_HIGH_CRITICAL_COUNT="$(jq -r '[.findings[]? | select(.severity | IN("high", "critical"))] | length' "${RESULT_FILE}")"
 
 if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
-  if [[ "${ACTION}" = "request-changes" \
+  if [[ "${ACTION}" = "approve" || "${ACTION}" = "request-changes" ]] \
+      && [[ "${CURRENT_HIGH_CRITICAL_COUNT}" -eq 0 ]] \
+      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
+      && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
+      && [[ "${DOWNGRADED}" = "false" ]] \
+      && { [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" = "true" ]] || [[ "${PRIOR_REJECT_HOLD}" = "true" ]]; }; then
+    if [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" = "true" ]]; then
+      HOLD_NOTICE=$'\n\n> **Automatic re-review promotion withheld** — the prior projection has open medium-or-higher findings but no recorded prior verdict. A human reviewer must decide whether this PR is ready to merge; this legacy state will not start a fix loop.'
+    else
+      HOLD_NOTICE=$'\n\n> **Automatic re-review promotion withheld** — the prior review rejected this approach. A human reviewer must decide whether this PR is ready to merge.'
+    fi
+    HOLD_RESULT=$(mktemp)
+    CLEANUP_FILES+=("${HOLD_RESULT}")
+    jq --arg notice "${HOLD_NOTICE}" \
+      '.action = "comment" | .body = ((.body // "") + $notice)' \
+      "${RESULT_FILE}" > "${HOLD_RESULT}"
+    RESULT_FILE="${HOLD_RESULT}"
+    ACTION="comment"
+    DOWNGRADED=true
+  elif [[ "${ACTION}" = "request-changes" \
       || ( "${ACTION}" = "comment" && "${PRIOR_ACTION}" = "approve" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" && "${DOWNGRADED}" = "false" ) ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
       && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
@@ -1173,6 +1155,10 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
       REREVIEW_NOTICE=$'\n\n> **Re-review note:** One or more prior medium-or-higher findings remain open and must still be addressed.'
     else
       REREVIEW_NOTICE=$'\n\n> **Re-review note:** One or more prior blocking findings remain open and must still be addressed.'
+    fi
+    if [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -gt 0 ]]; then
+      REREVIEW_NOTICE+=$'\n\nBlocking prior findings:\n'
+      REREVIEW_NOTICE+="${PRIOR_BLOCKING_SUMMARY}"
     fi
     if [[ -n "${ACTION_HINTS_FOOTER:-}" ]]; then
       REREVIEW_FOOTER="${ACTION_HINTS_FOOTER}"
@@ -1435,3 +1421,7 @@ for label in "${VALIDATED_LABEL_REMOVES[@]}"; do
 done
 
 echo "Review posted on ${REPO}#${PR_NUMBER}"
+if [[ "${REREVIEW_SAFETY_CHECK_FAILED}" = "true" ]]; then
+  echo "::error::Review was posted as comment, but automatic re-review safety checks failed" >&2
+  exit 1
+fi

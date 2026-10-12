@@ -1277,8 +1277,12 @@ adjudicated set (step 6d) and evaluate:
   and analysis notes at any severity level)
 - No findings → `approve`
 - On a verified re-review, new low/info findings must not start a fix run.
-  The host may mark them non-actionable when promoting an eligible review;
-  carried actionable and prior high/critical findings remain blocking.
+  The host may keep them visible in the posted review. Carried actionable
+  findings at or above the configured threshold, plus all prior high/critical
+  findings regardless of threshold, remain blocking. A legacy prior ledger
+  with an unknown verdict is held for human review rather than starting an
+  automatic fix loop. A prior `reject` verdict is likewise held for human
+  review and is never automatically promoted.
 - **Risk verdict gate**: With `REVIEW_RISK_ASSESSMENT_ENABLED=true` and
   threshold other than `6`, a score at/above threshold or missing/degraded
   assessment forces `comment`, overriding approval paths. Threshold `6`
