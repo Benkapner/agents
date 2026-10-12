@@ -106,6 +106,18 @@ run_test "valid-split" \
   '{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated."}],"comment":"Splitting into independent sub-issues."}' \
   "true"
 
+run_test "valid-move-without-evidence" \
+  '{"action":"move","reasoning":"the affected code is maintained elsewhere","move_to":{"target":"org/other-repo"},"comment":"Moving this issue to the repository that owns the affected code."}' \
+  "true"
+
+run_test "valid-move-with-evidence" \
+  '{"action":"move","reasoning":"the affected code is maintained elsewhere","move_to":{"target":"org/other-repo","evidence":["The affected package lives in org/other-repo."]},"comment":"Moving this issue to the repository that owns the affected code."}' \
+  "true"
+
+run_test "valid-move-jira-project-key" \
+  '{"action":"move","reasoning":"the issue belongs to another Jira project","move_to":{"target":"OTHERPROJ"},"comment":"Moving this issue to the owning Jira project."}' \
+  "true"
+
 # --- Jira tracker shapes ---
 # duplicate_of is an integer on GitHub/GitLab but a full issue key on Jira.
 run_test "valid-jira-duplicate-key" \
@@ -134,6 +146,26 @@ run_test "duplicate-missing-duplicate-of" \
 
 run_test "sufficient-missing-triage-summary" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"comment":"Done."}' \
+  "false"
+
+run_test "move-missing-move-to" \
+  '{"action":"move","reasoning":"owned elsewhere","comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-missing-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-empty-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":""},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-malformed-evidence" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo","evidence":["valid evidence",42]},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-with-triage-summary-rejected" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo"},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":true},"comment":"Moving this issue."}' \
   "false"
 
 run_test "prerequisites-missing-prerequisites-field" \
@@ -400,7 +432,7 @@ run_test_output "additional-properties-shows-allowed" \
 run_test_output "additional-properties-lists-known-keys" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
   "false" \
-  "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
+  "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, move_to, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
 
 run_test_output "valid-output-no-allowed-line" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \

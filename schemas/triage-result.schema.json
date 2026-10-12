@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "in-progress", "question", "not-planned", "completed", "split"]
+      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "in-progress", "question", "not-planned", "completed", "split", "move"]
     },
     "reasoning": {
       "type": "string",
@@ -32,6 +32,9 @@
     },
     "triage_summary": {
       "$ref": "#/$defs/triage_summary"
+    },
+    "move_to": {
+      "$ref": "#/$defs/move_to"
     },
     "pull_requests": {
       "type": "array",
@@ -170,6 +173,13 @@
     {
       "if": { "properties": { "action": { "const": "split" } }, "required": ["action"] },
       "then": { "required": ["sub_issues"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "move" } }, "required": ["action"] },
+      "then": {
+        "required": ["move_to"],
+        "not": { "required": ["triage_summary"] }
+      }
     }
   ],
   "$defs": {
@@ -204,6 +214,21 @@
         "promote_to_ready_to_code": {
           "type": "boolean",
           "description": "When TRIAGE_AUTO_CODE is discretionary, whether the post-script should apply ready-to-code for this sufficient result. Ignored in on/always and off/never modes. Omitted or false withholds promotion."
+        }
+      },
+      "additionalProperties": false
+    },
+    "move_to": {
+      "type": "object",
+      "required": ["target"],
+      "properties": {
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
         }
       },
       "additionalProperties": false
