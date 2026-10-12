@@ -128,6 +128,19 @@ verdict is downgraded to a comment (applying the `requires-manual-review` label)
 The severity threshold is absolute — it applies to all findings regardless of
 the `actionable` flag, respecting the user's configured threshold throughout.
 
+On a verified re-review with a prior findings ledger, newly reported
+`info`/`low` findings do not block the review or start a fix run. They may
+remain visible in the posted review. Prior high/critical findings always
+remain blocking, regardless of the configured posting threshold. A prior
+medium finding blocks when it was explicitly marked actionable, or when its
+actionable state is absent and the prior review was `request-changes`; an
+explicitly non-actionable medium remains advisory. A legacy projection with
+unknown prior action is held for a human and is not promoted into an
+automatic fix loop. Carried actionable findings at or above the configured
+threshold remain blocking. A prior `reject` verdict is also held for human
+review and is never automatically promoted. This does not change the global
+severity threshold or treat a missing finding as resolved.
+
 ### GitLab host validation
 
 `gitlab-review-ops.lib.sh` validates `GITLAB_HOST` against `CI_SERVER_HOST`,
@@ -143,7 +156,7 @@ The review agent follows the same pre-script / sandbox / post-script pipeline as
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)).
 4. **Post-script** posts the review on the PR. On GitHub, it also resolves still-open review threads whose only comments are outdated inline comments authored by the review agent, so stale comments do not remain in the PR's unresolved-review state.
 
-On re-review, the sandbox receives a validated `fullsend:review-findings-v2` projection containing severity, category, file, optional line, id, and an `{id, status}` disposition per prior id—not prior descriptions, remediation text, rationales, or evidence. A legacy marker without ids is assigned one before sandbox ingress. Resolved and human-dismissed findings stay in the projection with their anchor so they are recognised and not raised again. A null file retains PR-level category context without serving as a path or severity anchor. The pre-script continues to accept v1 markers for existing comments. Only GitHub `app-verified` re-reviews use file-backed records for remediation-candidate matching.
+On re-review, the sandbox receives a validated `fullsend:review-findings-v2` projection containing `action`, severity, category, file, optional line, id, optional `actionable`, and an `{id, status}` disposition per prior id—not prior descriptions, remediation text, rationales, or evidence. A legacy marker without ids is assigned one before sandbox ingress. Resolved and human-dismissed findings stay in the projection with their anchor so they are recognised and not raised again. A null file retains PR-level category context without serving as a path or severity anchor. The pre-script continues to accept v1 markers for existing comments. Only GitHub `app-verified` re-reviews use file-backed records for remediation-candidate matching.
 
 ## Time budget
 

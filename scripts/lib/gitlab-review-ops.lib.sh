@@ -163,6 +163,12 @@ forge_get_recent_redispatch_comments() {
      | length'
 }
 
+# GitLab notes do not expose the same GitHub review-comment URL shape. Keep
+# the caller forge-neutral and let it fall back to the finding context.
+forge_get_finding_comment_links() {
+  echo '{}'
+}
+
 # GitHub-only: GitLab discussions have no isOutdated equivalent in this
 # issue's scope. No-op so post-review can call this unconditionally.
 forge_resolve_outdated_review_threads() {
