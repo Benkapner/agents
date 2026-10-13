@@ -2317,14 +2317,25 @@ fi
 # --- No-op context: a gitleaks finding must suppress public context ---
 cat > "${SEC_CODE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+ignore_allow=false
+allow_marker_file=""
 for arg in "$@"; do
+  if [ "${arg}" = "--ignore-gitleaks-allow" ]; then
+    ignore_allow=true
+  fi
   if [ -f "${arg}" ] && grep -q "secret-context" "${arg}"; then
     exit 1
   fi
   if [ -f "${arg}" ] && grep -q "scan-error-context" "${arg}"; then
     exit 2
   fi
+  if [ -f "${arg}" ] && grep -q "allow-marker-context" "${arg}"; then
+    allow_marker_file="${arg}"
+  fi
 done
+if [ -n "${allow_marker_file}" ] && "${ignore_allow}"; then
+  exit 1
+fi
 exit 0
 MOCKEOF
 chmod +x "${SEC_CODE_MOCK_BIN}/gitleaks"
@@ -2362,6 +2373,42 @@ elif grep -q "secret-context" "${_sec_noop_secret_log}"; then
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: noop-secret-context-is-suppressed"
+fi
+
+# --- No-op context: inline gitleaks allow markers must not bypass the scan ---
+_sec_noop_allow_dir="${SEC_CODE_TMPDIR}/run-noop-allow-marker"
+setup_sec_code_repo "${_sec_noop_allow_dir}" "agent/99-external-target"
+${REAL_GIT} -C "${_sec_noop_allow_dir}/repo" reset --hard HEAD~1
+mkdir -p "${_sec_noop_allow_dir}/output"
+printf '%s\n' '{"target_branch":"main","pr_body":"allow-marker-context gitleaks:allow"}' \
+  > "${_sec_noop_allow_dir}/output/agent-result.json"
+
+_sec_noop_allow_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_noop_allow_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export FULLSEND_VALIDATED_ITERATION_DIR="${_sec_noop_allow_dir}/output"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-noop-allow-marker.log" 2>&1 || _sec_noop_allow_rc=$?
+
+_sec_noop_allow_log="${SEC_CODE_TMPDIR}/stdout-noop-allow-marker.log"
+if [ "${_sec_noop_allow_rc}" -ne 0 ]; then
+  echo "FAIL: noop-allow-marker-context-is-suppressed — expected exit 0, got ${_sec_noop_allow_rc}"
+  cat "${_sec_noop_allow_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "allow-marker-context" "${_sec_noop_allow_log}"; then
+  echo "FAIL: noop-allow-marker-context-is-suppressed — leaked agent context"
+  cat "${_sec_noop_allow_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: noop-allow-marker-context-is-suppressed"
 fi
 
 # --- No-op context: a scanner error must also suppress public context ---

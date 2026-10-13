@@ -2550,7 +2550,7 @@ post_noop_comment() {
     context_file="$(mktemp)"
     printf '%s\n' "${agent_context}" > "${context_file}"
     if ! install_gitleaks \
-      || ! gitleaks detect --source "${context_file}" --no-git --redact >/dev/null 2>&1; then
+      || ! gitleaks detect --source "${context_file}" --no-git --redact --ignore-gitleaks-allow >/dev/null 2>&1; then
       gha_echo warning "Agent context omitted because its secret scan did not pass"
     else
       local sanitized_context
@@ -3015,7 +3015,7 @@ if [ -n "${PR_BODY_FROM_RESULT}" ]; then
   printf '%s\n' "${PR_BODY_FROM_RESULT}" > "${PR_BODY_TMP}"
   GL_STDERR="$(mktemp)"
   GL_RC=0
-  gitleaks detect --source "${PR_BODY_TMP}" --no-git --redact 2>"${GL_STDERR}" || GL_RC=$?
+  gitleaks detect --source "${PR_BODY_TMP}" --no-git --redact --ignore-gitleaks-allow 2>"${GL_STDERR}" || GL_RC=$?
   if [ -s "${GL_STDERR}" ]; then
     sed 's/^/::debug::gitleaks: /' "${GL_STDERR}"
   fi
