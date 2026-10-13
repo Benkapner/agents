@@ -538,6 +538,25 @@ run_test_custom_filename "review-approve-valid" \
   "${REVIEW_SCHEMA}" \
   "true"
 
+# --- review-result.schema.json: repo path segments ---
+# GitLab project paths may nest groups arbitrarily (group/subgroup/project).
+
+for repo_case in "owner/repo" "group/subgroup/project" "a/b/c/d"; do
+  run_test_custom_filename "review-repo-valid-${repo_case//\//_}" \
+    "{\"action\":\"failure\",\"pr_number\":1,\"repo\":\"${repo_case}\",\"reason\":\"time-budget\"}" \
+    "agent-result.json" \
+    "${REVIEW_SCHEMA}" \
+    "true"
+done
+
+for repo_case in "repo" "" "/a/b" "a/b/" "a//b"; do
+  run_test_custom_filename "review-repo-invalid-${repo_case//\//_}" \
+    "{\"action\":\"failure\",\"pr_number\":1,\"repo\":\"${repo_case}\",\"reason\":\"time-budget\"}" \
+    "agent-result.json" \
+    "${REVIEW_SCHEMA}" \
+    "false"
+done
+
 # --- review-result.schema.json: short / non-hex SHA rejected ---
 
 run_test_custom_filename "review-reject-short-sha-rejected" \
