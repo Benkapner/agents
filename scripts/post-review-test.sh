@@ -566,6 +566,48 @@ cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock fullsend: log the call, consume stdin if --result - is used,
 # and copy the result file so tests can inspect the body.
+if [[ "\$*" == *"fetch-review-threads"* ]]; then
+  if [[ -n "\${MOCK_REVIEW_THREADS_FAIL:-}" ]]; then
+    exit 1
+  fi
+  if [[ -n "\${MOCK_REVIEW_THREADS_JSON:-}" ]]; then
+    role="\${MOCK_COLLAB_ROLE:-write}"
+    role_verified=true
+    if [[ -n "\${MOCK_COLLAB_ROLE_FAIL:-}" ]]; then
+      role_verified=false
+    fi
+    jq -c --arg role "\${role}" --argjson role_verified "\${role_verified}" '
+      {
+        threads: [
+          .data.repository.pullRequest.reviewThreads.nodes[]?
+          | {
+              is_resolved: .isResolved,
+              path: .path,
+              line: .line,
+              original_line: .originalLine,
+              resolved_by: .resolvedBy.login,
+              resolved_by_type: "User",
+              resolved_by_role: \$role,
+              resolved_by_role_verified: \$role_verified,
+              comments_truncated: (.comments.pageInfo.hasNextPage // false),
+              comments: [
+                .comments.nodes[]?
+                | {
+                    author: (if .viewerDidAuthor then "fullsend-ai-review" else "human-reply" end),
+                    author_type: "Bot",
+                    body: (.body // "")
+                  }
+              ]
+            }
+        ],
+        truncated: false
+      }
+    ' <<< "\${MOCK_REVIEW_THREADS_JSON}"
+  else
+    echo '{"threads":[],"truncated":false}'
+  fi
+  exit 0
+fi
 PREV=""
 for arg in "\$@"; do
   if [[ "\${PREV}" == "--result" ]]; then
@@ -2498,9 +2540,9 @@ run_disposition_case "projection-does-not-copy-id-closed-this-review" \
 
 # A human dismissal is the runner's to verify: it closes a finding only
 # when a resolved review thread from an eligible reviewer (not the PR
-# author, write or above) matches the finding by stamped id or by file and
-# line. Threads resolved by the author, by a reader, by a bot, or not
-# matching the finding leave the id open. Never for high or critical.
+# author, write or above) contains the exact finding-ID stamp. Threads
+# resolved by the author, by a reader, by a bot, or without the stamp leave
+# the id open. Never for high or critical.
 DISMISSED_REVIEW="$(jq -c '.findings=[] | .dispositions=[{id:"f_human1",status:"dismissed_by_human",rationale:"A reviewer resolved the thread and wants the name kept.",evidence:"reviewer alice resolved the src/foo.go:4 thread: name matches the public API"}]' <<< "${BASE_REVIEW}")"
 DISMISSED_PRIOR='{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}]}'
 DISMISSED_CLOSED='([.findings[] | select(.id == "f_human1" and .file == "src/foo.go")] | length) == 1 and .dispositions == [{id: "f_human1", status: "dismissed_by_human"}]'
@@ -2512,14 +2554,14 @@ thread_json() {
 }
 
 export MOCK_PR_AUTHOR="prauthor"
-MOCK_REVIEW_THREADS_JSON="$(thread_json alice src/foo.go 4 "Naming nit.")"
+MOCK_REVIEW_THREADS_JSON="$(thread_json alice src/foo.go 4 "<!-- finding:f_human1 --> Naming nit.")"
 export MOCK_REVIEW_THREADS_JSON
 run_disposition_case "projection-dismissed-by-human-closes-finding" \
   "${DISMISSED_REVIEW}" "${DISMISSED_PRIOR}" "${DISMISSED_CLOSED}"
 assert_disposition_stdout "projection-dismissed-by-human-closes-finding" \
   "::warning::No resolved review thread" "absent"
 
-# Matched by the finding id stamped in the thread, on another line.
+# The exact finding ID also matches when the thread location moved.
 MOCK_REVIEW_THREADS_JSON="$(thread_json alice src/foo.go 40 "<!-- finding:f_human1 --> Naming nit.")"
 export MOCK_REVIEW_THREADS_JSON
 run_disposition_case "projection-dismissed-by-human-matches-stamped-id" \
@@ -2532,7 +2574,7 @@ run_disposition_case "projection-dismissed-by-human-unverified-stays-open" \
 assert_disposition_stdout "projection-dismissed-by-human-unverified-stays-open" \
   "::warning::No resolved review thread from an eligible reviewer matches dismissed prior finding id(s) f_human1; recorded as open" "present"
 
-# A thread on a different line of the same file is not this finding.
+# A thread on a different line without the exact stamp is not this finding.
 MOCK_REVIEW_THREADS_JSON="$(thread_json alice src/foo.go 9 "Other nit.")"
 export MOCK_REVIEW_THREADS_JSON
 run_disposition_case "projection-dismissed-by-human-other-line-stays-open" \
@@ -2587,8 +2629,7 @@ run_disposition_case "projection-dismissed-stamp-for-other-finding-stays-open" \
   "${TWO_AT_ONE_LINE}" \
   '([.dispositions[] | select(.id == "f_human1")] == [{id: "f_human1", status: "open"}]) and ([.dispositions[] | select(.id == "f_other1")] == [{id: "f_other1", status: "open"}])'
 
-# An unstamped thread at a line shared by two open findings is ambiguous
-# and binds to neither.
+# An unstamped thread does not bind even when its location is unambiguous.
 MOCK_REVIEW_THREADS_JSON="$(thread_json alice src/foo.go 4 "Hmm.")"
 export MOCK_REVIEW_THREADS_JSON
 run_disposition_case "projection-dismissed-ambiguous-anchor-stays-open" \

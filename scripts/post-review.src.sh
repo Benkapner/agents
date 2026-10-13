@@ -942,8 +942,7 @@ fi
 #                         else carries the new classification.
 #   dismissed_by_human  — rationale and evidence given, the prior finding is
 #                         not high or critical, and a verified dismissal
-#                         thread matches it: by stamped id, or an unstamped
-#                         thread at the one open finding's file and line.
+#                         thread contains its exact finding ID stamp.
 #   open                — everything else, including a disposition aimed at
 #                         a closed id (a human dismissal or a recorded fix is
 #                         not the model's to undo).
@@ -970,20 +969,7 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
     and (.evidence | type == "string");
   def supported: (.rationale | nonempty) and (.evidence | nonempty);
   def dismissal_verified($f):
-    # A thread stamped with finding ids binds only to those ids. An
-    # unstamped thread the review agent commented in binds by file and
-    # line, and only when exactly one open prior finding sits there. A
-    # thread with no agent comment is not about any finding.
-    any($dismissals[]?;
-      if ((.ids // []) | length) > 0 then (.ids | index($f.id) != null)
-      else (.agent_authored == true)
-        and (.path | type == "string") and .path == $f.file
-        and ($f.line | type == "number")
-        and (.line == $f.line or .original_line == $f.line)
-        and ([ $prior.findings[]
-               | select(.id as $pid | $prior.open_ids | index($pid) != null)
-               | select(.file == $f.file and .line == $f.line) ] | length) == 1
-      end);
+    any($dismissals[]?.finding_ids[]?; . == $f.id);
   ($prior.open_ids) as $open
   | ([ $prior.closed[].id ]) as $closed
   | ([ (.dispositions // [])[] | select(well_formed_disposition) ]) as $given

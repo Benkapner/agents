@@ -400,134 +400,6 @@ forge_resolve_outdated_review_threads() {
 
 # --- Human dismissals ---
 
-# Print a JSON array of resolved review threads that can stand as a human
-# dismissal of a prior finding: resolved by a user who is not the PR author
-# and holds write, maintain, or admin on the repository. Bots and logins
-# that cannot be checked are never eligible. Each entry carries the thread
-# path and lines, whether the review agent itself commented in it, and any
-# finding ids stamped in the agent's comments (`finding:f_…` markers), so
-# the caller can match a thread to a ledger entry. Prints [] when nothing qualifies or any lookup fails: a dismissal
-# the runner cannot verify stays open.
-forge_get_human_dismissals() {
-  local owner name query cursor has_next page response page_nodes nodes_json
-  local pr_author login role candidates eligible
-  local -a gh_args
-
-  owner="${REPO%%/*}"
-  name="${REPO##*/}"
-  cursor=""
-  has_next="true"
-  page=0
-  nodes_json="[]"
-
-  # The author exclusion is only as good as the author lookup: without a
-  # known author nothing can be verified.
-  pr_author="$(forge_get_pr_author)"
-  if [[ -z "${pr_author}" ]]; then
-    echo "::warning::Could not determine the PR author — human dismissals cannot be verified" >&2
-    echo '[]'
-    return 0
-  fi
-
-  query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $number) {
-        reviewThreads(first: 100, after: $cursor) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            isResolved
-            path
-            line
-            originalLine
-            resolvedBy { login }
-            comments(first: 100) {
-              pageInfo { hasNextPage }
-              nodes { body viewerDidAuthor }
-            }
-          }
-        }
-      }
-    }
-  }'
-
-  while [[ "${has_next}" == "true" ]]; do
-    page=$((page + 1))
-    if [[ "${page}" -gt 20 ]]; then
-      echo "::warning::Review thread pagination hit page cap — remaining threads not checked for dismissals" >&2
-      break
-    fi
-
-    gh_args=(api graphql
-      -f owner="${owner}"
-      -f name="${name}"
-      -F number="${PR_NUMBER}"
-      -f query="${query}")
-    if [[ -n "${cursor}" ]]; then
-      gh_args+=(-f cursor="${cursor}")
-    fi
-
-    if ! response=$(GH_TOKEN="${REVIEW_TOKEN}" gh "${gh_args[@]}" 2>/dev/null); then
-      echo "::warning::Failed to fetch review threads — human dismissals cannot be verified" >&2
-      echo '[]'
-      return 0
-    fi
-    if echo "${response}" | jq -e '.errors | type == "array" and length > 0' >/dev/null 2>&1; then
-      echo "::warning::Review thread query returned errors — human dismissals cannot be verified" >&2
-      echo '[]'
-      return 0
-    fi
-    page_nodes=$(echo "${response}" | jq -c '.data.repository.pullRequest.reviewThreads.nodes // []' 2>/dev/null) || {
-      echo '[]'
-      return 0
-    }
-    nodes_json=$(jq -c --argjson page "${page_nodes}" '. + $page' <<< "${nodes_json}" 2>/dev/null) || {
-      echo '[]'
-      return 0
-    }
-    has_next=$(echo "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' 2>/dev/null) || has_next="false"
-    cursor=$(echo "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' 2>/dev/null) || cursor=""
-    if [[ "${has_next}" == "true" && -z "${cursor}" ]]; then
-      break
-    fi
-  done
-
-  # Resolved threads with a known resolver and complete comment pages. A
-  # finding id stamp counts only in a comment this token authored (the
-  # review agent's own), never in a reply anyone else wrote.
-  candidates=$(jq -c '
-    [ .[]
-      | select(type == "object")
-      | select(.isResolved == true)
-      | select((.resolvedBy.login // "") != "")
-      | select((.comments.pageInfo.hasNextPage // false) == false)
-      | {
-          path: .path,
-          line: .line,
-          original_line: .originalLine,
-          resolved_by: .resolvedBy.login,
-          agent_authored: ([ (.comments.nodes // [])[] | select(.viewerDidAuthor == true) ] | length > 0),
-          ids: ([ (.comments.nodes // [])[] | select(.viewerDidAuthor == true) | .body // "" | scan("finding:(f_[A-Za-z0-9]+)") | .[0] ] | unique)
-        }
-    ]' <<< "${nodes_json}" 2>/dev/null) || candidates="[]"
-
-  # Eligibility: not the PR author, a plain user login, and write or above
-  # on the repository. One permission lookup per distinct resolver.
-  eligible="[]"
-  while IFS= read -r login; do
-    [[ -z "${login}" ]] && continue
-    [[ "${login,,}" == "${pr_author,,}" ]] && continue
-    [[ "${login}" =~ ^[A-Za-z0-9-]+$ ]] || continue
-    role=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/collaborators/${login}/permission" \
-      --jq '.role_name' 2>/dev/null) || role=""
-    case "${role}" in
-      admin|maintain|write) eligible=$(jq -c --arg l "${login}" '. + [$l]' <<< "${eligible}") ;;
-      *) ;;
-    esac
-  done < <(jq -r '[.[].resolved_by] | unique | .[]' <<< "${candidates}" 2>/dev/null)
-
-  jq -c --argjson eligible "${eligible}" '[ .[] | select(.resolved_by as $l | $eligible | index($l) != null) ]' <<< "${candidates}" 2>/dev/null || echo '[]'
-}
-
 # --- Labels ---
 
 forge_add_label() {
@@ -786,13 +658,6 @@ forge_resolve_outdated_review_threads() {
 
 # --- Labels ---
 
-# Human dismissals need a resolved thread from a reviewer the runner can
-# vouch for. That check is not implemented for GitLab discussions, so no
-# dismissal is verified here and a dismissed_by_human disposition stays open.
-forge_get_human_dismissals() {
-  echo '[]'
-}
-
 forge_add_label() {
   local label="$1"
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
@@ -846,6 +711,110 @@ forge_list_repo_labels() {
     exit 1
     ;;
 esac
+
+# Fetch resolved review threads once per stage and return rich, verified
+# records for both pre-review ledger updates and post-review result checks.
+# Comment bodies never leave the host: only authors and exact finding-ID
+# stamps are retained in the returned records.
+forge_get_human_dismissals() {
+  local pr_author response trusted_reviewers
+  local -a fetch_args
+
+  pr_author="$(forge_get_pr_author)"
+  if [[ -z "${pr_author}" ]]; then
+    echo "::warning::Could not determine the PR author — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  case "${FULLSEND_FORGE}" in
+    github)
+      local org app_set
+      org="${REPO%%/*}"
+      app_set="${FULLSEND_APP_SET:-}"
+      trusted_reviewers="$(jq -nc \
+        --arg org "${org}" \
+        --arg app_set "${app_set}" '
+          [
+            ($org + "-review"), ($org + "-review[bot]"),
+            "fullsend-ai-review", "fullsend-ai-review[bot]",
+            (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+          ] | unique
+        ')"
+      ;;
+    gitlab)
+      local review_actor
+      review_actor="$(_gitlab_api GET "/user" 2>/dev/null | jq -r '.username // empty' 2>/dev/null)" || review_actor=""
+      if [[ -z "${review_actor}" ]]; then
+        echo "::warning::Could not determine the GitLab review bot — human dismissals cannot be verified" >&2
+        echo '[]'
+        return 0
+      fi
+      trusted_reviewers="$(jq -nc --arg actor "${review_actor}" '[$actor]')"
+      ;;
+  esac
+
+  fetch_args=(fetch-review-threads --forge "${FULLSEND_FORGE}" --repo "${REPO}" --pr "${PR_NUMBER}")
+  if [[ "${FULLSEND_FORGE}" == "gitlab" && -n "${CI_SERVER_URL:-}" ]]; then
+    fetch_args+=(--base-url "${CI_SERVER_URL}")
+  fi
+  if ! response="$(GH_TOKEN="${REVIEW_TOKEN:-${GH_TOKEN:-}}" \
+    GITLAB_TOKEN="${REVIEW_TOKEN:-${GITLAB_TOKEN:-}}" \
+    fullsend "${fetch_args[@]}" 2>/dev/null)"; then
+    echo "::warning::Failed to fetch review threads — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  if ! jq -e 'type == "object" and (.threads | type == "array") and (.truncated == false)' \
+    <<< "${response}" >/dev/null 2>&1; then
+    echo "::warning::Review thread fetch was invalid or truncated — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  jq -c --arg author "${pr_author}" --arg forge "${FULLSEND_FORGE}" --argjson trusted "${trusted_reviewers}" '
+    [ .threads[]
+      | select(type == "object")
+      | select(.is_resolved == true)
+      | select(.resolved_by_type == "User")
+      | select(.resolved_by_role_verified == true)
+      | select(.resolved_by_role | IN("write", "maintain", "admin"))
+      | select((.resolved_by | ascii_downcase) != ($author | ascii_downcase))
+      | select(.comments_truncated == false)
+      | . as $thread
+      | [ $thread.comments[]?
+          | {
+              author: (.author // ""),
+              author_type: (.author_type // ""),
+              finding_ids: [(.body // "" | scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->") | .[0])] | unique
+            }
+        ] as $comments
+      | [ $comments[]
+          | select(
+              if $forge == "github" then
+                (.author_type == "Bot") and
+                (.author as $login | ($trusted | map(ascii_downcase) | index($login | ascii_downcase)) != null)
+              else
+                (.author as $login | ($trusted | map(ascii_downcase) | index($login | ascii_downcase)) != null)
+              end
+            )
+        ] as $trusted_comments
+      | select(($trusted_comments | length) > 0)
+      | {
+          path: $thread.path,
+          line: $thread.line,
+          original_line: $thread.original_line,
+          resolved_by: $thread.resolved_by,
+          resolved_by_type: $thread.resolved_by_type,
+          resolved_by_role: $thread.resolved_by_role,
+          resolved_by_role_verified: $thread.resolved_by_role_verified,
+          comment_authors: ($comments | map({author, author_type})),
+          finding_ids: ([$trusted_comments[].finding_ids[]] | unique)
+        }
+    ]
+  ' <<< "${response}" 2>/dev/null || echo '[]'
+}
 # END bundled: lib/review-ops.lib.sh
 
 forge_validate_pr_url
@@ -1752,8 +1721,7 @@ fi
 #                         else carries the new classification.
 #   dismissed_by_human  — rationale and evidence given, the prior finding is
 #                         not high or critical, and a verified dismissal
-#                         thread matches it: by stamped id, or an unstamped
-#                         thread at the one open finding's file and line.
+#                         thread contains its exact finding ID stamp.
 #   open                — everything else, including a disposition aimed at
 #                         a closed id (a human dismissal or a recorded fix is
 #                         not the model's to undo).
@@ -1780,20 +1748,7 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
     and (.evidence | type == "string");
   def supported: (.rationale | nonempty) and (.evidence | nonempty);
   def dismissal_verified($f):
-    # A thread stamped with finding ids binds only to those ids. An
-    # unstamped thread the review agent commented in binds by file and
-    # line, and only when exactly one open prior finding sits there. A
-    # thread with no agent comment is not about any finding.
-    any($dismissals[]?;
-      if ((.ids // []) | length) > 0 then (.ids | index($f.id) != null)
-      else (.agent_authored == true)
-        and (.path | type == "string") and .path == $f.file
-        and ($f.line | type == "number")
-        and (.line == $f.line or .original_line == $f.line)
-        and ([ $prior.findings[]
-               | select(.id as $pid | $prior.open_ids | index($pid) != null)
-               | select(.file == $f.file and .line == $f.line) ] | length) == 1
-      end);
+    any($dismissals[]?.finding_ids[]?; . == $f.id);
   ($prior.open_ids) as $open
   | ([ $prior.closed[].id ]) as $closed
   | ([ (.dispositions // [])[] | select(well_formed_disposition) ]) as $given
