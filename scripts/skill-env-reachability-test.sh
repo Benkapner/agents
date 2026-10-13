@@ -26,18 +26,21 @@ FAILURES=0
 
 # ---------------------------------------------------------------------------
 # Sandbox runtime vars — injected into the sandbox on every runtime by
-# bootstrap or providers, not declared in env.sandbox. Runtime-specific
-# vars (config dirs) and host-side-only vars must not be listed here;
-# track per-skill gaps in KNOWN_GAPS instead.
+# the bootstrap (PATH), the fullsend runtime (FULLSEND_*), or the
+# gcp-vertex.env host file mounted by every harness
+# (GOOGLE_APPLICATION_CREDENTIALS) — not declared in env.sandbox.
+# Provider credentials (GH_TOKEN, GITLAB_TOKEN, JIRA_TOKEN) are NOT
+# universal: each exists only in harnesses that list the matching
+# provider, so they are validated per harness (see
+# extract_provider_tokens). Runtime-specific vars (config dirs) and
+# host-side-only vars must not be listed here; track per-skill gaps in
+# KNOWN_GAPS instead.
 # ---------------------------------------------------------------------------
 SANDBOX_RUNTIME_VARS=(
   FULLSEND_OUTPUT_DIR
   FULLSEND_OUTPUT_SCHEMA
   FULLSEND_ROLE
-  GH_TOKEN
-  GITLAB_TOKEN
   GOOGLE_APPLICATION_CREDENTIALS
-  JIRA_TOKEN
   PATH
 )
 
@@ -72,6 +75,9 @@ NON_ENV_TOKENS=(
   AUTHOR_IS_BOT AUTHOR_IS_FIRST_TIME
   # GitHub Actions env var name referenced in prose
   ACTIONS_ALLOW_UNSECURE_COMMANDS
+  # Retry-limit env var referenced in prose only; harnesses whose skills
+  # consume it (code, fix) deliver it via env.sandbox
+  MAX_RETRIES
   # Review keyword (as in "REQUEST CHANGES")
   REQUEST
 )
@@ -120,9 +126,6 @@ declare -A KNOWN_GAPS=(
   ["github-forge:ISSUE_URL"]="#1664 — forge skill documents triage-context var; not supplied by fix/retro/review harnesses"
   ["gitlab-forge:ISSUE_URL"]="#1664 — forge skill documents triage-context var; not supplied by fix/retro/review harnesses"
   ["issue-labels/gitlab:ISSUE_URL"]="#1664 — label skill references ISSUE_URL for triage; review harness does not supply it"
-  # retro-analysis references MAX_RETRIES but retro.yaml does not declare it
-  # in env.sandbox; the skill reads it with a fallback default.
-  ["retro-analysis:MAX_RETRIES"]="#1664 — retro-analysis reads MAX_RETRIES with fallback default; not in retro.yaml env.sandbox"
   # Forge skills derive ISSUE_NUMBER locally from ISSUE_URL via basename;
   # only code.yaml passes it through env.sandbox directly.
   ["github-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
@@ -140,9 +143,6 @@ declare -A KNOWN_GAPS=(
   ["gitlab-forge:MR_IID"]="#1665 review — referenced without assignment or harness delivery"
   ["fix-review/github:RUN_ID"]="#1665 review — referenced without assignment or harness delivery"
   ["fix-review/gitlab:JOB_ID"]="#1665 review — referenced without assignment or harness delivery"
-  ["finding-agent-runs/github:DISPATCH_REPO"]="#1665 review — referenced without assignment or harness delivery"
-  ["finding-agent-runs/gitlab:DISPATCH_REPO"]="#1665 review — referenced without assignment or harness delivery"
-  ["retro-analysis/github:DISPATCH_REPO"]="#1665 review — gh run commands read it unbraced; not in any delivering harness env.sandbox"
 )
 
 # ---------------------------------------------------------------------------
@@ -225,6 +225,33 @@ extract_skill_paths() {
   echo "$output" | sort -u
 }
 
+# extract_provider_tokens HARNESS_FILE — print the union of credential
+# tokens delivered by the harness's providers across top-level, forge
+# blocks, and overlays. File-based providers (providers/*.yaml)
+# contribute their credentials keys; built-in github* providers map to
+# GH_TOKEN. These tokens are reachable only in harnesses that list the
+# matching provider, so they are exempted per harness, never globally.
+extract_provider_tokens() {
+  local harness_file="$1"
+  yq -r '[
+    (.providers // []),
+    (.forge[]? | .providers // []),
+    (.overlays[]? | .providers // [])
+  ] | flatten | unique | .[]' "${harness_file}" 2>/dev/null \
+    | while IFS= read -r provider; do
+        [[ -z "$provider" ]] && continue
+        if [[ "$provider" == *.yaml || "$provider" == */* ]]; then
+          # File-based provider: print its credentials keys. A missing
+          # provider file yields nothing — the token then fails closed.
+          # 2>/dev/null: suppresses yq's file-not-found noise.
+          yq -r '.credentials // {} | keys | .[]' \
+            "${REPO_ROOT}/${provider}" 2>/dev/null || true
+        elif [[ "$provider" == github* ]]; then
+          echo "GH_TOKEN"
+        fi
+      done | sort -u
+}
+
 # extract_env_var_refs SKILL_FILE — print all env var references
 # extracted from a SKILL.md file using two patterns:
 #   1. Backtick-delimited uppercase identifiers (inline + code blocks)
@@ -289,6 +316,9 @@ for harness in "${HARNESS_FILES[@]}"; do
 
   [[ -z "$skill_paths" ]] && continue
 
+  # 2b. Extract provider-delivered credential tokens for this harness
+  provider_tokens="$(extract_provider_tokens "$harness")"
+
   # 3. For each skill path, resolve and validate
   while IFS= read -r skill_path; do
     [[ -z "$skill_path" ]] && continue
@@ -324,22 +354,37 @@ for harness in "${HARNESS_FILES[@]}"; do
       # file (^\s*VAR=); an unassigned reference is only a gap when it
       # is consumed — a ${VAR} template expansion or an unbraced $VAR
       # read. Backtick and code-block mentions (placeholders, prose,
-      # field names) remain exempt. The unbraced pattern requires a
-      # non-identifier character (or end of line) after the var name,
-      # so $DISPATCH matches DISPATCH but not DISPATCH_REPO, and
-      # ${VAR} expansions (brace between $ and name) never match it.
+      # field names) remain exempt. A <skill>/<forge> child may also
+      # rely on an assignment in its parent skill file when the same
+      # harness delivers the parent (e.g. retro-analysis/github reads
+      # DISPATCH_REPO that retro-analysis assigns). The unbraced pattern
+      # requires a non-identifier character (or end of line) after the
+      # var name, so $DISPATCH matches DISPATCH but not DISPATCH_REPO,
+      # and ${VAR} expansions (brace between $ and name) never match it.
       # 2>/dev/null: file existence is pre-checked; suppresses only
       # benign encoding warnings from grep on binary-like content.
       if is_skill_local_var "$var"; then
+        parent_path="$(dirname "${skill_path}")"
+        parent_file="${REPO_ROOT}/${parent_path}/SKILL.md"
         if grep -qE "^[[:space:]]*${var}=" "${skill_file}" 2>/dev/null \
           || { ! grep -qF "\${${var}}" "${skill_file}" 2>/dev/null \
-          && ! grep -qE '\$'"${var}"'([^[:alnum:]_]|$)' "${skill_file}" 2>/dev/null; }; then
+          && ! grep -qE '\$'"${var}"'([^[:alnum:]_]|$)' "${skill_file}" 2>/dev/null; } \
+          || { [[ "${parent_path}" == skills/* ]] \
+          && grep -qxF "${parent_path}" <<< "$skill_paths" \
+          && grep -qE "^[[:space:]]*${var}=" "${parent_file}" 2>/dev/null; }; then
           continue
         fi
       fi
 
       # Skip sandbox runtime vars
       if is_sandbox_runtime_var "$var"; then
+        continue
+      fi
+
+      # Skip provider-delivered tokens for this harness (GH_TOKEN,
+      # GITLAB_TOKEN, JIRA_TOKEN are only reachable when the harness
+      # lists the matching provider)
+      if echo "$provider_tokens" | grep -qxF "$var"; then
         continue
       fi
 
