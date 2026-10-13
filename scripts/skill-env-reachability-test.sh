@@ -25,19 +25,18 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FAILURES=0
 
 # ---------------------------------------------------------------------------
-# Sandbox runtime vars — injected by sandbox bootstrap or providers,
-# not declared in env.sandbox
+# Sandbox runtime vars — injected into the sandbox on every runtime by
+# bootstrap or providers, not declared in env.sandbox. Runtime-specific
+# vars (config dirs) and host-side-only vars must not be listed here;
+# track per-skill gaps in KNOWN_GAPS instead.
 # ---------------------------------------------------------------------------
 SANDBOX_RUNTIME_VARS=(
-  CLAUDE_CONFIG_DIR
   FULLSEND_OUTPUT_DIR
   FULLSEND_OUTPUT_SCHEMA
   FULLSEND_ROLE
   GH_TOKEN
-  GIT_BOT_EMAIL
   GITLAB_TOKEN
   GOOGLE_APPLICATION_CREDENTIALS
-  GCP_OIDC_TOKEN_FILE
   JIRA_TOKEN
   PATH
 )
@@ -119,6 +118,10 @@ declare -A KNOWN_GAPS=(
   ["github-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
   ["gitlab-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
   ["issue-labels/gitlab:ISSUE_NUMBER"]="#1664 — label skill derives ISSUE_NUMBER locally from ISSUE_URL; review/triage harnesses do not supply it"
+  # pr-risk-assessment scripts hard-reference the runtime-specific config
+  # dir (CLAUDE_CONFIG_DIR on claude; CODEX_HOME/PI_CODING_AGENT_DIR on
+  # codex/pi). No runtime-neutral skill path exists yet.
+  ["pr-risk-assessment:CLAUDE_CONFIG_DIR"]="#1672 — runtime-specific config dir; needs runtime-neutral skill path"
 )
 
 # ---------------------------------------------------------------------------
