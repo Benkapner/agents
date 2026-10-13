@@ -455,7 +455,7 @@ Before planning, determine what kind of work this issue requires:
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
   ```
-- **Repository boundary** — for an external target, see `agents/code.md`;
+- **Repository boundary** — external targets use `agents/code.md`'s procedure;
   validate output and stop.
 
 ### 7. Verify the problem exists
