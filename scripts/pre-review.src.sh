@@ -171,9 +171,9 @@ validate_prior_review_projection() {
 }
 
 # Fetch resolved review threads for the final pre-sandbox authorization step
-# and reduce them to exact finding ids eligible for human dismissal. Raw
-# comment text is used only on the host to extract finding-id stamps and is
-# never persisted or copied into the sandbox.
+# as rich, verified records eligible for human dismissal. Raw comment text is
+# used only on the host to extract finding-id stamps and is never persisted
+# or copied into the sandbox.
 # Close eligible prior findings before the model sees the ledger. Only exact
 # stamped ids are authoritative. High and critical findings remain open.
 apply_human_dismissals() {
