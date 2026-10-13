@@ -43,8 +43,8 @@ SANDBOX_RUNTIME_VARS=(
 
 # ---------------------------------------------------------------------------
 # Non-env tokens — uppercase tokens that appear in backtick text or
-# code blocks but are NOT env vars (field names, keywords, local
-# variables, file names, etc.)
+# code blocks but are NOT env vars (field names, keywords, file
+# names, etc.)
 # ---------------------------------------------------------------------------
 NON_ENV_TOKENS=(
   # Status / severity / verdict tokens
@@ -68,7 +68,22 @@ NON_ENV_TOKENS=(
   SIM401 UP038
   # Bash special variables
   IFS OLDMASK
-  # Local variables set within SKILL.md code examples
+  # Field names / parameter names in risk assessment
+  AUTHOR_IS_BOT AUTHOR_IS_FIRST_TIME
+  # GitHub Actions env var name referenced in prose
+  ACTIONS_ALLOW_UNSECURE_COMMANDS
+  # Review keyword (as in "REQUEST CHANGES")
+  REQUEST
+)
+
+# ---------------------------------------------------------------------------
+# Skill-local variables — assigned within SKILL.md code examples. A var
+# in this list is exempted when the referencing skill file assigns it
+# (^\s*VAR=); an unassigned ${VAR} expansion (actual consumption) must
+# be reachable from env.sandbox or tracked in KNOWN_GAPS. Backtick and
+# code-block mentions (placeholders, prose, field names) stay exempt.
+# ---------------------------------------------------------------------------
+SKILL_LOCAL_VARS=(
   AGENT_START BASE_BRANCH BLAST_RADIUS BRANCH_NAME
   CHANGED_FILES CHANGED_FILES_FILE
   CI_WORKFLOW_CHANGED CODE_ALLOWED_TARGET_BRANCHES
@@ -91,12 +106,6 @@ NON_ENV_TOKENS=(
   REMAINING REPO REPO_ENCODED REVIEW_BODY_FILE REVIEW_COMMENT
   REVIEW_SUB_AGENT_TRUE RUN_FALLBACK RUN_ID
   SECURITY_SENSITIVE_COUNT TARGET_ENCODED TEST_FILE_RATIO
-  # Field names / parameter names in risk assessment
-  AUTHOR_IS_BOT AUTHOR_IS_FIRST_TIME
-  # GitHub Actions env var name referenced in prose
-  ACTIONS_ALLOW_UNSECURE_COMMANDS
-  # Review keyword (as in "REQUEST CHANGES")
-  REQUEST
 )
 
 # ---------------------------------------------------------------------------
@@ -122,6 +131,16 @@ declare -A KNOWN_GAPS=(
   # dir (CLAUDE_CONFIG_DIR on claude; CODEX_HOME/PI_CODING_AGENT_DIR on
   # codex/pi). No runtime-neutral skill path exists yet.
   ["pr-risk-assessment:CLAUDE_CONFIG_DIR"]="#1672 — runtime-specific config dir; needs runtime-neutral skill path"
+  # Skills below reference these vars as ${VAR} expansions without
+  # assigning them, and no delivering harness declares them in
+  # env.sandbox.
+  ["fix-review:BASE_BRANCH"]="#1665 review — git log escalation references BASE_BRANCH; fix.yaml pre-script uses FORGE_PR_BASE_BRANCH, which doesn't reach env.sandbox under that name"
+  ["code-implementation:BRANCH_NAME"]="#1665 review — referenced without assignment or harness delivery"
+  ["gitlab-forge:MR_IID"]="#1665 review — referenced without assignment or harness delivery"
+  ["fix-review/github:RUN_ID"]="#1665 review — referenced without assignment or harness delivery"
+  ["fix-review/gitlab:JOB_ID"]="#1665 review — referenced without assignment or harness delivery"
+  ["finding-agent-runs/github:DISPATCH_REPO"]="#1665 review — referenced without assignment or harness delivery"
+  ["finding-agent-runs/gitlab:DISPATCH_REPO"]="#1665 review — referenced without assignment or harness delivery"
 )
 
 # ---------------------------------------------------------------------------
@@ -152,6 +171,15 @@ is_non_env_token() {
   local token="$1"
   for t in "${NON_ENV_TOKENS[@]}"; do
     [[ "$token" == "$t" ]] && return 0
+  done
+  return 1
+}
+
+# is_skill_local_var VAR — return 0 if VAR is a skill-local variable
+is_skill_local_var() {
+  local var="$1"
+  for t in "${SKILL_LOCAL_VARS[@]}"; do
+    [[ "$var" == "$t" ]] && return 0
   done
   return 1
 }
@@ -288,6 +316,20 @@ for harness in "${HARNESS_FILES[@]}"; do
       # Skip non-env tokens
       if is_non_env_token "$var"; then
         continue
+      fi
+
+      # Skip skill-local variables. Exempt when assigned in this skill
+      # file (^\s*VAR=); an unassigned reference is only a gap when it
+      # is a ${VAR} template expansion (actual consumption) — backtick
+      # and code-block mentions (placeholders, prose, field names)
+      # remain exempt.
+      # 2>/dev/null: file existence is pre-checked; suppresses only
+      # benign encoding warnings from grep on binary-like content.
+      if is_skill_local_var "$var"; then
+        if grep -qE "^[[:space:]]*${var}=" "${skill_file}" 2>/dev/null \
+          || ! grep -qF "\${${var}}" "${skill_file}" 2>/dev/null; then
+          continue
+        fi
       fi
 
       # Skip sandbox runtime vars
