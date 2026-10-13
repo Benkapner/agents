@@ -61,7 +61,15 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue, and skips tracking issues that have sub-issues (GitHub sub-issues or GitLab work-item children). `/fs-code --force` bypasses both checks.
 2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
-3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author). When the agent makes no commit, it instead posts a best-effort no-PR comment; same-forge runs may include safe agent context.
+3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
+
+When the fix belongs in another repository, the agent reports the upstream
+repository, file, and required change without making a commit or restructuring
+this repository. The existing no-PR path posts sanitized `pr_body` as "Agent
+context" on GitHub/GitLab source issues, best-effort. External-tracker runs
+(such as Jira) emit only a generic notice; the upstream explanation remains
+in the agent's final message in the run transcript. Issues requesting a change
+to the reference or pinned SHA itself still receive a normal PR.
 
 This separation ensures the agent never has direct write access to the repository.
 

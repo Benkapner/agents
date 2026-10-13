@@ -71,13 +71,9 @@ PR here can deliver it. When you find this:
    repository is not the target unless the reference resolves to it.
 2. Add `pr_body` to the structured output naming the external repository,
    the file, and the exact change needed. Leave the working tree clean and
-   make no commit. Do not include credentials, tokens, or secret-bearing URLs
-   in `pr_body` or the final message. For a same-forge issue, the post-script posts `pr_body`
-   on the issue as "Agent context". For an external-tracker run (for
-   example a Jira work item), the post-script does not read `pr_body` — it
-   emits only a generic "no PR created" notice — so also state the external
-   repository, file, and change in your final message, where the run
-   transcript preserves it.
+   make no commit. Also state the upstream fix in your final message so it
+   remains available in the run transcript. Do not include credentials,
+   tokens, or secret-bearing URLs in either output.
 3. Validate the structured output and stop.
 
 Report the upstream change instead of copying the external file into this
@@ -116,9 +112,9 @@ point at a different repository — that change lives here; implement it.
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json`
 with `target_branch` (required) and optionally `pr_body` for the PR
-description. When you make no commit (see "Repository boundary"), the
-post-script posts `pr_body` on the issue as "Agent context" instead of using
-it as a PR description. The `code-implementation` skill describes the schema and
+description, or an upstream-fix explanation when you make no commit (see
+"Repository boundary"). Delivery of no-commit context is described in
+`docs/code.md`. The `code-implementation` skill describes the schema and
 the exact steps where you write each field. The post-script reads this
 file to determine the PR target branch and description. Without this
 file, the validation loop rejects the run and retries.

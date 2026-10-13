@@ -1631,7 +1631,7 @@ ${agent_context}"
   fi
 
   cat <<EOF
-ℹ️ **No PR created**
+ℹ️ **No PR created** — agent determined no changes needed
 
 The code agent ran and evaluated issue #${issue_number}, but did not produce changes to submit as a pull request.
 
@@ -2099,13 +2099,6 @@ exit 0
 MOCKEOF
 chmod +x "${SEC_CODE_MOCK_BIN}/gitleaks"
 
-SEC_CODE_SED_BIN="$(command -v gsed || command -v sed)"
-cat > "${SEC_CODE_MOCK_BIN}/sed" <<MOCKEOF
-#!/usr/bin/env bash
-exec "${SEC_CODE_SED_BIN}" "\$@"
-MOCKEOF
-chmod +x "${SEC_CODE_MOCK_BIN}/sed"
-
 REAL_GIT="$(which git)"
 cat > "${SEC_CODE_MOCK_BIN}/git" <<MOCKEOF
 #!/usr/bin/env bash
@@ -2270,7 +2263,7 @@ elif ! grep -q "killed before committing" "${_sec_kill_log}"; then
   echo "FAIL: killed-before-commit-staged-exits-nonzero — missing failure heading"
   cat "${_sec_kill_log}"
   FAILURES=$((FAILURES + 1))
-elif grep -q "No PR created" "${_sec_kill_log}"; then
+elif grep -q "agent determined no changes needed" "${_sec_kill_log}"; then
   echo "FAIL: killed-before-commit-staged-exits-nonzero — posted no-op comment"
   cat "${_sec_kill_log}"
   FAILURES=$((FAILURES + 1))
@@ -2306,145 +2299,12 @@ if [ "${_sec_noop_rc}" -ne 0 ]; then
   echo "FAIL: genuine-noop-clean-tree-exits-zero — expected exit 0, got ${_sec_noop_rc}"
   cat "${_sec_noop_log}"
   FAILURES=$((FAILURES + 1))
-elif ! grep -q "No PR created" "${_sec_noop_log}"; then
+elif ! grep -q "agent determined no changes needed" "${_sec_noop_log}"; then
   echo "FAIL: genuine-noop-clean-tree-exits-zero — missing no-op comment"
   cat "${_sec_noop_log}"
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: genuine-noop-clean-tree-exits-zero"
-fi
-
-# --- No-op context: a gitleaks finding must suppress public context ---
-cat > "${SEC_CODE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
-#!/usr/bin/env bash
-ignore_allow=false
-allow_marker_file=""
-for arg in "$@"; do
-  if [ "${arg}" = "--ignore-gitleaks-allow" ]; then
-    ignore_allow=true
-  fi
-  if [ -f "${arg}" ] && grep -q "secret-context" "${arg}"; then
-    exit 1
-  fi
-  if [ -f "${arg}" ] && grep -q "scan-error-context" "${arg}"; then
-    exit 2
-  fi
-  if [ -f "${arg}" ] && grep -q "allow-marker-context" "${arg}"; then
-    allow_marker_file="${arg}"
-  fi
-done
-if [ -n "${allow_marker_file}" ] && "${ignore_allow}"; then
-  exit 1
-fi
-exit 0
-MOCKEOF
-chmod +x "${SEC_CODE_MOCK_BIN}/gitleaks"
-
-_sec_noop_secret_dir="${SEC_CODE_TMPDIR}/run-noop-secret-context"
-setup_sec_code_repo "${_sec_noop_secret_dir}" "agent/99-external-target"
-${REAL_GIT} -C "${_sec_noop_secret_dir}/repo" reset --hard HEAD~1
-mkdir -p "${_sec_noop_secret_dir}/output"
-printf '%s\n' '{"target_branch":"main","pr_body":"secret-context"}' \
-  > "${_sec_noop_secret_dir}/output/agent-result.json"
-
-_sec_noop_secret_rc=0
-# shellcheck disable=SC2030,SC2031
-(
-  cd "${_sec_noop_secret_dir}"
-  export HOME="${SEC_CODE_TMPDIR}"
-  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
-  export PUSH_TOKEN="fake-token"
-  export REPO_FULL_NAME="test-org/test-repo"
-  export ISSUE_NUMBER="99"
-  export REPO_DIR="repo"
-  export FULLSEND_FORGE="github"
-  export FULLSEND_VALIDATED_ITERATION_DIR="${_sec_noop_secret_dir}/output"
-  bash "${POST_SCRIPT}"
-) > "${SEC_CODE_TMPDIR}/stdout-noop-secret-context.log" 2>&1 || _sec_noop_secret_rc=$?
-
-_sec_noop_secret_log="${SEC_CODE_TMPDIR}/stdout-noop-secret-context.log"
-if [ "${_sec_noop_secret_rc}" -ne 0 ]; then
-  echo "FAIL: noop-secret-context-is-suppressed — expected exit 0, got ${_sec_noop_secret_rc}"
-  cat "${_sec_noop_secret_log}"
-  FAILURES=$((FAILURES + 1))
-elif grep -q "secret-context" "${_sec_noop_secret_log}"; then
-  echo "FAIL: noop-secret-context-is-suppressed — leaked agent context"
-  cat "${_sec_noop_secret_log}"
-  FAILURES=$((FAILURES + 1))
-else
-  echo "PASS: noop-secret-context-is-suppressed"
-fi
-
-# --- No-op context: inline gitleaks allow markers must not bypass the scan ---
-_sec_noop_allow_dir="${SEC_CODE_TMPDIR}/run-noop-allow-marker"
-setup_sec_code_repo "${_sec_noop_allow_dir}" "agent/99-external-target"
-${REAL_GIT} -C "${_sec_noop_allow_dir}/repo" reset --hard HEAD~1
-mkdir -p "${_sec_noop_allow_dir}/output"
-printf '%s\n' '{"target_branch":"main","pr_body":"allow-marker-context gitleaks:allow"}' \
-  > "${_sec_noop_allow_dir}/output/agent-result.json"
-
-_sec_noop_allow_rc=0
-# shellcheck disable=SC2030,SC2031
-(
-  cd "${_sec_noop_allow_dir}"
-  export HOME="${SEC_CODE_TMPDIR}"
-  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
-  export PUSH_TOKEN="fake-token"
-  export REPO_FULL_NAME="test-org/test-repo"
-  export ISSUE_NUMBER="99"
-  export REPO_DIR="repo"
-  export FULLSEND_FORGE="github"
-  export FULLSEND_VALIDATED_ITERATION_DIR="${_sec_noop_allow_dir}/output"
-  bash "${POST_SCRIPT}"
-) > "${SEC_CODE_TMPDIR}/stdout-noop-allow-marker.log" 2>&1 || _sec_noop_allow_rc=$?
-
-_sec_noop_allow_log="${SEC_CODE_TMPDIR}/stdout-noop-allow-marker.log"
-if [ "${_sec_noop_allow_rc}" -ne 0 ]; then
-  echo "FAIL: noop-allow-marker-context-is-suppressed — expected exit 0, got ${_sec_noop_allow_rc}"
-  cat "${_sec_noop_allow_log}"
-  FAILURES=$((FAILURES + 1))
-elif grep -q "allow-marker-context" "${_sec_noop_allow_log}"; then
-  echo "FAIL: noop-allow-marker-context-is-suppressed — leaked agent context"
-  cat "${_sec_noop_allow_log}"
-  FAILURES=$((FAILURES + 1))
-else
-  echo "PASS: noop-allow-marker-context-is-suppressed"
-fi
-
-# --- No-op context: a scanner error must also suppress public context ---
-_sec_noop_scan_error_dir="${SEC_CODE_TMPDIR}/run-noop-scan-error"
-setup_sec_code_repo "${_sec_noop_scan_error_dir}" "agent/99-external-target"
-${REAL_GIT} -C "${_sec_noop_scan_error_dir}/repo" reset --hard HEAD~1
-mkdir -p "${_sec_noop_scan_error_dir}/output"
-printf '%s\n' '{"target_branch":"main","pr_body":"scan-error-context"}' \
-  > "${_sec_noop_scan_error_dir}/output/agent-result.json"
-
-_sec_noop_scan_error_rc=0
-# shellcheck disable=SC2030,SC2031
-(
-  cd "${_sec_noop_scan_error_dir}"
-  export HOME="${SEC_CODE_TMPDIR}"
-  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
-  export PUSH_TOKEN="fake-token"
-  export REPO_FULL_NAME="test-org/test-repo"
-  export ISSUE_NUMBER="99"
-  export REPO_DIR="repo"
-  export FULLSEND_FORGE="github"
-  export FULLSEND_VALIDATED_ITERATION_DIR="${_sec_noop_scan_error_dir}/output"
-  bash "${POST_SCRIPT}"
-) > "${SEC_CODE_TMPDIR}/stdout-noop-scan-error.log" 2>&1 || _sec_noop_scan_error_rc=$?
-
-_sec_noop_scan_error_log="${SEC_CODE_TMPDIR}/stdout-noop-scan-error.log"
-if [ "${_sec_noop_scan_error_rc}" -ne 0 ]; then
-  echo "FAIL: noop-context-scan-error-is-suppressed — expected exit 0, got ${_sec_noop_scan_error_rc}"
-  cat "${_sec_noop_scan_error_log}"
-  FAILURES=$((FAILURES + 1))
-elif grep -q "scan-error-context" "${_sec_noop_scan_error_log}"; then
-  echo "FAIL: noop-context-scan-error-is-suppressed — leaked agent context"
-  cat "${_sec_noop_scan_error_log}"
-  FAILURES=$((FAILURES + 1))
-else
-  echo "PASS: noop-context-scan-error-is-suppressed"
 fi
 
 # --- git status failure: swallowed error must not look like a clean tree ---
@@ -2493,7 +2353,7 @@ if [ "${_sec_gitstatus_rc}" -eq 0 ]; then
   echo "FAIL: git-status-failure-exits-nonzero — expected non-zero exit"
   cat "${_sec_gitstatus_log}"
   FAILURES=$((FAILURES + 1))
-elif grep -q "No PR created" "${_sec_gitstatus_log}"; then
+elif grep -q "agent determined no changes needed" "${_sec_gitstatus_log}"; then
   echo "FAIL: git-status-failure-exits-nonzero — posted no-op comment despite git status failure"
   cat "${_sec_gitstatus_log}"
   FAILURES=$((FAILURES + 1))

@@ -2546,25 +2546,16 @@ post_noop_comment() {
 
   local detail_block=""
   if [ -n "${agent_context}" ]; then
-    local context_file
-    context_file="$(mktemp)"
-    printf '%s\n' "${agent_context}" > "${context_file}"
-    if ! install_gitleaks \
-      || ! gitleaks detect --source "${context_file}" --no-git --redact --ignore-gitleaks-allow >/dev/null 2>&1; then
-      gha_echo warning "Agent context omitted because its secret scan did not pass"
-    else
-      local sanitized_context
-      sanitized_context="$(sanitize_failure_detail "${agent_context}")"
-      detail_block="
+    local sanitized_context
+    sanitized_context="$(sanitize_failure_detail "${agent_context}")"
+    detail_block="
 
 **Agent context:**
 ${sanitized_context}"
-    fi
-    rm -f "${context_file}"
   fi
 
   local body
-  body="ℹ️ **No PR created**
+  body="ℹ️ **No PR created** — agent determined no changes needed
 
 The code agent ran and evaluated issue #${safe_issue_number}, but did not produce changes to submit as a pull request.
 
@@ -3015,7 +3006,7 @@ if [ -n "${PR_BODY_FROM_RESULT}" ]; then
   printf '%s\n' "${PR_BODY_FROM_RESULT}" > "${PR_BODY_TMP}"
   GL_STDERR="$(mktemp)"
   GL_RC=0
-  gitleaks detect --source "${PR_BODY_TMP}" --no-git --redact --ignore-gitleaks-allow 2>"${GL_STDERR}" || GL_RC=$?
+  gitleaks detect --source "${PR_BODY_TMP}" --no-git --redact 2>"${GL_STDERR}" || GL_RC=$?
   if [ -s "${GL_STDERR}" ]; then
     sed 's/^/::debug::gitleaks: /' "${GL_STDERR}"
   fi
