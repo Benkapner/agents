@@ -570,6 +570,10 @@ if [[ "\$*" == *"fetch-review-threads"* ]]; then
   if [[ -n "\${MOCK_REVIEW_THREADS_FAIL:-}" ]]; then
     exit 1
   fi
+  if [[ -n "\${MOCK_REVIEW_THREADS_RESPONSE:-}" ]]; then
+    printf '%s\n' "\${MOCK_REVIEW_THREADS_RESPONSE}"
+    exit 0
+  fi
   if [[ -n "\${MOCK_REVIEW_THREADS_JSON:-}" ]]; then
     role="\${MOCK_COLLAB_ROLE:-write}"
     role_verified=true
@@ -654,6 +658,12 @@ fi
 # POST /merge_requests/:iid/notes → success
 if [[ "\${METHOD}" == "POST" ]]; then
   echo '{"id":1}'
+  exit 0
+fi
+
+# GET /user → authenticated GitLab review-token identity
+if [[ "\${URL}" == *"/user" ]]; then
+  echo '{"username":"'"\${MOCK_GITLAB_REVIEW_ACTOR:-review-bot}"'"}'
   exit 0
 fi
 
@@ -2675,7 +2685,11 @@ assert_disposition_stdout "approve-withheld-for-human-dismissed-high-prior-findi
   "::warning::dismissed_by_human is not accepted for high or critical prior finding id(s) f_hi1; recorded as open" "present"
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
 
-# On GitLab no dismissal can be verified, so the id stays open.
+# GitLab dismissals use the authenticated review-token identity. A normal
+# User author type is valid for PAT-backed review comments.
+GITLAB_HUMAN_DISMISSAL_RESPONSE='{"threads":[{"is_resolved":true,"path":"src/foo.go","line":4,"original_line":3,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"maintain","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"review-bot","author_type":"User","body":"<!-- finding:f_human1 --> Logic issue."}]}],"truncated":false}'
+export MOCK_REVIEW_THREADS_RESPONSE="${GITLAB_HUMAN_DISMISSAL_RESPONSE}"
+export MOCK_GITLAB_REVIEW_ACTOR="review-bot"
 run_gitlab_disposition_case() {
   local test_name="$1" json_content="$2" prior_json="$3" check_jq="$4"
   local run_dir="${TMPDIR}/run-${test_name}"
@@ -2713,8 +2727,10 @@ run_gitlab_disposition_case() {
   fi
   echo "PASS: ${test_name}"
 }
-run_gitlab_disposition_case "gitlab-dismissed-by-human-stays-open" \
-  "${DISMISSED_REVIEW}" "${DISMISSED_PRIOR}" "${DISMISSED_OPEN}"
+run_gitlab_disposition_case "gitlab-dismissed-by-human-closes-by-id" \
+  "${DISMISSED_REVIEW}" "${DISMISSED_PRIOR}" \
+  '([.dispositions[] | select(.id == "f_human1" and .status == "dismissed_by_human")] | length) == 1'
+unset MOCK_REVIEW_THREADS_RESPONSE MOCK_GITLAB_REVIEW_ACTOR
 
 # A reclassified disposition with no current finding carrying that id is
 # not a reclassification: nothing holds the new severity, so the id stays
