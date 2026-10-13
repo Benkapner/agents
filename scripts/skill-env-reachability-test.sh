@@ -79,9 +79,10 @@ NON_ENV_TOKENS=(
 # ---------------------------------------------------------------------------
 # Skill-local variables — assigned within SKILL.md code examples. A var
 # in this list is exempted when the referencing skill file assigns it
-# (^\s*VAR=); an unassigned ${VAR} expansion (actual consumption) must
-# be reachable from env.sandbox or tracked in KNOWN_GAPS. Backtick and
-# code-block mentions (placeholders, prose, field names) stay exempt.
+# (^\s*VAR=); an unassigned reference that is actually consumed — a
+# ${VAR} expansion or an unbraced $VAR read — must be reachable from
+# env.sandbox or tracked in KNOWN_GAPS. Backtick and code-block
+# mentions (placeholders, prose, field names) stay exempt.
 # ---------------------------------------------------------------------------
 SKILL_LOCAL_VARS=(
   AGENT_START BASE_BRANCH BLAST_RADIUS BRANCH_NAME
@@ -141,6 +142,7 @@ declare -A KNOWN_GAPS=(
   ["fix-review/gitlab:JOB_ID"]="#1665 review — referenced without assignment or harness delivery"
   ["finding-agent-runs/github:DISPATCH_REPO"]="#1665 review — referenced without assignment or harness delivery"
   ["finding-agent-runs/gitlab:DISPATCH_REPO"]="#1665 review — referenced without assignment or harness delivery"
+  ["retro-analysis/github:DISPATCH_REPO"]="#1665 review — gh run commands read it unbraced; not in any delivering harness env.sandbox"
 )
 
 # ---------------------------------------------------------------------------
@@ -320,14 +322,18 @@ for harness in "${HARNESS_FILES[@]}"; do
 
       # Skip skill-local variables. Exempt when assigned in this skill
       # file (^\s*VAR=); an unassigned reference is only a gap when it
-      # is a ${VAR} template expansion (actual consumption) — backtick
-      # and code-block mentions (placeholders, prose, field names)
-      # remain exempt.
+      # is consumed — a ${VAR} template expansion or an unbraced $VAR
+      # read. Backtick and code-block mentions (placeholders, prose,
+      # field names) remain exempt. The unbraced pattern requires a
+      # non-identifier character (or end of line) after the var name,
+      # so $DISPATCH matches DISPATCH but not DISPATCH_REPO, and
+      # ${VAR} expansions (brace between $ and name) never match it.
       # 2>/dev/null: file existence is pre-checked; suppresses only
       # benign encoding warnings from grep on binary-like content.
       if is_skill_local_var "$var"; then
         if grep -qE "^[[:space:]]*${var}=" "${skill_file}" 2>/dev/null \
-          || ! grep -qF "\${${var}}" "${skill_file}" 2>/dev/null; then
+          || { ! grep -qF "\${${var}}" "${skill_file}" 2>/dev/null \
+          && ! grep -qE '\$'"${var}"'([^[:alnum:]_]|$)' "${skill_file}" 2>/dev/null; }; then
           continue
         fi
       fi
