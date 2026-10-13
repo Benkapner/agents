@@ -31,14 +31,27 @@ Results are written to `eval/runs/<agent>/<run-id>/`.
   This is what local runs, merge-queue runs, the nightly run and PRs with
   the `eval-full` label use.
 - **`release`** — runs only this agent's case(s) whose `annotations.yaml`
-  sets `release: true`, and fails only on a non-zero case exit or a
-  deterministic judge (e.g. `required_labels`, `forbidden_labels`). LLM
-  judges (name ends in `_quality`) still run and are reported, but don't
-  fail the tier. If the agent has no `release: true` case, the script
-  prints a notice and exits 0.
+  sets `release: true`. If the agent has no `release: true` case, the
+  script prints a notice and exits 0.
 
-In both tiers, the `max_turns`/`max_cost` budget judges run and report
-but gate nothing: no eval declares a threshold for them. Review has no
+Both tiers gate on the same things: a non-zero case exit (including a
+sandbox, provider or harness that would not load) and the deterministic
+contract judges `pr_created`, `new_commit` and `sandbox_started`. The
+other judges run and are reported, but don't fail the run:
+
+- LLM quality judges (name ends in `_quality`, e.g. `review_quality`,
+  `triage_quality`)
+- live-model behaviour checks: `finding_expectations`, `required_labels`,
+  `forbidden_labels`, `risk_label_present`, `expected_files`
+- the `max_turns`/`max_cost` budget judges
+
+Their thresholds stay in each `eval.yaml`; `run-functional.sh` drops
+them from the runtime copy of the config only. That includes a quality
+judge's `max_error_rate`, so a judge that errors (for example a 400 from
+the judge model) no longer fails the run or triggers a scoring retry: it
+shows up only as a `JUDGE ERROR` line in the log and in the summary's
+error count. A case that fails before the agent runs is still an
+infrastructure failure (exit 3). Review has no
 `max_turns` judge, because its turn count does not track the work done.
 
 If `EVAL_TIER` is unset, it defaults to `release` when running as a
@@ -59,11 +72,53 @@ full tier once:
 |---|---|
 | Pull request | `release`. With the `eval-full` label, `full`, from the next push or `ok-to-test` run (adding the label alone starts no run). |
 | Merge queue | `full`, on the commit that lands |
-| Nightly (`functional-tests-nightly.yml`) | `full`, every agent, report-only |
+| Nightly (`functional-tests-nightly.yml`) | `full`, every agent; each run report-only, the nightly fails on the [3-run verdict](#nightly-verdict) |
 | Manual dispatch, cross-repo `workflow_call` | the `tier` input, or the script default |
 
 There is no run on push to `main`: the merge queue already tested that
 commit.
+
+### Nightly verdict
+
+A single run's behaviour checks and quality judges are report-only, but
+the nightly full tier can fail on them over its last 3 runs.
+`eval/scripts/aggregate-nightly.sh` takes the agent's checked-in
+`eval.yaml` and 1 to 3 runs' `summary.yaml` files, newest first:
+
+```bash
+eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
+  tonight/summary.yaml last-night/summary.yaml two-nights-ago/summary.yaml
+```
+
+- **Behaviour checks** (`finding_expectations`, `required_labels`,
+  `forbidden_labels`, `risk_label_present`, `expected_files`) with a
+  `min_pass_rate`: a case fails the check when it is `false` in at least
+  2 of the given runs. The nightly pass rate is the share of cases that
+  do not fail, and is compared with `min_pass_rate`. A flake that hits a
+  different case each night passes; a case that keeps failing does not.
+- **Quality judges** (`*_quality`) with a `min_mean`: the verdict fails
+  when the median of 3 non-null per-run means is below `min_mean`. With
+  fewer than 3, the judge reports "insufficient history" and does not
+  fail.
+- Missing data counts as neither pass nor fail: a case or judge absent
+  from a run, a null value, or a judge with `scored_cases: 0`. A case
+  that failed before the agent ran (as on an infrastructure night) is
+  skipped for every judge, so each run's pass rate and mean are computed
+  from `per_case` over the cases that reached the agent. The
+  `run_result.json` beside each `summary.yaml` decides this, with
+  `run-functional.sh`'s own rule: a non-zero exit that is not a timeout
+  (`-1`, `124`, `137`) with no turns, no cost and no tokens. A timed-out
+  case reached the agent and counts. Without a `run_result.json`, every
+  case counts as reached.
+- The budget judges and the contract judges are not aggregated; the
+  contract judges already gate every run.
+
+The script prints one line per judge with each run's value, then
+`NIGHTLY VERDICT: PASS` or `FAIL`, and appends a Markdown table to
+`GITHUB_STEP_SUMMARY` when it is set. It exits 0 on PASS, 1 on FAIL and
+2 on a usage or input error (no summaries, more than 3, or a file that
+is missing, not valid YAML or not shaped like its kind). Pass only the
+summaries that exist: a missing previous run is not an error.
 
 ### Linting cases
 
@@ -151,17 +206,28 @@ the ability to create PRs and post comments during the agent run.
 Each case directory under `eval/<agent>/cases/` contains:
 
 - `input.yaml` — fixture definition (forge, fixture type, title, body,
-  PR files). Issue cases may set `labels`, applied before the agent runs
+  PR files). `${REPO_URL}` in a fixture body expands to the ephemeral GitHub
+  repository URL. Issue cases may set `labels`, applied before the agent runs
   (e.g. `ready-to-code` for a code case). Pull-request cases may add
-  `followup_files` and a `prior_review` body/provenance to exercise a
-  re-review. Each PR file is written ending with exactly one final
-  newline, whatever block style its `content` uses.
+  `followup_files`, `commit_message` (default `eval: fixture changes`),
+  and a `prior_review` body/provenance to exercise a re-review. Each PR
+  file is written ending with exactly one final newline, whatever block
+  style its `content` uses.
 - `annotations.yaml` — expected outcomes (labels, review expectations)
   and the report-only budgets: `max_cost_usd`, plus `max_turns` where the
   eval has a `max_turns` judge. Set `release: true` to include the case
   in `EVAL_TIER=release` runs (see [Tiers](#tiers) above).
 - `repo/` (optional) — base repo contents pushed to main before the
   fixture is created
+
+Every file, endpoint, symbol and label that a case's issue or PR refers
+to must exist in its fixture repo (`repo/`, plus the PR's files) or in
+the fixture's `labels`. The expected outcome in `annotations.yaml` must
+be what a careful engineer would conclude from that repo alone: an agent
+that checks the code and finds a gap will rightly answer `needs-info`.
+When a case needs code that the shared fixture repo lacks, give the case
+its own repo under `eval/<agent>/repos/` rather than changing the shared
+one (e.g. triage cases 001 and 003).
 
 ## Lifecycle
 

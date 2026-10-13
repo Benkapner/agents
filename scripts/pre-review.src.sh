@@ -101,7 +101,7 @@ validate_prior_review_projection() {
       IN(
         "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
         "auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln", "sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection", "unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open", "permission-expansion", "permission-reduction", "role-escalation", "workflow-permission", "secret-exposure",
-        "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering",
+        "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
         "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
         "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
         "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
@@ -113,18 +113,20 @@ validate_prior_review_projection() {
     .version as $projection_version
     | if (
       type == "object" and
-      ((keys - ["version", "findings", "dispositions"]) | length == 0) and
+      ((keys - ["version", "action", "findings", "dispositions"]) | length == 0) and
       (.version | IN(1, 2)) and
       .version == $marker_version and
+      ((.action == null) or (.action | IN("approve", "request-changes", "comment", "reject"))) and
       (.findings | type == "array") and
       all(.findings[];
         type == "object" and
-        ((keys - ["severity", "category", "file", "line", "id"]) | length == 0) and
+        ((keys - ["severity", "category", "file", "line", "id", "actionable"]) | length == 0) and
         (.severity | IN("info", "low", "medium", "high", "critical")) and
         (.category | type == "string" and allowed_category) and
         ((.file == null and $projection_version == 2) or (.file | safe_path)) and
         (.line == null or (.line | type == "number" and . > 0 and floor == .)) and
-        (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$")))
+        (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$"))) and
+        (.actionable == null or (.actionable | type == "boolean"))
       ) and
       ([.findings[].id | select(. != null)] | length == (unique | length)) and
       (.dispositions == null or (
@@ -144,8 +146,10 @@ validate_prior_review_projection() {
         category: .category,
         file: .file,
         line: .line
-      } + (if .id == null then {} else {id: .id} end)]
-    } + (if .dispositions == null then {} else {
+      } + (if .id == null then {} else {id: .id} end)
+        + (if .actionable == null then {} else {actionable: .actionable} end)]
+    } + (if .action == null then {} else {action: .action} end)
+    + (if .dispositions == null then {} else {
       dispositions: [.dispositions[] | {id, status}]
     } end) else error("invalid prior review projection") end
   ' > "${tmp_file}"; then

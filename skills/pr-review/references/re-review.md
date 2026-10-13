@@ -11,7 +11,8 @@ Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
   Read it directly; do not search it for marker comments or sticky-history
   delimiters, and never recover finding identity from review Markdown. The
   producer emits v2, while v1 remains accepted for existing comments.
-  v2 findings include `id`, and `dispositions` gives prior ids a
+  v2 projections include `action`, findings may include `id` and
+  `actionable`, and `dispositions` gives prior ids a
   `status`. A legacy marker without ids is assigned one before this file
   is written, so this review can answer those findings. A prior id whose
   status is `resolved_by_change` or `dismissed_by_human` is closed and final:
@@ -105,7 +106,7 @@ dimension using category as the key:
 |----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------        |
 | correctness          | `logic-error`, `nil-deref`, `off-by-one`, `edge-case`, `api-contract`, `missing-test`, `test-inadequate`, `pattern-violation`, `test-weakened`, `test-removed`, `mock-loosened`, `assertion-weakened`, `coverage-reduced`, `test-poisoning`, `split-payload`, `stale-reference` |
 | security             | `auth-bypass`, `rbac-violation`, `data-exposure`, `privilege-escalation`, `injection-vuln`, `sandbox-escape`, `xss`, `ssrf`, `insecure-deserialization`, `prompt-injection`, `unicode-steganography`, `bidi-override`, `homoglyph-attack`, `instruction-smuggling`, `fail-open`, `permission-expansion`, `permission-reduction`, `role-escalation`, `workflow-permission`, `secret-exposure` |
-| intent-coherence     | `scope-exceeded`, `tier-mismatch`, `unauthorized-change`, `scope-creep`, `missing-authorization`, `misleading-label`, `design-direction`, `complexity-ratio`, `misplaced-abstraction`, `architectural-conflict`, `design-smell`, `over-engineering`, `under-engineering` |
+| intent-coherence     | `scope-exceeded`, `tier-mismatch`, `unauthorized-change`, `scope-creep`, `missing-authorization`, `misleading-label`, `design-direction`, `complexity-ratio`, `misplaced-abstraction`, `architectural-conflict`, `design-smell`, `over-engineering`, `under-engineering`, `scope-bundling` |
 | style-conventions    | `naming-convention`, `error-handling-idiom`, `api-shape`, `code-organization`, `doc-style`, `pattern-inconsistency`                                                                                                                                                      |
 | docs-currency        | `stale-doc`, `missing-doc`, `incorrect-doc`, `incomplete-doc`                                                                                                                                                                                                            |
 | cross-repo-contracts | `breaking-api`, `breaking-schema`, `breaking-config`, `breaking-cli`, `missing-deprecation`, `missing-version-bump`, `backward-incompatible`                                                                                                                             |

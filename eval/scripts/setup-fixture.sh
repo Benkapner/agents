@@ -53,6 +53,7 @@ FIXTURE_BASE=$(yq -r '.fixture.base // "main"' "$INPUT")
 FIXTURE_HEAD=$(yq -r '.fixture.head_branch // ""' "$INPUT")
 FIXTURE_FILES=$(yq -r '.fixture.files // "[]"' "$INPUT")
 FOLLOWUP_FILES=$(yq -r '.fixture.followup_files // "[]"' "$INPUT")
+FIXTURE_COMMIT_MESSAGE=$(yq -r '.fixture.commit_message // "eval: fixture changes"' "$INPUT")
 PRIOR_REVIEW_BODY=$(yq -r '.prior_review.body // ""' "$INPUT")
 PRIOR_REVIEW_PROVENANCE=$(yq -r '.prior_review.provenance // "none"' "$INPUT")
 
@@ -61,6 +62,7 @@ uuid=$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)
 CASE_ID_SAFE=$(basename "$CASE_SOURCE_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
 repo_name="eval-${CASE_ID_SAFE}-${uuid}"
 EPHEMERAL_REPO="${EVAL_ORG}/${repo_name}"
+FIXTURE_BODY=${FIXTURE_BODY//\$\{REPO_URL\}/https://github.com/${EPHEMERAL_REPO}}
 
 gh repo create "$EPHEMERAL_REPO" --public --description "Ephemeral eval repo (auto-deleted)"
 echo "Created repo: $EPHEMERAL_REPO"
@@ -151,7 +153,7 @@ case "${FORGE}:${FIXTURE_TYPE}" in
       echo "$FIXTURE_FILES" | yq -r ".[$i].content" | "$SCRIPT_DIR/write-fixture-file.sh" "$TARGET_DIR/$path"
     done
     git -C "$TARGET_DIR" add -A
-    git -C "$TARGET_DIR" commit -m "eval: fixture changes"
+    git -C "$TARGET_DIR" commit -m "$FIXTURE_COMMIT_MESSAGE"
     FIXTURE_INITIAL_SHA=$(git -C "$TARGET_DIR" rev-parse HEAD)
     git -C "$TARGET_DIR" push origin "$PR_BRANCH"
     followup_count=$(echo "$FOLLOWUP_FILES" | yq -r 'length')

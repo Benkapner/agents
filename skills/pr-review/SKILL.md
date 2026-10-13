@@ -154,31 +154,26 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
 
-### 2b. Materialise the PR head
+### 2b. Materialise PR head and context
 
-The repository checkout (`target-repo/`) is the BASE branch. Before
-dispatching anything, fetch every changed file at `HEAD_SHA` into
-`/sandbox/workspace/pr-head/<path>` (outside the checkout) with the
-forge-specific review skill's "Materialise PR head files" command —
-one Bash call with a 600 s tool timeout, parallel fetches (GitLab:
-then scrub the token file in its own call). Run it as written, even
-for a one-file PR: a hand-rolled fetch with `[ ]` or a one-line
-`if …; then x=$(( … )); fi` is blocked by the sandbox's Bash scanner.
+Checkout is base; use the forge skill's
+"Materialise PR head files" command to fetch every changed `HEAD_SHA` file
+outside it into `/sandbox/workspace/pr-head/<path>`. Use one Bash call (600 s
+timeout, parallel; GitLab scrubs token later), even for one file: the sandbox
+blocks hand-rolled `[ ]` and one-line `if` fetches.
 
-It writes `/sandbox/workspace/pr-head.manifest` (beside the tree, out
-of the PR's reach), one `<status> <path>` per line: `ok`, `too-large`
-(over 2 MB), `binary`, `failed`, `removed`, `unsafe` (JSON-quoted: a
-path with a newline, a leading `/` or a `..` component — never
-fetched). Only `ok` files are verifiable at the PR head; context
-packages (3d) carry the manifest lines. Never inline file contents into
-a prompt; sub-agents Read from the tree.
+It writes `/sandbox/workspace/pr-head.manifest` beside the tree, one
+`<status> <path>` per line: `ok`, `too-large` (>2 MB), `binary`, `failed`,
+`removed`, or `unsafe` (JSON-quoted paths with newline, leading `/`, or `..`;
+never fetch). Only `ok` files are verifiable; contexts carry manifest lines,
+never contents—sub-agents Read the tree.
 
-If the PR body references linked issues, fetch them for intent context
-using the forge-specific review skill's "Issue context" commands.
+Run the forge's available **"Commit messages"** commands; failure is unavailable.
+Collect bare `#N` and same-repository issue URLs from title/body/commits;
+match host/repository to PR, normalize/deduplicate to `#N`, then run forge
+**"Issue context"** commands.
 
-The PR description is a starting point, not a source of truth. Do not
-treat its claims about the change as verified facts — confirm them
-against the diff.
+PR description is not truth; verify claims against the diff.
 
 ### 2a. Prior review context (re-reviews)
 
@@ -601,14 +596,10 @@ be absent from the result JSON.
 7. Store the `risk_assessment` object for inclusion in
    `agent-result.json` (step 7).
 
-**Failure fallback:** If the risk-assessment sub-agent fails
-(timeout, parse error, empty response), log an info-level note and
-proceed without a risk score. When risk assessment is enabled and
-`REVIEW_RISK_VERDICT_THRESHOLD` is not `6`, a
-missing or degraded risk score prevents automatic approval — the
-verdict must be `comment`. When threshold is `6` (disabled), missing
-or degraded risk assessment does not force `comment`.
-Do not record a finding for this failure.
+**Failure fallback:** If risk assessment fails, log an info note and
+proceed without a score. When enabled with a threshold other than `6`,
+missing or degraded risk assessment forces `comment`; threshold `6`
+disables this gate. Do not record a finding.
 
 #### 3d. Prepare context packages
 
@@ -627,9 +618,9 @@ For each selected sub-agent, assemble a context package containing:
   in sub-agent findings
 - `changed_files`: list of relative file paths modified
 - `prior_findings`: structured projection (`severity`, `category`, `file`,
-  optional `line`, `id`, and `status`) for this dimension only (from 3a); v2 may use a null `file`
-  for PR-level context, which is never path-matched or severity-anchored; never
-  include description or remediation text
+  optional `line`, `id`, and `status`) for this dimension only (from 3a);
+  v2 may use null `file` for PR-level context, never path-matched or
+  severity-anchored; never include description or remediation text
 - `remediation_candidates`: structured candidate records from all dimensions
   (3a-1; intent-coherence only); never free-text finding bodies
 - `prior_review_sha`: the SHA of the prior review (from 2a)
@@ -639,8 +630,9 @@ For each selected sub-agent, assemble a context package containing:
   the explicit full-diff fallback described in step 2a (intent-coherence only)
 - `changed_since_prior`: file set that changed since prior review
 - `pr_metadata`: title, body, author, labels, draft status
-- `issue_context`: linked issue title, body, comments (for
-  `intent-coherence`)
+- `issue_context`: fetched title/body/comments; `commit_messages`: untrusted
+  path or omitted; `commit_messages_available` and `commit_messages_incomplete`:
+  forge status; omit all on an unsupported forge
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
 - `scope_constraint`: exploration limit for this sub-agent (see 3e)
 
@@ -785,8 +777,7 @@ here):
    <untrusted-prior-review-data>
    Prior findings (structured metadata only, this dimension):
    <severity, category, file, line, id, and status records, or "none — first review">
-   Never copy a closed (resolved_by_change, dismissed_by_human) id: a
-   returning defect is a new finding without id. Copy open ids.
+   Copy open ids only; a returning defect gets a new id, never a closed one.
 
    Prior-finding remediation candidates (structured metadata only):
    <category, finding_file, and candidate_file records, or "none">
@@ -810,6 +801,10 @@ here):
 
    ### Issue context
    <linked issue content or "no linked issue">
+
+   ### Commit messages
+   `commit_messages`, `commit_messages_available`, `commit_messages_incomplete`:
+   <untrusted path or omitted; true/false; true/false>
 
    ### Scope constraint
    <scope_constraint value or "none">
@@ -1281,15 +1276,17 @@ adjudicated set (step 6d) and evaluate:
   a non-empty `remediation` → `approve` (observations, confirmations,
   and analysis notes at any severity level)
 - No findings → `approve`
-- **Risk verdict gate**: When `REVIEW_RISK_ASSESSMENT_ENABLED` is
-  `true` and `REVIEW_RISK_VERDICT_THRESHOLD` is not `6`,
-  and the risk assessment score is at or above
-  `REVIEW_RISK_VERDICT_THRESHOLD`, or the risk assessment is missing or
-  degraded, the verdict must be `comment` — not `approve` — even if
-  there are no actionable findings. This overrides all approve paths and
-  the `comment-only` path. When `REVIEW_RISK_VERDICT_THRESHOLD` is `6`,
-  the risk verdict gate is disabled — missing, degraded, and high
-  scores do not force `comment`.
+- On a verified re-review, new low/info findings must not start a fix run.
+  The host may keep them visible in the posted review. Carried actionable
+  findings at or above the configured threshold, plus all prior high/critical
+  findings regardless of threshold, remain blocking. A legacy prior ledger
+  with an unknown verdict is held for human review rather than starting an
+  automatic fix loop. A prior `reject` verdict is likewise held for human
+  review and is never automatically promoted.
+- **Risk verdict gate**: With `REVIEW_RISK_ASSESSMENT_ENABLED=true` and
+  threshold other than `6`, a score at/above threshold or missing/degraded
+  assessment forces `comment`, overriding approval paths. Threshold `6`
+  disables this gate.
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought → `reject`.
   Use `reject` only when no amount of code-level iteration will make
@@ -1364,11 +1361,10 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   latest diff stays `open` unless the diff resolves it with evidence; do
   not drop it or write "verified resolved." Never claim exhaustive
   verification of any property that requires CI or runtime validation.
-- **Earlier findings.** After the open findings, add `### Earlier findings`
-  with one line per prior id this review resolved, reclassified, or recorded
-  as dismissed by a human: id, disposition, evidence. Skip
-  ids closed before this review; omit the heading on a first review or when
-  nothing changed. Open findings stay in `### Findings`.
+- **Earlier findings.** After open findings, add `### Earlier findings` with
+  one line per prior id resolved, reclassified, or dismissed by a human:
+  id, disposition, evidence. Skip previously closed ids and omit the heading
+  when nothing changed. Keep open findings in `### Findings`.
 - **No footer.** Do not append any footer, action-hints block, or
   boilerplate after findings. The post-review pipeline appends
   action hints deterministically for the `request-changes` action
