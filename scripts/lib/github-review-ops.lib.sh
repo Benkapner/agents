@@ -104,6 +104,101 @@ forge_get_recent_redispatch_comments() {
      | length'
 }
 
+# Return a JSON object mapping finding ids to the review-comment URL of the
+# review agent's original inline comment. This is best-effort context for
+# carried blockers; the ledger itself remains metadata-only. Only comments
+# authored by the current viewer are considered, so a human cannot forge a
+# finding link by mentioning an id in a reply.
+forge_get_finding_comment_links() {
+  local owner name query cursor has_next page response page_nodes nodes_json links
+  local -a gh_args
+
+  owner="${REPO%%/*}"
+  name="${REPO##*/}"
+  cursor=""
+  has_next="true"
+  page=0
+  nodes_json="[]"
+
+  query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            comments(first: 100) {
+              pageInfo { hasNextPage }
+              nodes { body viewerDidAuthor url }
+            }
+          }
+        }
+      }
+    }
+  }'
+
+  while [[ "${has_next}" == "true" ]]; do
+    page=$((page + 1))
+    if [[ "${page}" -gt 20 ]]; then
+      echo "::warning::Review thread pagination hit page cap — finding links may be incomplete" >&2
+      break
+    fi
+
+    gh_args=(api graphql
+      -f owner="${owner}"
+      -f name="${name}"
+      -F number="${PR_NUMBER}"
+      -f query="${query}")
+    if [[ -n "${cursor}" ]]; then
+      gh_args+=(-f cursor="${cursor}")
+    fi
+
+    if ! response=$(GH_TOKEN="${REVIEW_TOKEN}" gh "${gh_args[@]}" 2>/dev/null); then
+      echo "::warning::Failed to fetch review threads — blocking finding links unavailable" >&2
+      echo '{}'
+      return 0
+    fi
+    if echo "${response}" | jq -e '.errors | type == "array" and length > 0' >/dev/null 2>&1; then
+      echo "::warning::Review thread query returned errors — blocking finding links unavailable" >&2
+      echo '{}'
+      return 0
+    fi
+
+    page_nodes=$(echo "${response}" | jq -c '.data.repository.pullRequest.reviewThreads.nodes // []' 2>/dev/null) || {
+      echo "::warning::Failed to parse review threads — blocking finding links unavailable" >&2
+      echo '{}'
+      return 0
+    }
+    nodes_json=$(jq -c --argjson page "${page_nodes}" '. + $page' <<< "${nodes_json}" 2>/dev/null) || {
+      echo "::warning::Failed to merge review thread pages — blocking finding links unavailable" >&2
+      echo '{}'
+      return 0
+    }
+
+    has_next=$(echo "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' 2>/dev/null) || has_next="false"
+    cursor=$(echo "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' 2>/dev/null) || cursor=""
+    if [[ "${has_next}" == "true" && -z "${cursor}" ]]; then
+      echo "::warning::Review thread page missing cursor — blocking finding links may be incomplete" >&2
+      break
+    fi
+  done
+
+  links=$(jq -c --arg base "${PR_URL}" '
+    [ .[]
+      | (.comments.nodes // [])[]
+      | select(.viewerDidAuthor == true)
+      | . as $comment
+      | (($comment.body // "") | scan("finding:(f_[A-Za-z0-9]+)") | .[0]) as $id
+      | select(($id | type) == "string")
+      | select(($comment.url // "") | startswith($base + "#discussion_r"))
+      | select(($comment.url // "") | test("#discussion_r[0-9]+$"))
+      | {id: $id, url: $comment.url}
+    ]
+    | reduce .[] as $match ({}; .[$match.id] //= $match.url)
+  ' <<< "${nodes_json}" 2>/dev/null) || links='{}'
+  jq -e 'type == "object"' <<< "${links}" >/dev/null 2>&1 || links='{}'
+  printf '%s\n' "${links}"
+}
+
 # --- Review threads ---
 
 # Select GitHub review-thread node IDs that are safe to auto-resolve.

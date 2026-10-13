@@ -1440,7 +1440,7 @@ run_projection_test() {
   # Ids are assigned per run. Compare the projection without them.
   actual="$(jq -c 'del(.findings[].id)' <<< "${actual}" 2>/dev/null || true)"
 
-  if [[ ${exit_code} -ne 0 ]] || ! jq -e --argjson expected "${expected_projection}" '. == $expected' <<< "${actual}" >/dev/null 2>&1; then
+  if [[ ${exit_code} -ne 0 ]] || ! jq -e --argjson expected "${expected_projection}" '((if ($expected | has("action")) then . else del(.action) end) == $expected)' <<< "${actual}" >/dev/null 2>&1; then
     echo "FAIL: ${test_name} — machine-readable projection mismatch"
     echo "Actual: ${actual}"
     FAILURES=$((FAILURES + 1))
@@ -1550,6 +1550,10 @@ PROJECTION_EXPECTED='{"version":2,"findings":[{"severity":"low","category":"logi
 run_projection_test "projection-from-structured-findings" \
   "${PROJECTION_INPUT}" \
   "${PROJECTION_EXPECTED}"
+PROJECTION_EXPECTED_WITH_ACTION='{"version":2,"action":"request-changes","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7}]}'
+run_projection_test "projection-carries-effective-action" \
+  "${PROJECTION_INPUT}" \
+  "${PROJECTION_EXPECTED_WITH_ACTION}"
 run_body_count_test "projection-strips-forged-marker" \
   "${PROJECTION_INPUT}" \
   '<!-- fullsend:review-findings-v2:ZmFrZQ== -->' "0"
@@ -1652,7 +1656,7 @@ run_sticky_round_trip_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if ! jq -e --argjson expected "${expected}" 'del(.findings[].id) == $expected' "${prior_file}" >/dev/null 2>&1; then
+  if ! jq -e --argjson expected "${expected}" '.action == "request-changes" and (del(.action, .findings[].id) == $expected)' "${prior_file}" >/dev/null 2>&1; then
     echo "FAIL: ${test_name} — pre-review did not recover the projection"
     cat "${prior_file}"
     FAILURES=$((FAILURES + 1))
@@ -1772,7 +1776,517 @@ run_disposition_case() {
   echo "PASS: ${test_name}"
 }
 
+# Re-review verdict gate tests. These exercise the full post-script and assert
+# the action that would be posted to the forge.
+run_rereview_gate_case() {
+  local test_name="$1"
+  local json_content="$2"
+  local prior_json="$3"
+  local expected_action="$4"
+  local expected_note="$5"
+  local forbidden_text="${6:-}"
+  local severity_threshold="${7:-low}"
+  local protected_paths="${8-__inherit__}"
+  local mock_files="${9:-src/main.go}"
+  local risk_enabled="${10:-false}"
+  local risk_threshold="${11:-4}"
+  local expected_exit="${12:-0}"
+  local mock_files_fail="${13:-}"
+  local result_check="${14:-}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local prior_file="${run_dir}/prior.json"
+  mkdir -p "${run_dir}/iteration-1/output"
+  printf '%s' "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  printf '%s' "${prior_json}" > "${prior_file}"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="${severity_threshold}"
+    export MOCK_PR_FILES="${mock_files}"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
+    export REVIEW_RISK_VERDICT_THRESHOLD="${risk_threshold}"
+    if [[ -n "${mock_files_fail}" ]]; then
+      export MOCK_PR_FILES_FAIL="${mock_files_fail}"
+    fi
+    if [[ "${protected_paths}" = "__unset__" ]]; then
+      unset REVIEW_PROTECTED_PATHS
+    elif [[ "${protected_paths}" != "__inherit__" ]]; then
+      export REVIEW_PROTECTED_PATHS="${protected_paths}"
+    fi
+    export PRIOR_REVIEW_FILE="${prior_file}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  local actual_action actual_body
+  actual_action="$(jq -r '.action' "${TMPDIR}/last-result.json" 2>/dev/null || true)"
+  actual_body="$(jq -r '.body // ""' "${TMPDIR}/last-result.json" 2>/dev/null || true)"
+  if [[ ${exit_code} -ne ${expected_exit} || "${actual_action}" != "${expected_action}" ]] || \
+     ! grep -qF -- "${expected_note}" <<< "${actual_body}" || \
+     { [[ -n "${forbidden_text}" ]] && grep -qF -- "${forbidden_text}" <<< "${actual_body}"; } || \
+     { [[ -n "${result_check}" ]] && ! jq -e "${result_check}" "${TMPDIR}/last-result.json" >/dev/null 2>&1; }; then
+    echo "FAIL: ${test_name} — re-review gate mismatch"
+    echo "  expected action: '${expected_action}'"
+    echo "  actual action:   '${actual_action}'"
+    echo "  actual body:     ${actual_body}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Verify that a prior reject remains a human-review hold across two rounds.
+# The posted result is comment in both rounds, but the marker must retain the
+# prior reject action so a later re-review cannot promote itself to approval.
+run_two_round_prior_reject_case() {
+  local test_name="$1"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local prior_round_one="${run_dir}/prior-round-one.json"
+  local prior_round_two="${run_dir}/prior-round-two.json"
+  local round_one_result round_two_result
+  local exit_code=0
+
+  mkdir -p "${run_dir}/iteration-1/output"
+  printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review"}' \
+    > "${run_dir}/iteration-1/output/agent-result.json"
+  printf '%s' '{"version":2,"action":"reject","findings":[]}' > "${prior_round_one}"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_PR_FILES="src/main.go"
+    export PRIOR_REVIEW_FILE="${prior_round_one}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}-round-one.log" 2>&1 || exit_code=$?
+
+  round_one_result="${TMPDIR}/last-result.json"
+  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action' "${round_one_result}" 2>/dev/null || true)" != "comment" ]]; then
+    echo "FAIL: ${test_name} — first round did not require human review"
+    cat "${TMPDIR}/stdout-${test_name}-round-one.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local marker encoded projection_action
+  marker="$(jq -r '.body // ""' "${round_one_result}" | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
+  encoded="${marker#<!-- fullsend:review-findings-v2:}"
+  encoded="${encoded% -->}"
+  projection_action="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -r '.action // empty' 2>/dev/null || true)"
+  if [[ "${projection_action}" != "reject" ]]; then
+    echo "FAIL: ${test_name} — first-round projection lost reject action"
+    echo "  projection action: ${projection_action}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  printf '%s' "$(printf '%s' "${encoded}" | base64 --decode)" > "${prior_round_two}"
+  mkdir -p "${run_dir}/iteration-2/output"
+  printf '%s' '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review","findings":[{"severity":"low","category":"style","file":"new.go","line":1,"description":"minor"}]}' \
+    > "${run_dir}/iteration-2/output/agent-result.json"
+  rm -f "${TMPDIR}/last-result.json"
+  exit_code=0
+
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_PR_FILES="src/main.go"
+    export PRIOR_REVIEW_FILE="${prior_round_two}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}-round-two.log" 2>&1 || exit_code=$?
+
+  round_two_result="${TMPDIR}/last-result.json"
+  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action' "${round_two_result}" 2>/dev/null || true)" != "comment" ]] || \
+     ! grep -qF -- "Automatic re-review promotion withheld" <(jq -r '.body // ""' "${round_two_result}") || \
+     grep -qF -- "/fs-fix" <(jq -r '.body // ""' "${round_two_result}"); then
+    echo "FAIL: ${test_name} — second round escaped the prior reject hold"
+    cat "${TMPDIR}/stdout-${test_name}-round-two.log"
+    echo "Result: $(cat "${round_two_result}" 2>/dev/null || true)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 BASE_REVIEW='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review"}'
+
+run_rereview_gate_case "rereview-new-low-does-not-request-changes" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor",remediation:"rename it",actionable:true}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"style","file":"old.go","line":1,"id":"f_closed1"}],"dispositions":[{"id":"f_closed1","status":"resolved_by_change"}]}' \
+  "approve" \
+  "No findings at or above the effective blocking threshold remain open" \
+  "" \
+  "low" \
+  "__inherit__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "0" \
+  "" \
+  '[.findings[]? | select(.severity | IN("low", "info")) | .actionable] | length > 0 and all(. == false)'
+
+run_rereview_gate_case "rereview-prior-medium-still-blocks" \
+  "$(jq -c '.findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_open1"}]}' \
+  "request-changes" \
+  "prior medium-or-higher findings remain open"
+
+run_rereview_gate_case "rereview-prior-advisory-medium-does-not-block" \
+  "$(jq -c '.findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"comment","findings":[{"severity":"medium","category":"doc-style","file":"old.md","line":1,"id":"f_advisory1","actionable":false}]}' \
+  "comment" \
+  "Review"
+
+run_rereview_gate_case "rereview-legacy-medium-requires-human" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_legacy_medium"}]}' \
+  "comment" \
+  "Automatic re-review promotion withheld" \
+  "/fs-fix"
+
+run_rereview_gate_case "rereview-carried-actionable-low-still-blocks" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"logic-error",file:"old.go",line:1,id:"f_actionable_low",description:"still actionable",actionable:true}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[{"severity":"low","category":"logic-error","file":"old.go","line":1,"id":"f_actionable_low","actionable":true}]}' \
+  "request-changes" \
+  "/fs-fix"
+
+run_rereview_gate_case "rereview-prior-blocker-adds-schema-valid-finding" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_openschema","description":"The old logic is wrong.","remediation":"Fix the old logic before merging."}]}' \
+  "request-changes" \
+  "Blocking prior findings" \
+  "" \
+  "low" \
+  "__inherit__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "0" \
+  "" \
+  '.findings | any(.id == "f_openschema" and .description == "The old logic is wrong." and .remediation == "Fix the old logic before merging.")'
+
+MOCK_REVIEW_THREADS_JSON="$(jq -cn --arg body '<!-- finding:f_openschema --> The old logic is wrong.' --arg url 'https://github.com/test-org/test-repo/pull/99#discussion_r123' '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[{comments:{pageInfo:{hasNextPage:false},nodes:[{body:$body,viewerDidAuthor:true,url:$url}]}}]}}}}}')"
+export MOCK_REVIEW_THREADS_JSON
+run_rereview_gate_case "rereview-prior-blocker-links-original-comment" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_openschema"}]}' \
+  "request-changes" \
+  "Blocking prior findings" \
+  "" \
+  "low" \
+  "__inherit__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "0" \
+  "" \
+  '.body | contains("[original inline comment](https://github.com/test-org/test-repo/pull/99#discussion_r123)")'
+unset MOCK_REVIEW_THREADS_JSON
+
+run_rereview_gate_case "rereview-resolved-medium-allows-low-comment" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_closed2"}],"dispositions":[{"id":"f_closed2","status":"resolved_by_change"}]}' \
+  "approve" \
+  "No findings at or above the effective blocking threshold remain open"
+
+run_rereview_gate_case "rereview-approved-comment-low-becomes-approve" \
+  "$(jq -c '.action="comment" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "comment" \
+  "Review"
+
+run_rereview_gate_case "rereview-agent-comment-info-failure-stays-comment" \
+  "$(jq -c '.action="comment" | .findings=[{severity:"info",category:"sub-agent-failure",file:"N/A",description:"dimension failed"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "comment" \
+  "Review" \
+  "No findings at or above the effective blocking threshold remain open"
+
+run_rereview_gate_case "rereview-approved-empty-comment-stays-comment" \
+  "$(jq -c '.action="comment" | del(.findings) | .body="Scope is unclear; a human should confirm."' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "comment" \
+  "Scope is unclear; a human should confirm."
+
+run_rereview_gate_case "rereview-low-reject-remains-reject" \
+  "$(jq -c '.action="reject" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[]}' \
+  "reject" \
+  "Review" \
+  "No findings at or above the effective blocking threshold remain open"
+
+run_rereview_gate_case "rereview-approved-ledger-keeps-low-visible" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "approve" \
+  "No findings at or above the effective blocking threshold remain open"
+
+run_rereview_gate_case "rereview-approved-medium-finding-remains" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"medium",category:"logic-error",file:"new.go",line:1,description:"bug"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "request-changes" \
+  "Review" \
+  "minor"
+
+run_rereview_gate_case "rereview-approved-unfiltered-body-is-preserved" \
+  "$(jq -c '.action="request-changes" | .body="Keep this verification context" | .findings=[{severity:"medium",category:"logic-error",file:"new.go",line:1,description:"bug"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "request-changes" \
+  "Keep this verification context"
+
+run_rereview_gate_case "rereview-current-high-overrides-approve" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"high",category:"logic-error",file:"new.go",line:1,description:"serious bug"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "request-changes" \
+  "Current high or critical findings must be addressed" \
+  "" \
+  "low" \
+  "__inherit__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "0" \
+  "" \
+  '.findings | any(.severity == "high" and .description == "serious bug")'
+
+run_rereview_gate_case "rereview-approved-failure-remains-failure" \
+  "$(jq -c '.action="failure" | .reason="tool-failure" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "failure" \
+  "" \
+  "" \
+  "low" \
+  "__inherit__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "1"
+
+run_rereview_gate_case "rereview-approved-mixed-severities-filter-low" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"old.go",line:1,description:"minor"},{severity:"medium",category:"logic-error",file:"new.go",line:2,description:"medium"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "request-changes" \
+  "Review" \
+  "" \
+  "medium"
+
+run_rereview_gate_case "rereview-high-threshold-filters-low" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"old.go",line:1,description:"minor"},{severity:"high",category:"logic-error",file:"new.go",line:2,description:"high"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "request-changes" \
+  "Review" \
+  "" \
+  "medium"
+
+run_rereview_gate_case "rereview-stricter-threshold-is-preserved" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"medium",category:"logic-error",file:"new.go",line:1,description:"bug"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "comment" \
+  "Review" \
+  "" \
+  "high"
+
+run_rereview_gate_case "rereview-stricter-threshold-ignores-prior-medium" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_below_threshold"}]}' \
+  "approve" \
+  "Review" \
+  "prior medium-or-higher findings remain open" \
+  "high"
+
+run_rereview_gate_case "rereview-stricter-threshold-ignores-actionable-low" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[{"severity":"low","category":"logic-error","file":"old.go","line":1,"id":"f_actionable_below_threshold","actionable":true}]}' \
+  "approve" \
+  "Review" \
+  "prior blocking findings remain open" \
+  "high"
+
+run_rereview_gate_case "rereview-critical-threshold-still-blocks-prior-high" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[{"severity":"high","category":"logic-error","file":"old.go","line":1,"id":"f_prior_high"}]}' \
+  "request-changes" \
+  "Approval withheld" \
+  "" \
+  "critical"
+
+run_rereview_gate_case "rereview-request-changes-advisory-medium-does-not-block" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"doc-style","file":"old.md","line":1,"id":"f_advisory_request","actionable":false}]}' \
+  "approve" \
+  "Review" \
+  "prior medium-or-higher findings remain open"
+
+run_rereview_gate_case "rereview-prior-reject-requires-human" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"reject","findings":[{"severity":"medium","category":"design-direction","file":"old.go","line":1,"id":"f_rejected_medium","actionable":false}]}' \
+  "comment" \
+  "Automatic re-review promotion withheld" \
+  "/fs-fix"
+
+run_rereview_gate_case "rereview-prior-reject-current-medium-requires-human" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"medium",category:"logic-error",file:"new.go",line:1,description:"new medium"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"reject","findings":[{"severity":"medium","category":"design-direction","file":"old.go","line":1,"id":"f_rejected_medium","actionable":false}]}' \
+  "comment" \
+  "Automatic re-review promotion withheld" \
+  "/fs-fix"
+
+run_rereview_gate_case "rereview-legacy-current-medium-requires-human" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"medium",category:"logic-error",file:"new.go",line:1,description:"new medium"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_legacy_medium"}]}' \
+  "comment" \
+  "Automatic re-review promotion withheld" \
+  "/fs-fix"
+
+run_rereview_gate_case "rereview-prior-reject-without-open-medium-requires-human" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"reject","findings":[]}' \
+  "comment" \
+  "Automatic re-review promotion withheld" \
+  "/fs-fix"
+
+run_two_round_prior_reject_case "rereview-prior-reject-hold-persists"
+
+run_rereview_gate_case "rereview-promotion-respects-protected-paths" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[]}' \
+  "comment" \
+  "Protected paths detected" \
+  "" \
+  "low" \
+  "src/" \
+  "src/main.go"
+
+run_rereview_gate_case "rereview-promotion-rejects-protected-path-finding" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"info",category:"protected-path",file:"docs/review.md",line:1,description:"human review required"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[]}' \
+  "comment" \
+  "Automatic re-review approval unavailable" \
+  "" \
+  "info"
+
+run_rereview_gate_case "rereview-promotion-respects-risk-gate" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}] | .risk_assessment={score:5,level:"high",rationale:"high risk"}' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "comment" \
+  "Risk score 5/5" \
+  "" \
+  "low" \
+  "" \
+  "src/main.go" \
+  "true" \
+  "4"
+
+run_rereview_gate_case "rereview-promotion-file-fetch-failure-requires-human" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[]}' \
+  "comment" \
+  "Automatic re-review approval unavailable" \
+  "No findings at or above the effective blocking threshold remain open" \
+  "low" \
+  "" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "1" \
+  "1"
+
+run_rereview_gate_case "rereview-direct-approval-file-fetch-failure-keeps-blocker" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_fetchblock"}]}' \
+  "" \
+  "" \
+  "" \
+  "low" \
+  "" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "1" \
+  "1"
+
+run_rereview_gate_case "rereview-promotion-unset-protected-paths-requires-human" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[]}' \
+  "comment" \
+  "Automatic re-review approval unavailable" \
+  "No findings at or above the effective blocking threshold remain open" \
+  "low" \
+  "__unset__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "1"
+
+run_rereview_gate_case "rereview-direct-approval-unset-protected-paths-fails-closed" \
+  "$(jq -c '.action="approve" | del(.findings)' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  "" \
+  "" \
+  "" \
+  "low" \
+  "__unset__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "1"
+
+run_rereview_gate_case "rereview-open-prior-medium-survives-safety-gate" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_open1"}]}' \
+  "request-changes" \
+  "prior medium-or-higher findings remain open" \
+  "" \
+  "low" \
+  "src/" \
+  "src/main.go"
+
+run_rereview_gate_case "rereview-initial-approve-open-medium-survives-protected-path-gate" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_open1"}]}' \
+  "request-changes" \
+  "prior medium-or-higher findings remain open" \
+  "" \
+  "low" \
+  "src/" \
+  "src/main.go"
+
+run_rereview_gate_case "rereview-initial-approve-open-medium-survives-risk-gate" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"low",category:"style",file:"src/main.go",line:1,description:"minor"}] | .risk_assessment={score:5,level:"high",rationale:"high risk"}' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_open1"}]}' \
+  "request-changes" \
+  "prior medium-or-higher findings remain open" \
+  "" \
+  "low" \
+  "" \
+  "src/main.go" \
+  "true" \
+  "4"
+
 # A supplied id is kept when it names an open prior finding.
 run_disposition_case "projection-keeps-supplied-finding-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d",id:"f_keep1"}] | .dispositions=[{id:"f_keep1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
@@ -1788,6 +2302,16 @@ run_disposition_case "projection-copies-prior-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_same1"}]}' \
   '.findings[0].id == "f_same1" and (.findings | length) == 1 and .dispositions == [{id: "f_same1", status: "open"}]'
+
+run_disposition_case "projection-persists-host-normalized-actionable" \
+  "$(jq -c '.action="request-changes" | .findings=[{severity:"low",category:"logic-error",file:"old.go",line:1,id:"f_new_low",description:"minor",actionable:true}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[]}' \
+  '.findings | any(.severity == "low" and .actionable == false)'
+
+run_disposition_case "projection-preserves-open-prior-actionable" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"low",category:"logic-error",file:"old.go",line:1,id:"f_prior_actionable",description:"still present",actionable:false}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"approve","findings":[{"severity":"low","category":"logic-error","file":"old.go","line":1,"id":"f_prior_actionable","actionable":true}]}' \
+  '.findings | any(.severity == "low" and .actionable == true)'
 
 run_disposition_case "projection-carries-undispositioned-prior-finding" \
   "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d"}]' <<< "${BASE_REVIEW}")" \
@@ -1925,13 +2449,13 @@ run_disposition_case "projection-assigns-id-to-legacy-prior-finding" \
   '([.findings[] | select(.file == "old.go" and .category == "logic-error" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.dispositions | length) == 1 and .dispositions[0].status == "open" and (.findings | length) == 2'
 
 # An approval cannot slip past an unanswered high or critical prior finding
-# that the review omitted: the action is downgraded to comment.
+# that the review omitted: the action requests changes with a carried finding.
 run_disposition_case "approve-withheld-for-unanswered-high-prior-finding" \
   "$(jq -c '.action="approve" | .findings=[]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '([.findings[] | select(.id == "f_hi1")] | length) == 1 and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-unanswered-high-prior-finding" \
-  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 assert_disposition_stdout "approve-withheld-for-unanswered-high-prior-finding" \
   "::warning::Approval withheld: prior high/critical finding id(s) f_hi1" "present"
 
@@ -1956,14 +2480,14 @@ run_disposition_case "approve-withheld-for-explicit-open-high-prior-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-explicit-open-high-prior-finding" \
-  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 
 run_disposition_case "approve-withheld-for-empty-evidence-resolved-high-prior-finding" \
   "$(jq -c '.action="approve" | .findings=[] | .dispositions=[{id:"f_hi1",status:"resolved_by_change",rationale:"Fixed.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-empty-evidence-resolved-high-prior-finding" \
-  '.action == "comment" and (.body | contains("Approval withheld"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld"))'
 
 # Resolving f_X must not copy that id onto a new finding in the same file
 # and category. The new row gets its own id and stays in the ledger.
@@ -2105,7 +2629,7 @@ run_disposition_case "approve-withheld-for-human-dismissed-high-prior-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_hi1"}]}' \
   '.dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-human-dismissed-high-prior-finding" \
-  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 assert_disposition_stdout "approve-withheld-for-human-dismissed-high-prior-finding" \
   "::warning::dismissed_by_human is not accepted for high or critical prior finding id(s) f_hi1; recorded as open" "present"
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
@@ -2160,7 +2684,7 @@ run_disposition_case "approve-withheld-for-reclassified-without-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-reclassified-without-finding" \
-  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 assert_disposition_stdout "approve-withheld-for-reclassified-without-finding" \
   "::warning::Reclassified prior finding id(s) f_hi1 have no current finding with that id; recorded as open" "present"
 
@@ -2187,7 +2711,7 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lo
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
-  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 
 # Re-emitting an open prior high finding at high still leaves it open.
 # open is not a resolution, so approval is withheld.
@@ -2196,7 +2720,7 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-hi
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
-  '.action == "comment" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
@@ -3265,6 +3789,26 @@ done
 # Risk verdict gate tests
 # ---------------------------------------------------------------------------
 
+# Builds a checkout at "${run_dir}/repo": "full", "shallow", or "not-a-repo".
+make_risk_test_repo() {
+  local run_dir="$1"
+  local mode="$2"
+  local src_repo="${run_dir}/repo-src"
+  rm -rf "${src_repo}" "${run_dir}/repo"
+  if [ "${mode}" = "not-a-repo" ]; then
+    mkdir -p "${run_dir}/repo"
+    return
+  fi
+  git init -q "${src_repo}"
+  git -C "${src_repo}" -c user.email=test@test.invalid -c user.name=test \
+    commit -q --allow-empty -m init
+  if [ "${mode}" = "shallow" ]; then
+    git clone -q --depth 1 "file://${src_repo}" "${run_dir}/repo"
+  else
+    git clone -q "file://${src_repo}" "${run_dir}/repo"
+  fi
+}
+
 run_risk_verdict_test() {
   local test_name="$1"
   local result_json="$2"
@@ -3273,11 +3817,17 @@ run_risk_verdict_test() {
   local expect_downgrade="${5:-false}"
   local expect_pattern="${6:-}"
   local expect_no_pattern="${7:-}"
+  local fetch_depth="${8:-}"
+  local repo_mode="${9:-}"
 
   local run_dir="${TMPDIR}/run-risk-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
+
+  if [[ -n "${repo_mode}" ]]; then
+    make_risk_test_repo "${run_dir}" "${repo_mode}"
+  fi
 
   local exit_code=0
   # shellcheck disable=SC2030,SC2031
@@ -3293,6 +3843,15 @@ run_risk_verdict_test() {
     export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
     export REVIEW_RISK_VERDICT_THRESHOLD="${threshold}"
     export MOCK_PR_FILES="README.md"
+    if [[ "${fetch_depth}" == "EMPTY" ]]; then
+      # Sentinel for an explicitly empty value ("" means leave unset).
+      export REVIEW_GIT_FETCH_DEPTH=""
+    elif [[ -n "${fetch_depth}" ]]; then
+      export REVIEW_GIT_FETCH_DEPTH="${fetch_depth}"
+    fi
+    if [[ -n "${repo_mode}" ]]; then
+      export REPO_DIR="${run_dir}/repo"
+    fi
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -3900,6 +4459,97 @@ run_risk_gated_field_test() {
   echo "PASS: ${test_name}"
 }
 run_risk_gated_field_test
+
+# ---------------------------------------------------------------------------
+# Tier 2 deepen-failure detection (#1621). RISK_SCORE_3_RESULT has no
+# "degraded" key, so any downgrade comes from the shallow check alone.
+# ---------------------------------------------------------------------------
+
+# --- Unset REVIEW_GIT_FETCH_DEPTH + shallow repo → degraded downgrade ---
+run_risk_verdict_test "risk-v-tier2-unset-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (degraded)" "" \
+  "" "shallow"
+
+# --- REVIEW_GIT_FETCH_DEPTH=0 + shallow repo → degraded downgrade ---
+run_risk_verdict_test "risk-v-tier2-zero-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (degraded)" "" \
+  "0" "shallow"
+
+# --- REVIEW_GIT_FETCH_DEPTH=1 + shallow repo → opted out, no downgrade ---
+run_risk_verdict_test "risk-v-tier2-one-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment" \
+  "1" "shallow"
+
+# --- Unset REVIEW_GIT_FETCH_DEPTH + fully-deepened repo → no downgrade ---
+run_risk_verdict_test "risk-v-tier2-unset-full" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment" \
+  "" "full"
+
+# --- Explicitly empty REVIEW_GIT_FETCH_DEPTH="" + shallow repo → no downgrade ---
+run_risk_verdict_test "risk-v-tier2-empty-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment" \
+  "EMPTY" "shallow"
+
+# --- Unset REVIEW_GIT_FETCH_DEPTH + not a git repo → fails closed ---
+run_risk_verdict_test "risk-v-tier2-git-error" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (degraded)" "" \
+  "" "not-a-repo"
+
+# --- Threshold 6 disables the gate even with a shallow repo ---
+run_risk_verdict_test "risk-v-tier2-threshold6-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "6" "false" \
+  "" "downgrading approve to comment" \
+  "" "shallow"
+
+# --- tier2-deepen-failed reason appears in the posted body ---
+run_risk_verdict_tier2_body_test() {
+  local test_name="risk-v-tier2-body"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_3_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+  make_risk_test_repo "${run_dir}" "shallow"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    export REPO_DIR="${run_dir}/repo"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "tier2-deepen-failed" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — tier2-deepen-failed reason not in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_verdict_tier2_body_test
 
 # --- Summary ---
 
