@@ -17,6 +17,9 @@ GITHUB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
 source "${BASH_SOURCE[0]%/*}/forge-transient-retry.lib.sh"
+# forge_push_branch: commits are created through the API so GitHub signs them.
+# shellcheck source=github-signed-push.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-signed-push.lib.sh"
 
 # --- URL handling ---
 
