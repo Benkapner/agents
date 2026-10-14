@@ -217,6 +217,9 @@ install -m 0600 /dev/null "$ENV_FILE"
   # the same value ("low") so eval cases that don't set this var don't
   # fail closed in post-review.sh's severity-validation block.
   if [[ "$AGENT" == "review" ]]; then
+    # The production workflow supplies this computed per-repo value. Eval
+    # bypasses that workflow, so mirror its default while preserving overrides.
+    emit_env "FULLSEND_APP_SET" "${FULLSEND_APP_SET:-fullsend-ai}"
     emit_env "REVIEW_FINDING_SEVERITY_THRESHOLD" "${REVIEW_FINDING_SEVERITY_THRESHOLD:-low}"
     emit_env "PRIOR_REVIEW_FILE" "${PRIOR_REVIEW_FILE:-}"
     emit_env "PRIOR_REVIEW_SHA" "${PRIOR_REVIEW_SHA:-}"

@@ -2,7 +2,7 @@
 # validate-output-schema-test.sh — Test validate-output-schema.sh with fixtures.
 #
 # Run from the repo root:
-#   bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh
+#   bash scripts/validate-output-schema-test.sh
 
 set -euo pipefail
 
@@ -556,13 +556,15 @@ run_test_custom_filename "review-reject-missing-findings" \
   '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'findings' is a required property"
 
 run_test_custom_filename "review-reject-missing-body" \
   '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'body' is a required property"
 
 run_test_custom_filename "review-failure-time-budget-valid" \
   '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"time-budget"}' \
@@ -574,13 +576,105 @@ run_test_custom_filename "review-failure-unknown-reason-rejected" \
   '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"ran-out-of-time"}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "is not one of"
+
+# --- review-result.schema.json per-action required fields ---
+
+run_test_custom_filename "review-request-changes-missing-findings" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Please change."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'findings' is a required property"
+
+run_test_custom_filename "review-request-changes-missing-body" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-request-changes-missing-head-sha" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","body":"Please change.","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-request-changes-empty-findings" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Please change.","findings":[]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "should be non-empty"
+
+run_test_custom_filename "review-comment-missing-body" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-comment-missing-head-sha" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","body":"FYI only."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-failure-missing-reason" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'reason' is a required property"
+
+run_test_custom_filename "review-approve-missing-body" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-approve-missing-head-sha" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","body":"LGTM."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-reject-missing-head-sha" \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
 
 run_test_custom_filename "review-approve-valid" \
   '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good, only minor nits."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
+
+# --- review-result.schema.json: repo path segments ---
+# GitLab project paths may nest groups arbitrarily (group/subgroup/project).
+
+for repo_case in "owner/repo" "group/subgroup/project" "a/b/c/d"; do
+  run_test_custom_filename "review-repo-valid-${repo_case//\//_}" \
+    "{\"action\":\"failure\",\"pr_number\":1,\"repo\":\"${repo_case}\",\"reason\":\"time-budget\"}" \
+    "agent-result.json" \
+    "${REVIEW_SCHEMA}" \
+    "true"
+done
+
+for repo_case in "repo" "" "/a/b" "a/b/" "a//b"; do
+  run_test_custom_filename "review-repo-invalid-${repo_case//\//_}" \
+    "{\"action\":\"failure\",\"pr_number\":1,\"repo\":\"${repo_case}\",\"reason\":\"time-budget\"}" \
+    "agent-result.json" \
+    "${REVIEW_SCHEMA}" \
+    "false"
+done
 
 # --- review-result.schema.json: short / non-hex SHA rejected ---
 

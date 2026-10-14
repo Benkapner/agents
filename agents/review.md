@@ -29,7 +29,9 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   `https://gitlab.com/group/project/-/merge_requests/42`). Set by the
   harness forge section from the triggering event payload.
 - `REPO_FULL_NAME` — the `owner/repo` string for the target
-  repository (e.g., `konflux-ci/konflux-ci`).
+  repository (e.g., `konflux-ci/konflux-ci`). On GitLab this is the
+  full project path and may contain nested group segments (e.g.,
+  `group/subgroup/project`); emit it verbatim as `repo`.
 - `FULLSEND_OUTPUT_DIR` — the directory where the agent writes its
   result JSON. Set by the harness; use this path when operating in
   pipeline mode.
@@ -65,10 +67,13 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   id. A closed id does not excuse the current code: a defect that is back is
   a new finding with no id. Every other prior id is open and needs an
   answer; a `reclassified` answer also re-emits the finding with the same id
-  at its new severity. The post-script verifies `dismissed_by_human` against
-  a resolved review thread from an eligible reviewer and records anything
-  else as open. Copy an open id onto the same finding; do not mint a new one
-  and do not derive one from the path or the text.
+  at its new severity. Before sandbox ingress, the host marks eligible
+  write-or-higher human-resolved threads `dismissed_by_human` only when a
+  trusted review-bot comment contains the exact finding-id stamp; raw thread
+  comments are not copied into the sandbox. The post-script independently
+  verifies any `dismissed_by_human` status produced during this run and
+  records anything else as open. Copy an open id onto the same finding; do
+  not mint a new one and do not derive one from the path or the text.
   The file is empty on first review or when provenance, projection, category,
   or path validation fails.
 
@@ -294,7 +299,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 |-------------|---------|-----------------|--------------------------------------------------|
 | `action`    | string  | yes             | One of: `approve`, `request-changes`, `comment`, `reject`, `failure` |
 | `pr_number` | integer | yes             | PR number (minimum 1)                            |
-| `repo`      | string  | yes             | `owner/repo` format (pattern: `^[^/]+/[^/]+$`)  |
+| `repo`      | string  | yes             | `owner/repo` or nested GitLab path (pattern: `^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$`) |
 | `head_sha`  | string  | conditional     | Commit SHA (40 or 64 hex chars)                  |
 | `body`      | string  | conditional     | Markdown review comment (min 1 char)             |
 | `findings`  | array   | conditional     | Array of finding objects (min 1 item when present)|
