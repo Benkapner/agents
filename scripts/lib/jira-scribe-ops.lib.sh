@@ -50,8 +50,8 @@ if [[ ! "${SCRIBE_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
 fi
 SCRIBE_JIRA_ISSUE_TYPE="${SCRIBE_JIRA_ISSUE_TYPE:-Task}"
 
-# Maximum JQL pages fetched for the backlog (100 issues per page).
-SCRIBE_JIRA_MAX_PAGES=50
+# Maximum pages fetched per paginated Jira read (100 issues per JQL page).
+SCRIBE_JIRA_MAX_PAGES="${SCRIBE_JIRA_MAX_PAGES:-50}"
 
 _scribe_jira_api() {
   local method="$1"
@@ -176,27 +176,52 @@ _scribe_text_to_adf() {
     }'
 }
 
+# Fetch every item of a paginated createmeta endpoint (startAt paging) and
+# print them as one JSON array. Fails if a page cannot be read or the page
+# cap is hit before the last page, so callers never validate on partial data.
+_scribe_jira_createmeta_all() {
+  local endpoint="$1" items='[]' start=0 page resp count total last
+  for ((page = 1; page <= SCRIBE_JIRA_MAX_PAGES; page++)); do
+    resp=$(_scribe_jira_api GET "${endpoint}?maxResults=200&startAt=${start}") || return 1
+    count=$(printf '%s' "${resp}" | jq -r '(.issueTypes // .values // .fields // []) | length') || return 1
+    items=$(jq -cn --argjson cur "${items}" --argjson page "${resp}" \
+      '$cur + ($page.issueTypes // $page.values // $page.fields // [])') || return 1
+    total=$(printf '%s' "${resp}" | jq -r '.total // empty')
+    last=$(printf '%s' "${resp}" | jq -r '.isLast // empty')
+    start=$((start + count))
+    # Without a total or isLast marker the response is a single page.
+    if [[ "${count}" -eq 0 || "${last}" == "true" ]] \
+      || [[ -z "${total}" && -z "${last}" ]] \
+      || [[ -n "${total}" && "${start}" -ge "${total}" ]]; then
+      printf '%s' "${items}"
+      return 0
+    fi
+  done
+  echo "ERROR: Jira create metadata exceeds ${SCRIBE_JIRA_MAX_PAGES} pages" >&2
+  return 1
+}
+
 # Check that the configured project and issue type exist and that every
 # required create field without a default is one scribe supplies. Fails
 # before any create call when the project needs extra fields.
 tracker_validate_create() {
   local types type_id meta missing
-  types=$(_scribe_jira_api GET "/issue/createmeta/${SCRIBE_JIRA_PROJECT}/issuetypes?maxResults=200") || {
+  types=$(_scribe_jira_createmeta_all "/issue/createmeta/${SCRIBE_JIRA_PROJECT}/issuetypes") || {
     echo "ERROR: cannot read create metadata for Jira project ${SCRIBE_JIRA_PROJECT} (missing project or no create permission)" >&2
     return 1
   }
   type_id=$(printf '%s' "${types}" | jq -r --arg name "${SCRIBE_JIRA_ISSUE_TYPE}" \
-    '[(.issueTypes // .values // [])[] | select(.name == $name)][0].id // empty')
+    '[.[] | select(.name == $name)][0].id // empty')
   if [[ -z "${type_id}" ]]; then
     echo "ERROR: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' is not available in Jira project ${SCRIBE_JIRA_PROJECT}" >&2
     return 1
   fi
-  meta=$(_scribe_jira_api GET "/issue/createmeta/${SCRIBE_JIRA_PROJECT}/issuetypes/${type_id}?maxResults=200") || {
+  meta=$(_scribe_jira_createmeta_all "/issue/createmeta/${SCRIBE_JIRA_PROJECT}/issuetypes/${type_id}") || {
     echo "ERROR: cannot read create fields for issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT}" >&2
     return 1
   }
   missing=$(printf '%s' "${meta}" | jq -r '
-    [(.fields // .values // [])[]
+    [.[]
       | select(.required == true and (.hasDefaultValue // false) == false)
       | select((.fieldId // .key) as $f | ["project","issuetype","summary","description","labels","reporter"] | index($f) | not)
       | (.fieldId // .key)] | join(", ")')
@@ -209,15 +234,18 @@ tracker_validate_create() {
 # Rerun protection: print the browse URL of an issue in the configured
 # project whose summary exactly matches the title (any status). Paginates
 # all matches of the fuzzy JQL summary search before comparing exactly.
-# Returns 1 on API failure so callers can refuse to create blindly.
+# Returns 1 when the lookup cannot prove absence (API failure, no searchable
+# terms, or results truncated by the page cap with no exact match) so callers
+# refuse to create blindly.
 tracker_find_existing_issue() {
   local title="$1" raw_file jql terms match rc=0
-  # JQL text search reserves most punctuation; search on the alphanumeric
-  # terms only and compare the full title exactly below.
-  terms=$(printf '%s' "${title}" | tr -c '[:alnum:]' ' ' | tr -s ' ')
-  terms="${terms# }"
-  terms="${terms% }"
-  [[ -z "${terms}" ]] && return 0
+  # JQL text search reserves most punctuation; search on the letter/digit
+  # terms only (Unicode-aware) and compare the full title exactly below.
+  terms=$(printf '%s' "${title}" | jq -Rr '[scan("[\\p{L}\\p{N}]+")] | join(" ")') || return 1
+  if [[ -z "${terms}" ]]; then
+    echo "ERROR: Jira duplicate check has no searchable terms in the issue title" >&2
+    return 1
+  fi
   raw_file=$(mktemp)
   jql="project = $(_scribe_jql_quote "${SCRIBE_JIRA_PROJECT}") AND summary ~ $(_scribe_jql_quote "$(_scribe_jql_quote "${terms}")")"
   _scribe_jira_search_paginated "${jql}" '["summary"]' "${raw_file}" || rc=$?
@@ -229,6 +257,9 @@ tracker_find_existing_issue() {
   rm -f "${raw_file}"
   if [[ -n "${match}" ]]; then
     echo "${JIRA_BASE_URL}/browse/${match}"
+  elif [[ ${rc} -eq 2 ]]; then
+    echo "ERROR: Jira duplicate check was truncated by the page cap; cannot rule out an existing issue" >&2
+    return 1
   fi
 }
 

@@ -62,17 +62,39 @@ done
 if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
   case "\${URL}" in
     */issue/createmeta/PROJ/issuetypes\?*)
-      echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      if [[ "\${JIRA_MOCK_PAGED_META:-}" == "1" ]]; then
+        if [[ "\${URL}" == *"startAt=0"* ]]; then
+          echo '{"issueTypes":[{"id":"10002","name":"Bug"}],"startAt":0,"total":2,"isLast":false}'
+        else
+          echo '{"issueTypes":[{"id":"10001","name":"Task"}],"startAt":1,"total":2,"isLast":true}'
+        fi
+      else
+        echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      fi
       ;;
     */issue/createmeta/PROJ/issuetypes/10001\?*)
-      if [[ "\${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
+      if [[ "\${JIRA_MOCK_PAGED_META:-}" == "1" ]]; then
+        if [[ "\${URL}" == *"startAt=0"* ]]; then
+          echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false}],"startAt":0,"total":2,"isLast":false}'
+        else
+          echo '{"fields":[{"fieldId":"customfield_10060","required":true,"hasDefaultValue":false}],"startAt":1,"total":2,"isLast":true}'
+        fi
+      elif [[ "\${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"customfield_10050","required":true,"hasDefaultValue":false}]}'
       else
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
       fi
       ;;
     */search/jql)
-      if [[ "\${DATA}" == *'"nextPageToken":"p2"'* ]]; then
+      if [[ "\${JIRA_MOCK_ENDLESS:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-3","fields":{"summary":"Unrelated"}}],"nextPageToken":"more","isLast":false}'
+      elif [[ "\${DATA}" == *'添加深色模式'* ]]; then
+        if [[ "\${JIRA_MOCK_DUP_CJK:-}" == "1" ]]; then
+          echo '{"issues":[{"key":"PROJ-8","fields":{"summary":"添加深色模式"}}],"isLast":true}'
+        else
+          echo '{"issues":[],"isLast":true}'
+        fi
+      elif [[ "\${DATA}" == *'"nextPageToken":"p2"'* ]]; then
         if [[ "\${JIRA_MOCK_DUP:-}" == "1" ]]; then
           echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Add dark mode"}}],"isLast":true}'
         else
@@ -543,6 +565,39 @@ run_test_stdout "jira/live-rerun-duplicate-on-page-2-skipped" "${JIRA_NEW_ISSUE}
   "SKIP: duplicate issue (already exists: https://mock.atlassian.net/browse/PROJ-7)"
 assert_no_writes "jira/duplicate-no-writes"
 unset JIRA_MOCK_DUP
+
+# Non-Latin title: the duplicate lookup must still run and find the match.
+JIRA_CJK_ISSUE="${JIRA_NEW_ISSUE//Add dark mode/添加深色模式}"
+export JIRA_MOCK_DUP_CJK="1"
+run_test_stdout "jira/live-rerun-non-latin-title-skipped" "${JIRA_CJK_ISSUE}" \
+  "SKIP: duplicate issue (already exists: https://mock.atlassian.net/browse/PROJ-8)"
+assert_no_writes "jira/non-latin-duplicate-no-writes"
+unset JIRA_MOCK_DUP_CJK
+
+# Title with no letters or digits: lookup cannot run, so refuse to create.
+JIRA_PUNCT_ISSUE="${JIRA_NEW_ISSUE//Add dark mode/!!!}"
+run_test_stdout "jira/live-no-searchable-terms-refused" "${JIRA_PUNCT_ISSUE}" "" true
+assert_no_writes "jira/no-searchable-terms-no-writes"
+
+# Page cap hit with no exact match: refuse to create.
+export JIRA_MOCK_ENDLESS="1"
+export SCRIBE_JIRA_MAX_PAGES=2
+run_test_stdout "jira/live-page-cap-refused" "${JIRA_NEW_ISSUE}" "" true
+assert_no_writes "jira/page-cap-no-writes"
+unset JIRA_MOCK_ENDLESS SCRIBE_JIRA_MAX_PAGES
+
+# Create metadata spread over two pages: page two must be read.
+export JIRA_MOCK_PAGED_META="1"
+run_test_stdout "jira/createmeta-page-two-required-field" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "requires fields scribe does not set: customfield_10060" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/createmeta-page-two-field-detected"
+else
+  echo "FAIL: jira/createmeta-page-two-field-detected"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_no_writes "jira/createmeta-page-two-no-writes"
+unset JIRA_MOCK_PAGED_META
 
 export JIRA_MOCK_REQUIRED_FIELD="1"
 run_test_stdout "jira/required-field-fails-before-create" "${JIRA_NEW_ISSUE}" "" true

@@ -142,13 +142,18 @@ Behavior:
 - Only new issues are written. Comments on Jira issues are not supported:
   `all` behaves as `new_issues_only`, and `comments_only` is rejected.
 - The backlog is the project's issues that are not Done, fetched with
-  JQL `nextPageToken` pagination.
+  JQL `nextPageToken` pagination. Fetching stops after 50 pages (about
+  5,000 issues); a larger backlog is silently truncated to the most
+  recently created issues.
 - Before creating anything (including in dry-run), the post-script checks
   Jira create metadata. It fails if the issue type is missing or the
   project requires fields scribe does not set.
 - On live runs, an issue whose summary exactly matches an existing issue
   in the project is skipped, so rerunning on the same notes does not
-  create duplicates.
+  create duplicates. If the lookup cannot prove absence (the title has no
+  letters or digits to search on, the search fails, or results are
+  truncated by the page cap without an exact match), the post-script
+  refuses to create the issue.
 - The same content gates and `SCRIBE_DRY_RUN` safety gate apply.
 
 Meeting-derived content is sensitive. Run Jira-backed scribe in a private
