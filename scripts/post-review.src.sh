@@ -1030,7 +1030,7 @@ fi
 BLOCKING_IDS="$(jq -r '.blocking | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${BLOCKING_IDS}" && "${ACTION}" = "approve" ]]; then
   echo "::warning::Approval withheld: prior high/critical finding id(s) ${BLOCKING_IDS} are still open"
-  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) '"${BLOCKING_IDS}"$' are still open.'
+  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) are still open.'
   LEDGER_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${LEDGER_RESULT}")
   jq --arg notice "${LEDGER_NOTICE}" \
@@ -1094,7 +1094,7 @@ if [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -gt 0 ]]; then
   fi
 fi
 PRIOR_BLOCKING_SUMMARY="$(jq -r --argjson links "${FINDING_COMMENT_LINKS}" '
-  map("- " + .id + ": " + .severity + " " + .category + " at "
+  map("- " + .severity + " " + .category + " at "
       + (.file // "PR-level")
       + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end)
       + (if ($links[.id] | type) == "string" then
