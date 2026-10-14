@@ -2508,6 +2508,8 @@ run_disposition_case "approve-withheld-for-unanswered-high-prior-finding" \
   '([.findings[] | select(.id == "f_hi1")] | length) == 1 and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-unanswered-high-prior-finding" \
   '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
+assert_last_result "approve-withheld-for-unanswered-high-prior-finding" \
+  '([.findings[] | select(.id == "f_hi1")] | length) == 1 and ([.findings[] | .description // "" | test("f_[A-Za-z0-9]+")] | any | not)'
 assert_disposition_stdout "approve-withheld-for-unanswered-high-prior-finding" \
   "::warning::Approval withheld: prior high/critical finding id(s) f_hi1" "present"
 

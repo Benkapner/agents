@@ -1073,7 +1073,7 @@ PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" 
         file: (.file // "N/A"),
         description: (
           if (.description | type == "string" and length > 0) then .description
-          else ("Previously reported finding " + .id + " remains open: "
+          else ("Previously reported finding remains open: "
             + .severity + " " + .category + " in " + (.file // "PR-level")
             + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end) + ".")
           end
