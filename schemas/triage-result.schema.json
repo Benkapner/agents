@@ -179,7 +179,8 @@
       "anyOf": [
         { "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$" },
         { "pattern": "^[A-Z][A-Z0-9]*$" }
-      ]
+      ],
+      "not": { "pattern": "[\\r\\n]" }
     },
     "clarity_scores": {
       "type": "object",
