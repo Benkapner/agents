@@ -2507,7 +2507,7 @@ run_disposition_case "approve-withheld-for-unanswered-high-prior-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '([.findings[] | select(.id == "f_hi1")] | length) == 1 and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-unanswered-high-prior-finding" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 assert_disposition_stdout "approve-withheld-for-unanswered-high-prior-finding" \
   "::warning::Approval withheld: prior high/critical finding id(s) f_hi1" "present"
 
@@ -2532,7 +2532,7 @@ run_disposition_case "approve-withheld-for-explicit-open-high-prior-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-explicit-open-high-prior-finding" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
 run_disposition_case "approve-withheld-for-empty-evidence-resolved-high-prior-finding" \
   "$(jq -c '.action="approve" | .findings=[] | .dispositions=[{id:"f_hi1",status:"resolved_by_change",rationale:"Fixed.",evidence:""}]' <<< "${BASE_REVIEW}")" \
@@ -2680,7 +2680,7 @@ run_disposition_case "approve-withheld-for-human-dismissed-high-prior-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_hi1"}]}' \
   '.dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-human-dismissed-high-prior-finding" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 assert_disposition_stdout "approve-withheld-for-human-dismissed-high-prior-finding" \
   "::warning::dismissed_by_human is not accepted for high or critical prior finding id(s) f_hi1; recorded as open" "present"
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
@@ -2741,7 +2741,7 @@ run_disposition_case "approve-withheld-for-reclassified-without-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-reclassified-without-finding" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 assert_disposition_stdout "approve-withheld-for-reclassified-without-finding" \
   "::warning::Reclassified prior finding id(s) f_hi1 have no current finding with that id; recorded as open" "present"
 
@@ -2768,7 +2768,7 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lo
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
 # Re-emitting an open prior high finding at high still leaves it open.
 # open is not a resolution, so approval is withheld.
@@ -2777,7 +2777,7 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-hi
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
