@@ -435,13 +435,15 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   fi
 
   # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}"; then
+  # Labels are model-produced free text (Jira creates them on the fly), so
+  # they pass the same gates as the title and body.
+  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}" || contains_sensitive "${LABELS}"; then
     gate_reject "${TITLE}" "contains sensitive content"
     continue
   fi
 
   # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}"; then
+  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}" || contains_suspicious_unicode "${LABELS}"; then
     gate_reject "${TITLE}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi

@@ -147,14 +147,26 @@ Behavior:
   recently created issues.
 - Before creating anything (including in dry-run), the post-script checks
   Jira create metadata. It fails if the issue type is missing or the
-  project requires fields scribe does not set.
+  project requires fields scribe does not set, or the create screen has no
+  Description field. If the screen has no Labels field, labels are omitted
+  from created issues with a warning.
 - On live runs, an issue whose summary exactly matches an existing issue
   in the project is skipped, so rerunning on the same notes does not
   create duplicates. If the lookup cannot prove absence (the title has no
-  letters or digits to search on, the search fails, or results are
-  truncated by the page cap without an exact match), the post-script
-  refuses to create the issue.
-- The same content gates and `SCRIBE_DRY_RUN` safety gate apply.
+  letters or digits to search on, the search fails or returns a malformed
+  response, or results are truncated by the page cap without an exact
+  match), the post-script refuses to create the issue.
+- The same content gates and `SCRIBE_DRY_RUN` safety gate apply. The
+  sensitive-content and suspicious-Unicode gates cover labels as well as
+  the title and body.
+
+Design note: this is a bash reimplementation on top of scribe's existing
+forge-ops contract, not an adoption or fork of
+[konflux-ci/scribe4jira](https://github.com/konflux-ci/scribe4jira). It
+keeps all writes host-side with the same content gates as the GitHub and
+GitLab paths. It covers only new issues in one project and issue type, so
+scribe4jira behaviors such as custom field mappings are left out. Maintainers
+can revisit convergence with scribe4jira under #1676.
 
 Meeting-derived content is sensitive. Run Jira-backed scribe in a private
 deployment and keep CI logs and artifacts private, including on dry-runs.

@@ -81,12 +81,20 @@ if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
         fi
       elif [[ "\${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"customfield_10050","required":true,"hasDefaultValue":false}]}'
+      elif [[ "\${JIRA_MOCK_NO_LABELS:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false}]}'
+      elif [[ "\${JIRA_MOCK_NO_DESCRIPTION:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
       else
-        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
       fi
       ;;
     */search/jql)
-      if [[ "\${JIRA_MOCK_ENDLESS:-}" == "1" ]]; then
+      if [[ "\${JIRA_MOCK_BAD_SEARCH:-}" == "html" ]]; then
+        echo '<html>maintenance</html>'
+      elif [[ "\${JIRA_MOCK_BAD_SEARCH:-}" == "no-issues" ]]; then
+        echo '{"isLast":true}'
+      elif [[ "\${JIRA_MOCK_ENDLESS:-}" == "1" ]]; then
         echo '{"issues":[{"key":"PROJ-3","fields":{"summary":"Unrelated"}}],"nextPageToken":"more","isLast":false}'
       elif [[ "\${DATA}" == *'添加深色模式'* ]]; then
         if [[ "\${JIRA_MOCK_DUP_CJK:-}" == "1" ]]; then
@@ -610,6 +618,57 @@ else
 fi
 assert_no_writes "jira/required-field-no-writes"
 unset JIRA_MOCK_REQUIRED_FIELD
+
+# A search response that is not JSON, or has no issues array, must not be
+# read as "no duplicate": refuse to create.
+for bad_search in html no-issues; do
+  export JIRA_MOCK_BAD_SEARCH="${bad_search}"
+  run_test_stdout "jira/live-malformed-search-${bad_search}-refused" "${JIRA_NEW_ISSUE}" \
+    "Jira duplicate check failed" true
+  if grep -qF "Jira duplicate check failed — refusing to create issue" "${TMPDIR}/stdout.log"; then
+    echo "PASS: jira/malformed-search-${bad_search}-error-message"
+  else
+    echo "FAIL: jira/malformed-search-${bad_search}-error-message"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+  assert_no_writes "jira/malformed-search-${bad_search}-no-writes"
+done
+unset JIRA_MOCK_BAD_SEARCH
+
+# Create screen without Description: fail validation before any create.
+export JIRA_MOCK_NO_DESCRIPTION="1"
+run_test_stdout "jira/no-description-field-fails-before-create" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "has no Description field" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/no-description-field-error-message"
+else
+  echo "FAIL: jira/no-description-field-error-message"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_no_writes "jira/no-description-field-no-writes"
+unset JIRA_MOCK_NO_DESCRIPTION
+
+# Create screen without Labels: the create must omit labels.
+export JIRA_MOCK_NO_LABELS="1"
+run_test_stdout "jira/live-no-labels-field-creates-without-labels" "${JIRA_NEW_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -E 'rest/api/3/issue( |$)' "${CURL_LOG}" | grep -qF '"labels"'; then
+  echo "FAIL: jira/no-labels-field-payload-omits-labels — labels sent"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/no-labels-field-payload-omits-labels"
+fi
+unset JIRA_MOCK_NO_LABELS
+
+# Labels pass the same content gates as title and body.
+JIRA_SENSITIVE_LABEL_ISSUE="${JIRA_NEW_ISSUE//\"meeting-notes\"/\"jane@example.com\"}"
+run_test_stdout "jira/live-sensitive-label-rejected" "${JIRA_SENSITIVE_LABEL_ISSUE}" "GATE REJECTED"
+assert_no_writes "jira/sensitive-label-no-writes"
+JIRA_UNICODE_LABEL_ISSUE="${JIRA_NEW_ISSUE//\"meeting-notes\"/\"notes\\u200bx\"}"
+run_test_stdout "jira/live-suspicious-unicode-label-rejected" "${JIRA_UNICODE_LABEL_ISSUE}" "GATE REJECTED"
+assert_no_writes "jira/suspicious-unicode-label-no-writes"
 export SCRIBE_DRY_RUN="true"
 
 export SCRIBE_JIRA_PROJECT="bad key"

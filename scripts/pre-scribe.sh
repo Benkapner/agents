@@ -550,7 +550,7 @@ _scribe_jira_backlog_jql() {
 # Returns 2 if the page cap was hit while more results remained.
 _scribe_jira_search_paginated() {
   local jql="$1" fields_json="$2" output_file="$3"
-  local token="" page payload response
+  local token="" page payload response is_last
   : > "${output_file}"
   for ((page = 1; page <= SCRIBE_JIRA_MAX_PAGES; page++)); do
     payload=$(jq -cn --arg jql "${jql}" --argjson fields "${fields_json}" --arg tok "${token}" \
@@ -559,9 +559,21 @@ _scribe_jira_search_paginated() {
       echo "ERROR: Jira JQL search failed" >&2
       return 1
     }
-    printf '%s' "${response}" | jq -c '.issues // []' >> "${output_file}"
-    token=$(printf '%s' "${response}" | jq -r '.nextPageToken // empty')
-    if [[ -z "${token}" ]] || [[ "$(printf '%s' "${response}" | jq -r '.isLast // false')" == "true" ]]; then
+    # A 2xx response that is not JSON, or has no issues array, must not be
+    # read as "no results" — callers use that to prove a duplicate is absent.
+    if ! printf '%s' "${response}" | jq -ce 'select(type == "object" and (.issues | type) == "array") | .issues' >> "${output_file}"; then
+      echo "ERROR: Jira JQL search returned a malformed or incomplete response" >&2
+      return 1
+    fi
+    token=$(printf '%s' "${response}" | jq -r '.nextPageToken // empty') || {
+      echo "ERROR: Jira JQL search response could not be parsed" >&2
+      return 1
+    }
+    is_last=$(printf '%s' "${response}" | jq -r '.isLast // false') || {
+      echo "ERROR: Jira JQL search response could not be parsed" >&2
+      return 1
+    }
+    if [[ -z "${token}" ]] || [[ "${is_last}" == "true" ]]; then
       return 0
     fi
   done
@@ -693,6 +705,18 @@ tracker_validate_create() {
     echo "ERROR: Jira project ${SCRIBE_JIRA_PROJECT} requires fields scribe does not set: $(_gha_sanitize "${missing}")" >&2
     return 1
   fi
+  # forge_create_issue sends description and labels; Jira rejects the create
+  # when a field is not on the create screen. Description carries the issue
+  # content, so fail clearly; labels are optional, so omit them instead.
+  if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "description")' >/dev/null; then
+    echo "ERROR: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT} has no Description field on its create screen" >&2
+    return 1
+  fi
+  SCRIBE_JIRA_LABELS_AVAILABLE=true
+  if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "labels")' >/dev/null; then
+    SCRIBE_JIRA_LABELS_AVAILABLE=false
+    echo "WARNING: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT} has no Labels field on its create screen; labels will be omitted" >&2
+  fi
 }
 
 # Rerun protection: print the browse URL of an issue in the configured
@@ -717,7 +741,11 @@ tracker_find_existing_issue() {
     rm -f "${raw_file}"
     return 1
   fi
-  match=$(jq -rs --arg t "${title}" '[.[][] | select(.fields.summary == $t) | .key][0] // empty' "${raw_file}")
+  if ! match=$(jq -rs --arg t "${title}" '[.[][] | select(.fields.summary == $t) | .key][0] // empty' "${raw_file}"); then
+    rm -f "${raw_file}"
+    echo "ERROR: Jira duplicate check could not parse search results" >&2
+    return 1
+  fi
   rm -f "${raw_file}"
   if [[ -n "${match}" ]]; then
     echo "${JIRA_BASE_URL}/browse/${match}"
@@ -735,9 +763,15 @@ forge_create_issue() {
   local desc labels_json payload response key
   desc=$(_scribe_text_to_adf)
   labels_json=$(jq -cn --arg l "${labels}" '[$l | split(",")[] | gsub("^\\s+|\\s+$"; "") | gsub("\\s+"; "-") | select(length > 0)] | unique')
+  # tracker_validate_create sets SCRIBE_JIRA_LABELS_AVAILABLE=false when the
+  # create screen has no Labels field; sending it would fail every create.
+  if [[ "${SCRIBE_JIRA_LABELS_AVAILABLE:-true}" != "true" ]]; then
+    labels_json='[]'
+  fi
   payload=$(jq -cn --arg proj "${SCRIBE_JIRA_PROJECT}" --arg title "${title}" \
     --arg itype "${SCRIBE_JIRA_ISSUE_TYPE}" --argjson desc "${desc}" --argjson labels "${labels_json}" \
-    '{fields: {project: {key: $proj}, summary: $title, description: $desc, issuetype: {name: $itype}, labels: $labels}}')
+    '{fields: ({project: {key: $proj}, summary: $title, description: $desc, issuetype: {name: $itype}}
+      + (if ($labels | length) > 0 then {labels: $labels} else {} end))}')
   response=$(_scribe_jira_api POST "/issue" --data "${payload}") || {
     echo "ERROR: forge_create_issue: Jira create failed in project ${SCRIBE_JIRA_PROJECT}" >&2
     return 1
