@@ -103,6 +103,57 @@ Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 | `comments_only` | Skip new issue creation |
 | `new_issues_only` | Skip comments on existing issues |
 
+### Jira issue creation
+
+Scribe can create new issues in one Jira Cloud project instead of the
+forge's issue tracker. The forge (`FULLSEND_FORGE`) still provides repo
+context (closed issues, open PRs, doc index). The Jira project provides
+the backlog the agent matches against and receives new issues.
+
+Set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by
+extending the harness with `base:` composition:
+
+```yaml
+# .fullsend/scribe.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/scribe.yaml#sha256=<sha256sum>
+env:
+  runner:
+    FULLSEND_TRACKER: jira
+    SCRIBE_JIRA_PROJECT: PROJ
+    SCRIBE_JIRA_ISSUE_TYPE: Task
+    JIRA_BASE_URL: ${JIRA_BASE_URL}
+    JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+    JIRA_TOKEN: ${JIRA_TOKEN}
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `FULLSEND_TRACKER` | yes (Jira) | `jira`. Defaults to `FULLSEND_FORGE` |
+| `SCRIBE_JIRA_PROJECT` | yes (Jira) | Project key for backlog reads and new issues |
+| `SCRIBE_JIRA_ISSUE_TYPE` | no | Issue type for new issues (default: `Task`) |
+| `JIRA_BASE_URL` | yes (Jira) | `https://<site>.atlassian.net` (Jira Cloud only) |
+| `JIRA_USER_EMAIL` | yes (Jira) | Account email for the operator-provided API token |
+| `JIRA_TOKEN` | yes (Jira) | Jira Cloud API token |
+
+Behavior:
+
+- Jira credentials stay on the runner. Only the pre- and post-scripts
+  use them; the sandbox never receives them.
+- Only new issues are written. Comments on Jira issues are not supported:
+  `all` behaves as `new_issues_only`, and `comments_only` is rejected.
+- The backlog is the project's issues that are not Done, fetched with
+  JQL `nextPageToken` pagination.
+- Before creating anything (including in dry-run), the post-script checks
+  Jira create metadata. It fails if the issue type is missing or the
+  project requires fields scribe does not set.
+- On live runs, an issue whose summary exactly matches an existing issue
+  in the project is skipped, so rerunning on the same notes does not
+  create duplicates.
+- The same content gates and `SCRIBE_DRY_RUN` safety gate apply.
+
+Meeting-derived content is sensitive. Run Jira-backed scribe in a private
+deployment and keep CI logs and artifacts private, including on dry-runs.
+
 ### GitLab host validation
 
 `gitlab-scribe-ops.lib.sh` uses `CI_SERVER_URL`, a GitLab CI predefined

@@ -51,6 +51,46 @@ for arg in "\$@"; do
     URL="\${arg}"
   fi
 done
+DATA=""
+PREV=""
+for arg in "\$@"; do
+  [[ "\${PREV}" == "--data" ]] && DATA="\${arg}"
+  PREV="\${arg}"
+done
+
+# Jira Cloud REST API
+if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
+  case "\${URL}" in
+    */issue/createmeta/PROJ/issuetypes\?*)
+      echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      ;;
+    */issue/createmeta/PROJ/issuetypes/10001\?*)
+      if [[ "\${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"customfield_10050","required":true,"hasDefaultValue":false}]}'
+      else
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
+      fi
+      ;;
+    */search/jql)
+      if [[ "\${DATA}" == *'"nextPageToken":"p2"'* ]]; then
+        if [[ "\${JIRA_MOCK_DUP:-}" == "1" ]]; then
+          echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Add dark mode"}}],"isLast":true}'
+        else
+          echo '{"issues":[],"isLast":true}'
+        fi
+      else
+        echo '{"issues":[{"key":"PROJ-3","fields":{"summary":"Add dark mode toggle"}}],"nextPageToken":"p2","isLast":false}'
+      fi
+      ;;
+    */issue)
+      echo '{"id":"10100","key":"PROJ-100"}'
+      ;;
+    *)
+      exit 22
+      ;;
+  esac
+  exit 0
+fi
 
 # Note listing (comments) — return empty array
 if [[ "\${URL}" == *"/notes"* ]] && [[ " \$* " == *" GET "* ]]; then
@@ -439,6 +479,92 @@ export FULLSEND_FORGE="github"
 export SCRIBE_REPO="mock-org/mock-repo"
 unset GITLAB_TOKEN
 unset CI_SERVER_HOST
+
+# --- Jira tracker test cases (FULLSEND_FORGE=github, FULLSEND_TRACKER=jira) ---
+
+JIRA_NEW_ISSUE='{"topics":[],"new_issues":[{"title":"Add dark mode","summary":"Users want dark mode.","body":"## Problem\nNo dark mode.\n\n## Acceptance criteria\n- [ ] Toggle works","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}'
+JIRA_REJECTED_ISSUE='{"topics":[],"new_issues":[{"title":"Add dark mode","summary":"Users want dark mode.","body":"Contact jane@example.com","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}'
+JIRA_COMMENT_TOPIC='{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\nflaky tests.","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}'
+
+export FULLSEND_TRACKER="jira"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+export JIRA_USER_EMAIL="bot@mock.example"
+export JIRA_TOKEN="fake-jira-token"
+export SCRIBE_JIRA_PROJECT="PROJ"
+export SCRIBE_MODE="all"
+
+# Fails if any Jira create (POST /rest/api/3/issue) or forge write happened.
+assert_no_writes() {
+  local test_name="$1"
+  if grep -qE 'rest/api/3/issue( |$)' "${CURL_LOG}" 2>/dev/null \
+    || grep -qE '^gh issue (create|comment)' "${GH_LOG}" 2>/dev/null; then
+    echo "FAIL: ${test_name} — unexpected write call"
+    cat "${CURL_LOG}" "${GH_LOG}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name} (no write calls)"
+  fi
+}
+
+run_test_stdout "jira/dry-run-validates-project" "${JIRA_NEW_ISSUE}" \
+  "[DRY RUN] Would create issue: Add dark mode"
+assert_no_writes "jira/dry-run-no-writes"
+
+run_test_stdout "jira/all-mode-skips-comments" "${JIRA_COMMENT_TOPIC}" \
+  "comments are not supported; using new_issues_only"
+assert_no_writes "jira/comment-topic-no-writes"
+
+export SCRIBE_MODE="comments_only"
+run_test_stdout "jira/comments-only-rejected" "${JIRA_COMMENT_TOPIC}" "" true
+export SCRIBE_MODE="all"
+
+export SCRIBE_DRY_RUN="false"
+run_test_stdout "jira/live-creates-issue" "${JIRA_NEW_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -E 'rest/api/3/issue( |$)' "${CURL_LOG}" | grep -qF '"project":{"key":"PROJ"}'; then
+  echo "PASS: jira/live-create-scoped-to-project"
+else
+  echo "FAIL: jira/live-create-scoped-to-project — create payload missing project PROJ"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -q '^gh issue create' "${GH_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/live-no-github-issue — GitHub issue created on Jira path"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/live-no-github-issue"
+fi
+
+run_test_stdout "jira/live-content-gate-rejected" "${JIRA_REJECTED_ISSUE}" "GATE REJECTED"
+assert_no_writes "jira/content-gate-no-writes"
+
+export JIRA_MOCK_DUP="1"
+run_test_stdout "jira/live-rerun-duplicate-on-page-2-skipped" "${JIRA_NEW_ISSUE}" \
+  "SKIP: duplicate issue (already exists: https://mock.atlassian.net/browse/PROJ-7)"
+assert_no_writes "jira/duplicate-no-writes"
+unset JIRA_MOCK_DUP
+
+export JIRA_MOCK_REQUIRED_FIELD="1"
+run_test_stdout "jira/required-field-fails-before-create" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "requires fields scribe does not set: customfield_10050" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/required-field-error-message"
+else
+  echo "FAIL: jira/required-field-error-message"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_no_writes "jira/required-field-no-writes"
+unset JIRA_MOCK_REQUIRED_FIELD
+export SCRIBE_DRY_RUN="true"
+
+export SCRIBE_JIRA_PROJECT="bad key"
+run_test_stdout "jira/invalid-project-key-rejected" "${JIRA_NEW_ISSUE}" "" true
+export SCRIBE_JIRA_PROJECT="PROJ"
+
+export JIRA_BASE_URL="https://jira.example.com"
+run_test_stdout "jira/non-cloud-base-url-rejected" "${JIRA_NEW_ISSUE}" "" true
+
+unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN SCRIBE_JIRA_PROJECT
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
