@@ -180,7 +180,7 @@
         { "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$" },
         { "pattern": "^[A-Z][A-Z0-9]*$" }
       ],
-      "not": { "pattern": "[\\r\\n]" }
+      "not": { "pattern": "[\\r\\n]|(^|/)\\.{1,2}(/|$)" }
     },
     "clarity_scores": {
       "type": "object",

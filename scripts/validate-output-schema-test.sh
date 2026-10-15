@@ -176,6 +176,14 @@ run_test "move-trailing-newline-target" \
   '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo\n"},"comment":"Moving this issue."}' \
   "false"
 
+run_test "move-dot-segment-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/.."},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-parent-path-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"../.."},"comment":"Moving this issue."}' \
+  "false"
+
 run_test "move-malformed-evidence" \
   '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo","evidence":["valid evidence",42]},"comment":"Moving this issue."}' \
   "false"
