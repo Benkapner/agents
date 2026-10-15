@@ -2804,6 +2804,24 @@ assert_last_result "posted-text-keeps-unrelated-f-tokens" \
 assert_disposition_stdout "posted-text-keeps-unrelated-f-tokens" \
   "::warning::Removed finding id(s)" "absent"
 
+# Cleanup after an id removal must not rewrite unrelated whitespace in
+# code or string literals (double spaces, space before punctuation).
+run_disposition_case "posted-text-keeps-id-free-whitespace" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"if value == \"a  b\": print(\"hello , world\")"}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 1'
+assert_last_result "posted-text-keeps-id-free-whitespace" \
+  '.findings[0].description == "if value == \"a  b\": print(\"hello , world\")"'
+assert_disposition_stdout "posted-text-keeps-id-free-whitespace" \
+  "::warning::Removed finding id(s)" "absent"
+
+run_disposition_case "posted-text-scrub-preserves-nearby-literals" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"Same as f_hi1 in value == \"a  b\"; print(\"hello , world\")",id:"f_hi1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":1,"id":"f_hi1"}]}' \
+  '(.findings | length) == 1 and (.findings[0].id == "f_hi1")'
+assert_last_result "posted-text-scrub-preserves-nearby-literals" \
+  '.findings[0].id == "f_hi1" and .findings[0].description == "Same as in value == \"a  b\"; print(\"hello , world\")"'
+
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
 run_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \

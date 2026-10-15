@@ -1327,12 +1327,16 @@ fi
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
 jq --arg marker "${PROJECTION_MARKER}" --argjson known_ids "${KNOWN_FINDING_IDS}" '
+  # Replace each id with a sentinel, then tidy only that hole so
+  # unrelated double spaces and spaces before punctuation stay put.
   def scrub_ids:
     if type != "string" then . else
-      reduce $known_ids[] as $id (.; gsub("\\b" + $id + "\\b"; ""))
-      | gsub("\\bf_[0-9a-f]{16}\\b"; "")
-      | gsub(" +(?<p>[,.;:)])"; .p)
-      | gsub("(?<a>[^ \\n]) {2,}(?<b>[^ \\n])"; "\(.a) \(.b)")
+      reduce $known_ids[] as $id (.; gsub("\\b" + $id + "\\b"; "\u0001"))
+      | gsub("\\bf_[0-9a-f]{16}\\b"; "\u0001")
+      | gsub("^ *\u0001 +"; "")
+      | gsub(" *\u0001 +(?<w>[^[:space:],.;:)])"; " \(.w)")
+      | gsub(" *\u0001 *(?<p>[,.;:)])"; .p)
+      | gsub(" *\u0001 *"; "")
     end;
   .body |= scrub_ids
   | if (.findings | type) == "array" then
