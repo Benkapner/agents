@@ -793,8 +793,12 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
     LA_ACTION_SHOWN=$(_gha_sanitize "${LA_ACTION}")
     LA_LABEL_SHOWN=$(_gha_sanitize "${LA_LABEL}")
 
-    if [[ "${LA_LABEL}" == *::* || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
-      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters or a double colon"
+    # Leading/trailing whitespace is rejected: forges (notably GitLab) trim
+    # it, so " fullsend-fix-budget/2" would evade is_control_label yet still
+    # act on the real control label.
+    if [[ "${LA_LABEL}" == *::* || "${LA_LABEL}" == " "* || "${LA_LABEL}" == *" " \
+          || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters, a double colon, or leading/trailing whitespace"
       continue
     fi
 

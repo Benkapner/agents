@@ -1025,6 +1025,20 @@ run_label_test_stdout "label-actions-fix-budget-mixed-case-remove-refused" \
 run_label_test_no_pattern "label-actions-fix-budget-mixed-case-remove-no-api-call" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"Fullsend-fix-budget/2"}]}}' \
   "Fullsend-fix-budget%2F2"
+# Leading/trailing whitespace is refused: GitLab trims it, so a padded
+# fullsend-fix-budget/N removal would otherwise reach the real control label.
+run_label_test_stdout "label-actions-fix-budget-leading-space-remove-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":" fullsend-fix-budget/2"}]}}' \
+  "::warning::Refused label ' fullsend-fix-budget/2'"
+run_label_test_no_pattern "label-actions-fix-budget-leading-space-remove-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":" fullsend-fix-budget/2"}]}}' \
+  "fullsend-fix-budget%2F2"
+run_label_test_stdout "label-actions-fix-budget-trailing-space-remove-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"fullsend-fix-budget/2 "}]}}' \
+  "::warning::Refused label 'fullsend-fix-budget/2 '"
+run_label_test_no_pattern "label-actions-fix-budget-trailing-space-remove-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"fullsend-fix-budget/2 "}]}}' \
+  "fullsend-fix-budget%2F2"
 run_label_test_stdout "label-actions-mixed-case-ready-for-merge-refused" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"Ready-for-merge"}]}}' \
   "::warning::Refused to add control label 'Ready-for-merge'"
