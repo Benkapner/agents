@@ -359,6 +359,10 @@ is_control_label() {
   if [[ "${label}" == risk/* ]]; then
     return 0
   fi
+  # Maintainer-set per-PR fix budget (issue #1680)
+  if [[ "${label}" == fullsend-fix-budget/* ]]; then
+    return 0
+  fi
   return 1
 }
 
@@ -399,6 +403,10 @@ run_control_label_test "risk-moderate-is-control" "risk/moderate" "true"
 run_control_label_test "risk-elevated-is-control" "risk/elevated" "true"
 run_control_label_test "risk-high-is-control" "risk/high" "true"
 run_control_label_test "risk-critical-is-control" "risk/critical" "true"
+
+# Maintainer-set fix-budget labels should be control labels (issue #1680)
+run_control_label_test "fix-budget-is-control" "fullsend-fix-budget/2" "true"
+run_control_label_test "fix-budget-invalid-n-is-control" "fullsend-fix-budget/abc" "true"
 
 # Non-control labels should NOT be recognized
 run_control_label_test "area-api-not-control" "area/api" "false"
@@ -981,6 +989,21 @@ run_label_test "label-actions-applied" \
 run_label_test_stdout "label-actions-control-label-refused" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
   "::warning::Refused to add control label 'ready-for-merge'"
+
+# Fix-budget label is maintainer-controlled (issue #1680): the review agent
+# can neither add nor remove it, and no label API call is made for it.
+run_label_test_stdout "label-actions-fix-budget-add-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tighten loop.","actions":[{"action":"add","label":"fullsend-fix-budget/2"}]}}' \
+  "::warning::Refused to add control label 'fullsend-fix-budget/2'"
+run_label_test_no_pattern "label-actions-fix-budget-add-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tighten loop.","actions":[{"action":"add","label":"fullsend-fix-budget/2"}]}}' \
+  "labels[]=fullsend-fix-budget/2"
+run_label_test_stdout "label-actions-fix-budget-remove-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"fullsend-fix-budget/2"}]}}' \
+  "::warning::Refused to remove control label 'fullsend-fix-budget/2'"
+run_label_test_no_pattern "label-actions-fix-budget-remove-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"fullsend-fix-budget/2"}]}}' \
+  "fullsend-fix-budget%2F2"
 
 # Non-existent label skipped — label "bug" is not in mock label list
 run_label_test_stdout "label-actions-nonexistent-label-skipped" \

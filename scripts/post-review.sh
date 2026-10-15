@@ -1529,6 +1529,10 @@ is_control_label() {
   if [[ "${label}" == risk/* ]]; then
     return 0
   fi
+  # Maintainer-set per-PR fix budget (issue #1680)
+  if [[ "${label}" == fullsend-fix-budget/* ]]; then
+    return 0
+  fi
   return 1
 }
 
