@@ -2781,6 +2781,29 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-hi
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
   '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
+# Finding ids never reach the posted text, whatever the model wrote: known
+# ids and minted-shaped ids are stripped from the body and from each
+# finding's description and remediation, while the ledger marker keeps them.
+run_disposition_case "posted-text-drops-finding-ids" \
+  "$(jq -c '.action="request-changes" | .body="Review\n\n### Earlier findings\n- f_hi1 (old.go:3) resolved_by_change: returns a + b\n- f_0123456789abcdef still open." | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"Same root cause as f_hi1; see f_hi1 .",remediation:"Fix f_hi1 by checking nil.",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
+assert_last_result "posted-text-drops-finding-ids" \
+  '(.body | test("f_[A-Za-z0-9]+") | not) and (.body | contains("### Earlier findings")) and (.body | contains("(old.go:3) resolved_by_change")) and (.findings[0].id == "f_hi1") and (.findings[0].description == "Same root cause as; see.") and (.findings[0].remediation == "Fix by checking nil.") and ((.body | split("\n")[0]) | test("^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$"))'
+assert_disposition_stdout "posted-text-drops-finding-ids" \
+  "::warning::Removed finding id(s) f_0123456789abcdef, f_hi1 from the posted review text" "present"
+
+# Prose that merely looks id-like but is neither a known id nor a minted
+# id is left alone, so code identifiers in findings survive.
+run_disposition_case "posted-text-keeps-unrelated-f-tokens" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"Rename f_count and f_x; f_ab12 is unrelated."}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 1'
+assert_last_result "posted-text-keeps-unrelated-f-tokens" \
+  '.findings[0].description == "Rename f_count and f_x; f_ab12 is unrelated."'
+assert_disposition_stdout "posted-text-keeps-unrelated-f-tokens" \
+  "::warning::Removed finding id(s)" "absent"
+
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
 run_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \
