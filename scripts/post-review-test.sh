@@ -2854,6 +2854,17 @@ assert_last_result "posted-text-drops-old-earlier-findings-shape" \
 assert_disposition_stdout "posted-text-drops-old-earlier-findings-shape" \
   "::warning::Removed finding id(s) f_hi1 from the posted review text" "present"
 
+# A first-review supplied id is reminted; the original string in body /
+# description / remediation must still be scrubbed. Unrelated f_count stays.
+run_disposition_case "posted-text-drops-reminted-foreign-id" \
+  "$(jq -c '.action="request-changes" | .body="See f_invented1 and f_count." | .findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"Same as f_invented1; keep f_count.",remediation:"Fix f_invented1, not f_count.",id:"f_invented1"}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 1 and (.findings[0].id != "f_invented1")'
+assert_last_result "posted-text-drops-reminted-foreign-id" \
+  '(.findings[0].id != "f_invented1") and (.body | test("f_invented1") | not) and (.body | contains("f_count")) and (.findings[0].description | test("f_invented1") | not) and (.findings[0].description | contains("f_count")) and (.findings[0].remediation | test("f_invented1") | not) and (.findings[0].remediation | contains("f_count"))'
+assert_disposition_stdout "posted-text-drops-reminted-foreign-id" \
+  "::warning::Removed finding id(s) f_invented1 from the posted review text" "present"
+
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
 run_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \

@@ -951,6 +951,14 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
 ' <<< "${PRIOR_JSON}")"
 MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< "${MINT_IDS}")"
 
+# Ids the model wrote, captured before remint. A first-review supplied id
+# is foreign and replaced below; the original string can still appear in
+# body/description/remediation and must be in the scrub set.
+SUPPLIED_FINDING_IDS="$(jq -c '
+  [ .findings[]?.id?, .dispositions[]?.id? ]
+  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
+' "${RESULT_FILE}" 2>/dev/null || echo '[]')"
+
 # Id assignment for this review. A supplied id is kept only when it is an
 # open prior id no earlier row already took and this review is not
 # resolving; a closed, resolving, foreign, or duplicate id is replaced (a
@@ -2089,8 +2097,8 @@ fi
 # description and remediation, which fullsend posts as inline comments. The
 # projection marker below and the inline stamps fullsend adds are built
 # from the JSON ids, not from this text, so they keep them.
-KNOWN_FINDING_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '
-  [ $prior.findings[]?.id?, .findings[]?.id?, .dispositions[]?.id? ]
+KNOWN_FINDING_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson supplied "${SUPPLIED_FINDING_IDS}" '
+  [ $prior.findings[]?.id?, .findings[]?.id?, .dispositions[]?.id?, $supplied[]? ]
   | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
 ' "${RESULT_FILE}")"
 LEAKED_FINDING_IDS="$(jq -r --argjson known "${KNOWN_FINDING_IDS}" '
