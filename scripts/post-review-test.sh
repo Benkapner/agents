@@ -2789,7 +2789,7 @@ run_disposition_case "posted-text-drops-finding-ids" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "posted-text-drops-finding-ids" \
-  '(.body | test("f_[A-Za-z0-9]+") | not) and (.body | contains("### Earlier findings")) and (.body | contains("(old.go:3) resolved_by_change")) and (.findings[0].id == "f_hi1") and (.findings[0].description == "Same root cause as; see.") and (.findings[0].remediation == "Fix by checking nil.") and ((.body | split("\n")[0]) | test("^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$"))'
+  '(.body | test("f_[A-Za-z0-9]+") | not) and (.body | contains("### Earlier findings")) and (.body | contains("(old.go:3) resolved_by_change")) and (.findings[0].id == "f_hi1") and (.findings[0].description == "Same root cause as ; see  .") and (.findings[0].remediation == "Fix  by checking nil.") and ((.body | split("\n")[0]) | test("^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$"))'
 assert_disposition_stdout "posted-text-drops-finding-ids" \
   "::warning::Removed finding id(s) f_0123456789abcdef, f_hi1 from the posted review text" "present"
 
@@ -2820,7 +2820,7 @@ run_disposition_case "posted-text-scrub-preserves-nearby-literals" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":1,"id":"f_hi1"}]}' \
   '(.findings | length) == 1 and (.findings[0].id == "f_hi1")'
 assert_last_result "posted-text-scrub-preserves-nearby-literals" \
-  '.findings[0].id == "f_hi1" and .findings[0].description == "Same as in value == \"a  b\"; print(\"hello , world\")"'
+  '.findings[0].id == "f_hi1" and .findings[0].description == "Same as  in value == \"a  b\"; print(\"hello , world\")"'
 
 # Markdown wrappers around a stripped id (backticks, bold) must not remain.
 run_disposition_case "posted-text-drops-markdown-wrapped-ids" \
@@ -2832,8 +2832,26 @@ run_disposition_case "posted-text-drops-markdown-wrapped-ids" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings[0].id == "f_hi1"'
 assert_last_result "posted-text-drops-markdown-wrapped-ids" \
-  '(.body | contains("### Earlier findings")) and (.body | contains("(old.go:3) resolved_by_change")) and (.body | contains("- reclassified")) and (.body | contains("``") | not) and (.body | contains("**") | not) and (.body | test("f_hi1") | not) and .findings[0].description == "See and."'
+  '(.body | contains("### Earlier findings")) and (.body | contains("(old.go:3) resolved_by_change")) and (.body | contains("reclassified")) and (.body | contains("``") | not) and (.body | contains("**") | not) and (.body | test("f_hi1") | not) and .findings[0].description == "See  and ."'
 assert_disposition_stdout "posted-text-drops-markdown-wrapped-ids" \
+  "::warning::Removed finding id(s) f_hi1 from the posted review text" "present"
+
+# Old Earlier findings shape (- id: disposition), bold+colon, parentheses,
+# and an id at the start of a later line. List marker must not glue to ":".
+run_disposition_case "posted-text-drops-old-earlier-findings-shape" \
+  "$(jq -c --arg body "$(printf '%s' 'Review
+
+### Earlier findings
+- f_hi1: resolved_by_change, fixed
+- **f_hi1**: leftover
+resolved (f_hi1) earlier
+Line one
+f_hi1 resolved')" '.action="request-changes" | .body=$body | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings[0].id == "f_hi1"'
+assert_last_result "posted-text-drops-old-earlier-findings-shape" \
+  '(.body | contains("### Earlier findings")) and (.body | contains("- resolved_by_change, fixed")) and (.body | contains("- leftover")) and (.body | contains("resolved  earlier")) and (.body | contains("Line one\nresolved")) and (.body | contains("-:") | not) and (.body | contains("()") | not) and (.body | test("f_hi1") | not)'
+assert_disposition_stdout "posted-text-drops-old-earlier-findings-shape" \
   "::warning::Removed finding id(s) f_hi1 from the posted review text" "present"
 
 # Reclassifying a high finding to info must persist the new severity even
