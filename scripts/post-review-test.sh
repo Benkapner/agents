@@ -2822,6 +2822,20 @@ run_disposition_case "posted-text-scrub-preserves-nearby-literals" \
 assert_last_result "posted-text-scrub-preserves-nearby-literals" \
   '.findings[0].id == "f_hi1" and .findings[0].description == "Same as in value == \"a  b\"; print(\"hello , world\")"'
 
+# Markdown wrappers around a stripped id (backticks, bold) must not remain.
+run_disposition_case "posted-text-drops-markdown-wrapped-ids" \
+  "$(jq -c --arg body "$(printf '%s' 'Review
+
+### Earlier findings
+- `f_hi1` (old.go:3) resolved_by_change
+- **f_hi1** reclassified')" '.action="request-changes" | .body=$body | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"See `f_hi1` and **f_hi1**.",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings[0].id == "f_hi1"'
+assert_last_result "posted-text-drops-markdown-wrapped-ids" \
+  '(.body | contains("### Earlier findings")) and (.body | contains("(old.go:3) resolved_by_change")) and (.body | contains("- reclassified")) and (.body | contains("``") | not) and (.body | contains("**") | not) and (.body | test("f_hi1") | not) and .findings[0].description == "See and."'
+assert_disposition_stdout "posted-text-drops-markdown-wrapped-ids" \
+  "::warning::Removed finding id(s) f_hi1 from the posted review text" "present"
+
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
 run_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \
