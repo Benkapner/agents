@@ -740,7 +740,8 @@ REVIEW_CONTROL_LABELS=(
 )
 
 is_control_label() {
-  local label="$1"
+  # Forges match label names case-insensitively, so compare lowercased.
+  local label="${1,,}"
   for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
     if [[ "${cl}" == "${label}" ]]; then
       return 0
