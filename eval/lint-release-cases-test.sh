@@ -27,12 +27,13 @@ make_agent() {
   printf 'agent: %s\n' "$2" > "${WORKDIR}/$1/eval/$2/eval.yaml"
 }
 
-for value in true True TRUE false missing quoted number yes on nested malformed null comment-only; do
+for value in true True TRUE tagged-true tagged-True tagged-TRUE false missing quoted number yes on nested malformed null comment-only; do
   make_agent "$value" code
   annotations="${WORKDIR}/${value}/eval/code/cases/smoke/annotations.yaml"
   case "$value" in
     true) printf 'release: true # smoke case\n' > "$annotations" ;;
     True|TRUE) printf 'release: %s\n' "$value" > "$annotations" ;;
+    tagged-*) printf 'release: !!bool %s\n' "${value#tagged-}" > "$annotations" ;;
     false) printf 'release: false\n' > "$annotations" ;;
     missing) printf 'max_cost_usd: 1\n' > "$annotations" ;;
     quoted) printf 'release: "true"\n' > "$annotations" ;;
@@ -44,12 +45,15 @@ for value in true True TRUE false missing quoted number yes on nested malformed 
     null) printf 'release: null\n' > "$annotations" ;;
     comment-only) printf '# No release marker\n' > "$annotations" ;;
   esac
-  if [[ "$value" == true ]]; then
+  if [[ "$value" == true || "$value" == tagged-true ]]; then
     run_case "$value" 0 'code: OK (1 release-tier case(s))'
   else
     run_case "$value" 1 'eval/code/eval.yaml: no release-tier case'
   fi
 done
+
+mkdir -p "${WORKDIR}/no-manifests/eval"
+run_case no-manifests 1 'ERROR: no eval/*/eval.yaml manifests found'
 
 # Hidden case directories are not selected by the release runner's shell glob.
 make_agent hidden-case code

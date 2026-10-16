@@ -38,9 +38,18 @@ AnnotationLoader.add_implicit_resolver(
     list("tf"),
 )
 
+# Explicit boolean tags bypass implicit resolvers; preserve the runner's spelling check.
+AnnotationLoader.add_constructor(
+    "tag:yaml.org,2002:bool", lambda loader, node: loader.construct_scalar(node) == "true",
+)
+
 repo_root = Path(os.environ.get("REPO_ROOT", Path(__file__).resolve().parent.parent))
 errors = 0
-for manifest in sorted((repo_root / "eval").glob("*/eval.yaml")):
+manifests = sorted((repo_root / "eval").glob("*/eval.yaml"))
+if not manifests:
+    print("ERROR: no eval/*/eval.yaml manifests found", file=sys.stderr)
+    sys.exit(1)
+for manifest in manifests:
     release_cases = 0
     for annotations in sorted(manifest.parent.glob("cases/*/annotations.yaml")):
         if annotations.parent.name.startswith("."):
