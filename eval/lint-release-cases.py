@@ -25,7 +25,7 @@ import yaml
 
 
 class AnnotationLoader(yaml.SafeLoader):
-    """Use YAML 1.2 booleans, matching yq (yes/on are strings)."""
+    """Accept lowercase booleans, matching the release runner’s selection."""
 
 
 AnnotationLoader.yaml_implicit_resolvers = {
@@ -34,8 +34,8 @@ AnnotationLoader.yaml_implicit_resolvers = {
     for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
 }
 AnnotationLoader.add_implicit_resolver(
-    "tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
-    list("tTfF"),
+    "tag:yaml.org,2002:bool", re.compile(r"^(?:true|false)$"),
+    list("tf"),
 )
 
 repo_root = Path(os.environ.get("REPO_ROOT", Path(__file__).resolve().parent.parent))
@@ -43,6 +43,8 @@ errors = 0
 for manifest in sorted((repo_root / "eval").glob("*/eval.yaml")):
     release_cases = 0
     for annotations in sorted(manifest.parent.glob("cases/*/annotations.yaml")):
+        if annotations.parent.name.startswith("."):
+            continue
         try:
             data = yaml.load(annotations.read_text(), Loader=AnnotationLoader)
         except (OSError, yaml.YAMLError) as error:
