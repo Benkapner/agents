@@ -635,10 +635,11 @@ done
 # --- review-result.schema.json: short / non-hex SHA rejected ---
 
 run_test_custom_filename "review-reject-short-sha-rejected" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong.","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong.","findings":[{"severity":"high","category":"logic-error","file":"main.go","description":"Bug."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'abc1234' does not match"
 
 run_test_custom_filename "review-approve-nonhex-sha-rejected" \
   '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"ghijkl0123456789ghijkl0123456789ghijkl01","body":"LGTM."}' \
