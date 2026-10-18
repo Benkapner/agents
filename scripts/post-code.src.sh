@@ -343,16 +343,16 @@ fi
 # A file source skips .gitleaks.toml discovery; the private working directory
 # and explicit ignore path prevent .gitleaksignore discovery. The subshell
 # keeps these overrides local to public text, leaving commit scans unchanged.
-# Return 0 for clean text, 1 for findings, other nonzero for scan/setup errors.
+# Return 0 for clean text, 2 for findings, other nonzero for scan/setup errors.
 scan_public_text() (
   local scan_dir rc=0
-  scan_dir="$(mktemp -d)" || return 2
+  scan_dir="$(mktemp -d)" || return 1
   trap 'rm -f "${scan_dir}/text"; rmdir "${scan_dir}"' EXIT
   unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
-  printf '%s\n' "$1" > "${scan_dir}/text" || return 2
-  cd "${scan_dir}" || return 2
+  printf '%s\n' "$1" > "${scan_dir}/text" || return 1
+  cd "${scan_dir}" || return 1
   # Suppress both streams: even scanner failures may echo sensitive input.
-  gitleaks detect --source "${scan_dir}/text" --no-git --redact \
+  gitleaks detect --source "${scan_dir}/text" --no-git --redact --exit-code 2 \
     --ignore-gitleaks-allow --gitleaks-ignore-path "${scan_dir}" \
     >/dev/null 2>&1 || rc=$?
   return "${rc}"
@@ -392,11 +392,11 @@ post_noop_comment() {
 
   local detail_block=""
   if [ -n "${agent_context}" ]; then
-    if ! install_gitleaks || ! scan_public_text "${agent_context}"; then
+    local sanitized_context
+    sanitized_context="$(sanitize_failure_detail "${agent_context}")"
+    if ! install_gitleaks || ! scan_public_text "${sanitized_context}"; then
       gha_echo warning "Agent context omitted because its secret scan did not pass"
     else
-      local sanitized_context
-      sanitized_context="$(sanitize_failure_detail "${agent_context}")"
       detail_block="
 
 **Agent context:**
@@ -856,12 +856,12 @@ if [ -n "${PR_BODY_FROM_RESULT}" ]; then
   scan_public_text "${PR_BODY_FROM_RESULT}" || GL_RC=$?
   if [ "${GL_RC}" -eq 0 ]; then
     PR_BODY_SCAN_STATUS="passed"
-  elif [ "${GL_RC}" -eq 1 ]; then
-    gha_echo warning "BLOCKED — secret detected in pr_body; falling back to commit body"
+  elif [ "${GL_RC}" -eq 2 ]; then
+    gha_echo warning "BLOCKED — secret detected in pr_body; checking commit-body fallback"
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="blocked"
   else
-    gha_echo warning "gitleaks scan failed (exit ${GL_RC}); falling back to commit body"
+    gha_echo warning "gitleaks scan failed (exit ${GL_RC}); checking commit-body fallback"
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="error"
   fi
@@ -884,7 +884,9 @@ extract_commit_body() {
   '
 }
 
+COMMIT_BODY_FROM_GIT=true
 if [ -n "${PR_BODY_FROM_RESULT}" ]; then
+  COMMIT_BODY_FROM_GIT=false
   # Strip Signed-off-by globally (agents must never produce DCO trailers),
   # then strip trailing closing-keyword footer lines so the script appends
   # them once. Closing keywords mid-body are preserved intentionally.
@@ -939,6 +941,24 @@ fi
 
 if [ -z "${COMMIT_BODY}" ]; then
   COMMIT_BODY="$(extract_commit_body)"
+  COMMIT_BODY_FROM_GIT=true
+fi
+
+COMMIT_BODY_SCAN_STATUS="skipped"
+if [ "${COMMIT_BODY_FROM_GIT}" = true ] && [ -n "${COMMIT_BODY}" ]; then
+  GL_RC=0
+  scan_public_text "${COMMIT_BODY}" || GL_RC=$?
+  if [ "${GL_RC}" -eq 0 ]; then
+    COMMIT_BODY_SCAN_STATUS="passed"
+  else
+    COMMIT_BODY=""
+    if [ "${GL_RC}" -eq 2 ]; then
+      COMMIT_BODY_SCAN_STATUS="blocked"
+    else
+      COMMIT_BODY_SCAN_STATUS="error"
+    fi
+    gha_echo warning "Commit body secret scan did not pass; using generic description"
+  fi
 fi
 
 if [ -z "${COMMIT_BODY}" ]; then
@@ -953,9 +973,17 @@ fi
 
 case "${PR_BODY_SCAN_STATUS}" in
   passed)  PR_BODY_SCAN_LINE="- [x] PR body secret scan passed (gitleaks — no-git)" ;;
-  blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked, fell back to commit body" ;;
-  error)   PR_BODY_SCAN_LINE="- [x] PR body secret scan: error, fell back to commit body" ;;
-  *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
+  blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked; commit-body fallback attempted" ;;
+  error)   PR_BODY_SCAN_LINE="- [x] PR body secret scan: error; commit-body fallback attempted" ;;
+  *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit-body fallback attempted)" ;;
+esac
+
+COMMIT_BODY_SCAN_LINE=""
+case "${COMMIT_BODY_SCAN_STATUS}" in
+  passed)  COMMIT_BODY_SCAN_LINE="
+- [x] Commit body secret scan passed (gitleaks — no-git)" ;;
+  blocked|error) COMMIT_BODY_SCAN_LINE="
+- [x] Commit body secret scan: ${COMMIT_BODY_SCAN_STATUS}; generic description used" ;;
 esac
 
 SIGNOFF_STRIPPED_LINE=""
@@ -982,7 +1010,7 @@ ${ISSUE_REFERENCE}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
+${PR_BODY_SCAN_LINE}${COMMIT_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(forge_create_pr \

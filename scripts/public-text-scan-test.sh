@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Exercise the real post-code script and Gitleaks; only forge HTTP calls
-# and remote URL rewriting are substituted. No scanner-policy mocks.
+# public-text-scan-test.sh — Exercise the real post-code script and Gitleaks;
+# only forge HTTP calls and remote URL rewriting are substituted. No scanner-policy mocks.
+# Run from the repo root: bash scripts/public-text-scan-test.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,7 +97,7 @@ if "${public}"; then
       printf '%s\n' "${TEST_CREDENTIAL}" >&2
       printf '%s\n' "${TEST_CREDENTIAL}"
       if [ "${TEST_SCAN_MODE}" = unavailable ]; then exit 127; fi
-      exit 2 ;;
+      exit 1 ;;
     ignore)
       # Supply the exact temporary-file fingerprint, giving the hostile
       # repo ignore file its strongest possible chance to bypass detection.
@@ -127,13 +128,19 @@ run_case() {
   if [ "${path}" = pr ]; then
     "${REAL_GIT}" -C "${run_dir}/repo" checkout -q -b agent/99-fix
     printf 'fixed\n' > "${run_dir}/repo/README.md"
-    "${REAL_GIT}" -C "${run_dir}/repo" commit -qam 'fix: test' -m 'Trusted commit explanation'
+    if [ "${mode}" = commit-secret ]; then
+      "${REAL_GIT}" -C "${run_dir}/repo" commit -qam 'fix: test' \
+        -m "aws_access_key_id = \"${TEST_CREDENTIAL}\""
+    else
+      "${REAL_GIT}" -C "${run_dir}/repo" commit -qam 'fix: test' -m 'Trusted commit explanation'
+    fi
   fi
   text="aws_access_key_id = \"${TEST_CREDENTIAL}\""
   case "${mode}" in
     safe) text='Safe upstream explanation' ;;
     empty) text='' ;;
     allow) text="${text} # gitleaks:allow" ;;
+    encoded) text="aws_access_key_id = \"${TEST_CREDENTIAL:0:8}%0A${TEST_CREDENTIAL:8}\"" ;;
   esac
   jq -n --arg text "${text}" '{target_branch:"main",pr_body:$text}' \
     > "${run_dir}/output/agent-result.json"
@@ -185,6 +192,9 @@ run_case() {
     echo "FAIL: ${name} — credential reached public output"; FAILURES=$((FAILURES + 1))
   elif [ "${expected}" = safe ] && ! grep -qF 'Safe upstream explanation' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — safe text was discarded"; FAILURES=$((FAILURES + 1))
+  elif [ "${path}" = pr ] && [ "${expected}" = generic ] \
+    && ! grep -qF 'Automated implementation for issue #99.' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — generic fallback missing"; FAILURES=$((FAILURES + 1))
   elif [ "${path}" = pr ] && [ "${expected}" = blocked ] \
     && ! grep -qF 'Trusted commit explanation' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — commit-body fallback missing"; FAILURES=$((FAILURES + 1))
@@ -194,6 +204,15 @@ run_case() {
   elif [ "${path}" = pr ] && [[ "${mode}" = error || "${mode}" = unavailable ]] \
     && ! grep -qF 'PR body secret scan: error' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — scanner failure status missing"; FAILURES=$((FAILURES + 1))
+  elif [ "${path}" = pr ] && [ "${mode}" = secret ] \
+    && ! grep -qF 'PR body secret scan: blocked' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — finding status missing"; FAILURES=$((FAILURES + 1))
+  elif [ "${path}" = pr ] && [ "${mode}" = commit-secret ] \
+    && ! grep -qF 'Commit body secret scan: blocked' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — unsafe commit body status missing"; FAILURES=$((FAILURES + 1))
+  elif [ "${path}" = pr ] && [[ "${mode}" = error || "${mode}" = unavailable ]] \
+    && ! grep -qF 'Commit body secret scan: error' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — commit-body scanner failure status missing"; FAILURES=$((FAILURES + 1))
   else
     echo "PASS: ${name}"
   fi
@@ -204,9 +223,15 @@ for forge in github gitlab; do
     run_case "${forge}" "${path}" safe safe
     run_case "${forge}" "${path}" empty blocked
     for mode in secret allow config config-toml ignore error unavailable; do
+      if [ "${path}" = pr ] && [[ "${mode}" = error || "${mode}" = unavailable ]]; then
+        run_case "${forge}" "${path}" "${mode}" generic
+        continue
+      fi
       run_case "${forge}" "${path}" "${mode}" blocked
     done
   done
+  run_case "${forge}" noop encoded blocked
+  run_case "${forge}" pr commit-secret generic
   run_case "${forge}" noop jira jira
 done
 [ "${FAILURES}" -eq 0 ] || { echo "${FAILURES} public-text tests failed"; exit 1; }
