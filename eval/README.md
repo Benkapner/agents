@@ -132,9 +132,12 @@ python3 eval/lint-release-cases.py
 ```
 
 Every agent with an `eval/*/eval.yaml` must have at least one case with
-boolean `release: true` in its `annotations.yaml`. The release coverage
-lint runs in pre-commit and CI, including when the last release case is
-deleted. It requires Python 3 and PyYAML (`python3 -m pip install PyYAML==6.0.3`);
+boolean `release: true` in its `annotations.yaml`. This lint is intentionally
+stricter than the runner's text comparison: the runner also selects a quoted
+`release: "true"`, but the lint rejects that string. Lowercase YAML boolean
+`true` counts, including the explicitly tagged `release: !!bool true` form.
+The release coverage lint runs in pre-commit and CI, including when the last
+release case is deleted. It requires Python 3 and PyYAML (`python3 -m pip install PyYAML==6.0.3`);
 pre-commit installs its own dependency. Run the offline fixture tests with
 `bash eval/lint-release-cases-test.sh`; they also run in `make script-test`.
 The script-test CI job installs PyYAML for these tests. The runtime skip

@@ -25,7 +25,7 @@ import yaml
 
 
 class AnnotationLoader(yaml.SafeLoader):
-    """Accept lowercase booleans, matching the release runner’s selection."""
+    """Require lowercase YAML booleans, stricter than the runner’s text check."""
 
 
 AnnotationLoader.yaml_implicit_resolvers = {

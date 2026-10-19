@@ -36,6 +36,7 @@ for value in true True TRUE tagged-true tagged-True tagged-TRUE false missing qu
     tagged-*) printf 'release: !!bool %s\n' "${value#tagged-}" > "$annotations" ;;
     false) printf 'release: false\n' > "$annotations" ;;
     missing) printf 'max_cost_usd: 1\n' > "$annotations" ;;
+    # The runner selects this string; the lint intentionally requires a boolean.
     quoted) printf 'release: "true"\n' > "$annotations" ;;
     number) printf 'release: 1\n' > "$annotations" ;;
     yes) printf 'release: yes\n' > "$annotations" ;;
