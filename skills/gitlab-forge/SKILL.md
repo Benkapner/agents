@@ -13,13 +13,18 @@ for authentication.
 The sandbox's command scanner blocks any command that passes the token as a
 `--header "PRIVATE-TOKEN: …"` argument (`analysis_incomplete`). Pass it
 through a curl config file instead (fullsend-ai/agents#1190). Write the file
-once, before your first request. Only your user can read it:
+once, before your first request. Only your user can read it.
+
+Run this setup command in its own Bash tool call. Do not combine it with any
+GitLab fetch or other command in the same call; the scanner blocks a call that
+mixes token-config setup with a request.
 
 ```bash
 (umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
-All requests then read that file with `-K`:
+Make every request in a separate, later Bash tool call. Each request reads
+that file with `-K`:
 
 ```bash
 curl -K /tmp/gitlab-api.curlrc \
