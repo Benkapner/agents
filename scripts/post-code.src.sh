@@ -997,7 +997,7 @@ case "${PR_BODY_SCAN_STATUS}" in
   passed)  PR_BODY_SCAN_LINE="- [x] PR body secret scan passed (gitleaks — no-git)" ;;
   blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked; commit-body fallback attempted" ;;
   error)   PR_BODY_SCAN_LINE="- [x] PR body secret scan: error; commit-body fallback attempted" ;;
-  *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit-body fallback attempted)" ;;
+  *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (no PR body to scan)" ;;
 esac
 
 case "${PR_TITLE_SCAN_STATUS}" in
@@ -1011,9 +1011,9 @@ esac
 COMMIT_BODY_SCAN_LINE=""
 case "${COMMIT_BODY_SCAN_STATUS}" in
   passed)  COMMIT_BODY_SCAN_LINE="
-- [x] Commit body secret scan passed (gitleaks — no-git)" ;;
+- [x] Final PR description secret scan passed (gitleaks — no-git)" ;;
   blocked|error) COMMIT_BODY_SCAN_LINE="
-- [x] Commit body secret scan: ${COMMIT_BODY_SCAN_STATUS}; generic description used" ;;
+- [x] Final PR description secret scan: ${COMMIT_BODY_SCAN_STATUS}; generic description used" ;;
 esac
 
 SIGNOFF_STRIPPED_LINE=""

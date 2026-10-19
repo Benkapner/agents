@@ -111,7 +111,9 @@ chmod +x "${TEST_DIR}/bin/"*
 FAILURES=0
 # Synthetic credential assembled at runtime so the test source is not a leak.
 TEST_CREDENTIAL="AKIA""QWERTYUIOPASDFGH"
+TEST_GENERIC_KEY="$(printf '%s' 'Q7mP2vN9xK4cR8aL' '3zH5tW6bF1dJ8sC')"
 export TEST_CREDENTIAL
+export TEST_GENERIC_KEY
 run_case() {
   local forge="$1" path="$2" mode="$3" expected="$4"
   local name="${forge}-${path}-${mode}" run_dir rc=0 text
@@ -141,6 +143,9 @@ run_case() {
     empty) text='' ;;
     allow) text="${text} # gitleaks:allow" ;;
     encoded) text="aws_access_key_id = \"${TEST_CREDENTIAL:0:8}%0A${TEST_CREDENTIAL:8}\"" ;;
+    normalized-secret) text="api_key
+Signed-off-by: Test <test@example.com>
+= \"${TEST_GENERIC_KEY}\"" ;;
   esac
   jq -n --arg text "${text}" '{target_branch:"main",pr_body:$text}' \
     > "${run_dir}/output/agent-result.json"
@@ -192,9 +197,18 @@ run_case() {
     echo "FAIL: ${name} — credential reached public output"; FAILURES=$((FAILURES + 1))
   elif [ "${expected}" = safe ] && ! grep -qF 'Safe upstream explanation' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — safe text was discarded"; FAILURES=$((FAILURES + 1))
+  elif [ "${path}" = pr ] && [ "${mode}" = safe ] \
+    && ! grep -qF 'Final PR description secret scan passed' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — final description scan status missing"; FAILURES=$((FAILURES + 1))
+  elif [ "${path}" = pr ] && [ "${mode}" = empty ] \
+    && ! grep -qF 'PR body secret scan: N/A (no PR body to scan)' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — absent PR body is described as a fallback attempt"; FAILURES=$((FAILURES + 1))
   elif [ "${path}" = pr ] && [ "${expected}" = generic ] \
     && ! grep -qF 'Automated implementation for issue #99.' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — generic fallback missing"; FAILURES=$((FAILURES + 1))
+  elif [ "${path}" = pr ] && [ "${mode}" = normalized-secret ] \
+    && ! grep -qF 'Final PR description secret scan: blocked; generic description used' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — final normalized description scan missing"; FAILURES=$((FAILURES + 1))
   elif [ "${path}" = pr ] && [ "${expected}" = blocked ] \
     && ! grep -qF 'Trusted commit explanation' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — commit-body fallback missing"; FAILURES=$((FAILURES + 1))
@@ -208,11 +222,11 @@ run_case() {
     && ! grep -qF 'PR body secret scan: blocked' "${run_dir}/published.txt"; then
     echo "FAIL: ${name} — finding status missing"; FAILURES=$((FAILURES + 1))
   elif [ "${path}" = pr ] && [ "${mode}" = commit-secret ] \
-    && ! grep -qF 'Commit body secret scan: blocked' "${run_dir}/published.txt"; then
-    echo "FAIL: ${name} — unsafe commit body status missing"; FAILURES=$((FAILURES + 1))
+    && ! grep -qF 'Final PR description secret scan: blocked; generic description used' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — unsafe final description status missing"; FAILURES=$((FAILURES + 1))
   elif [ "${path}" = pr ] && [[ "${mode}" = error || "${mode}" = unavailable ]] \
-    && ! grep -qF 'Commit body secret scan: error' "${run_dir}/published.txt"; then
-    echo "FAIL: ${name} — commit-body scanner failure status missing"; FAILURES=$((FAILURES + 1))
+    && ! grep -qF 'Final PR description secret scan: error; generic description used' "${run_dir}/published.txt"; then
+    echo "FAIL: ${name} — final description scanner failure status missing"; FAILURES=$((FAILURES + 1))
   else
     echo "PASS: ${name}"
   fi
@@ -232,6 +246,7 @@ for forge in github gitlab; do
   done
   run_case "${forge}" noop encoded blocked
   run_case "${forge}" pr commit-secret generic
+  run_case "${forge}" pr normalized-secret generic
   run_case "${forge}" noop jira jira
 done
 [ "${FAILURES}" -eq 0 ] || { echo "${FAILURES} public-text tests failed"; exit 1; }
