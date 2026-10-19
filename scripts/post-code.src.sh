@@ -884,9 +884,7 @@ extract_commit_body() {
   '
 }
 
-COMMIT_BODY_FROM_GIT=true
 if [ -n "${PR_BODY_FROM_RESULT}" ]; then
-  COMMIT_BODY_FROM_GIT=false
   # Strip Signed-off-by globally (agents must never produce DCO trailers),
   # then strip trailing closing-keyword footer lines so the script appends
   # them once. Closing keywords mid-body are preserved intentionally.
@@ -939,13 +937,37 @@ else
   PR_TITLE="${COMMIT_SUBJECT}"
 fi
 
-if [ -z "${COMMIT_BODY}" ]; then
-  COMMIT_BODY="$(extract_commit_body)"
-  COMMIT_BODY_FROM_GIT=true
+PR_TITLE_SCAN_STATUS="skipped"
+if [ -n "${PR_TITLE}" ]; then
+  GL_RC=0
+  scan_public_text "${PR_TITLE}" || GL_RC=$?
+  if [ "${GL_RC}" -eq 0 ]; then
+    PR_TITLE_SCAN_STATUS="passed"
+  else
+    if [ "${GL_RC}" -eq 2 ]; then
+      PR_TITLE_SCAN_STATUS="blocked"
+    else
+      PR_TITLE_SCAN_STATUS="error"
+    fi
+    if [ "${INJECT_ISSUE_SCOPE}" = "false" ]; then
+      PR_TITLE="fix: automated implementation"
+    elif [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+      PR_TITLE="fix(${WORK_ITEM_KEY}): automated implementation"
+    else
+      PR_TITLE="fix(#${ISSUE_NUMBER}): automated implementation"
+    fi
+    gha_echo warning "PR title secret scan did not pass; using generic title"
+  fi
 fi
 
+if [ -z "${COMMIT_BODY}" ]; then
+  COMMIT_BODY="$(extract_commit_body)"
+fi
+
+# Scan the final normalized description after removing trailers. Removing a
+# Signed-off-by line can join text that was separate during the earlier scan.
 COMMIT_BODY_SCAN_STATUS="skipped"
-if [ "${COMMIT_BODY_FROM_GIT}" = true ] && [ -n "${COMMIT_BODY}" ]; then
+if [ -n "${COMMIT_BODY}" ]; then
   GL_RC=0
   scan_public_text "${COMMIT_BODY}" || GL_RC=$?
   if [ "${GL_RC}" -eq 0 ]; then
@@ -976,6 +998,14 @@ case "${PR_BODY_SCAN_STATUS}" in
   blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked; commit-body fallback attempted" ;;
   error)   PR_BODY_SCAN_LINE="- [x] PR body secret scan: error; commit-body fallback attempted" ;;
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit-body fallback attempted)" ;;
+esac
+
+case "${PR_TITLE_SCAN_STATUS}" in
+  passed) PR_TITLE_SCAN_LINE="- [x] PR title secret scan passed (gitleaks — no-git)" ;;
+  blocked|error)
+    PR_TITLE_SCAN_LINE="- [x] PR title secret scan: ${PR_TITLE_SCAN_STATUS}; generic title used"
+    ;;
+  *) PR_TITLE_SCAN_LINE="- [x] PR title secret scan: N/A" ;;
 esac
 
 COMMIT_BODY_SCAN_LINE=""
@@ -1010,6 +1040,7 @@ ${ISSUE_REFERENCE}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
+${PR_TITLE_SCAN_LINE}
 ${PR_BODY_SCAN_LINE}${COMMIT_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
