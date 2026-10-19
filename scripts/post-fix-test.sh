@@ -2966,15 +2966,16 @@ run_push_history_rewrite_preserves_squash_test() {
   echo "PASS: ${test_name}"
 }
 
-# commit_as_published REPO EMAIL NAME MSG — a commit as the GitHub API
-# publishes it: the App bot as author, with EMAIL as its noreply address
-# (GIT_BOT_EMAIL), GitHub as committer, and the sandbox identity
-# NAME <EMAIL> only in the Authored-by trailer.
+# commit_as_published REPO EMAIL NAME MSG [TRAILER_EMAIL] — a commit as the
+# GitHub API publishes it: the App bot as author, with EMAIL as its noreply
+# address (GIT_BOT_EMAIL), GitHub as committer, and the identity it was
+# committed with, NAME <TRAILER_EMAIL> (default EMAIL), only in the
+# Authored-by trailer.
 commit_as_published() {
-  local repo="$1" email="$2" name="$3" msg="$4"
+  local repo="$1" email="$2" name="$3" msg="$4" trailer_email="${5:-$2}"
   GIT_AUTHOR_NAME='fullsend-ai-coder[bot]' GIT_AUTHOR_EMAIL="${email}" \
   GIT_COMMITTER_NAME='GitHub' GIT_COMMITTER_EMAIL='noreply@github.com' \
-    git -C "${repo}" commit -q -m "${msg}" -m "Authored-by: ${name} <${email}>"
+    git -C "${repo}" commit -q -m "${msg}" -m "Authored-by: ${name} <${trailer_email}>"
 }
 
 # run_redo_refused_test NAME SEED_FN MESSAGE_GREP — seeds a PR branch with
@@ -3244,6 +3245,104 @@ run_push_history_rewrite_refuses_lost_human_commit_with_spoofed_trailer_test() {
   if [ "${after}" != "${remote_tip}" ]; then
     echo "FAIL: ${test_name} — remote branch moved despite fail-closed rewrite"
     echo "  want ${remote_tip}, got ${after}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# A human commit already published through the API (bot author, Authored-by
+# trailer) is rebased onto an advanced target. Its SHA and tree change, so
+# the preservation check must find it by patch-id and the trailer author,
+# and the republished commit must keep the trailer.
+run_push_history_rewrite_preserves_rebased_published_human_commit_test() {
+  local test_name="push-history-rewrite-preserves-rebased-published-human-commit"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+  local human_email="human@example.com"
+
+  seed_pr_branch "${base}"
+  echo "human" > "${base}/seed/human.txt"
+  git -C "${base}/seed" add human.txt
+  commit_as_published "${base}/seed" "${bot_email}" "Alice" "feat: human work" "${human_email}"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
+  # Target moves on after the PR branch was built — the ordinary reason a
+  # human asks for a rebase.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  commit_as "${base}/seed" "${bot_email}" "fullsend-code" "main ahead"
+  git -C "${base}/seed" push -q origin main
+  local main_ahead
+  main_ahead="$(git -C "${base}/seed" rev-parse HEAD)"
+  publish_pr_branch "${base}"
+  git -C "${base}/repo" rebase -q origin/main
+
+  mkdir -p "${base}/iteration-1/output"
+  cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "human",
+  "actions": [
+    {"type": "fix", "finding": "rebase onto main", "description": "Rebased the branch onto origin/main per the human /fs-fix rebase request."}
+  ],
+  "summary": "Rebased onto main.",
+  "tests_passed": true,
+  "files_changed": [],
+  "rebased_onto_target": true
+}
+JSONEOF
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "rebase onto main" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skipping rebase onto origin/agent/99-test-fix to preserve the agent rebase onto the target" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote="${base}/remote.git" branch="refs/heads/agent/99-test-fix"
+  if ! git --git-dir="${remote}" merge-base --is-ancestor "${main_ahead}" "${branch}"; then
+    echo "FAIL: ${test_name} — pushed branch is not based on the new main tip"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_count
+  remote_count="$(git --git-dir="${remote}" rev-list --count "refs/heads/main..${branch}")"
+  if [ "${remote_count}" != "2" ]; then
+    echo "FAIL: ${test_name} — expected 2 commits on the PR after the rebase, got ${remote_count}"
+    git --git-dir="${remote}" log --oneline "${branch}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local human_file
+  human_file="$(git --git-dir="${remote}" show "${branch}:human.txt")"
+  if [ "${human_file}" != "human" ]; then
+    echo "FAIL: ${test_name} — human.txt is '${human_file}', want 'human'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local human_trailer fix_trailer
+  human_trailer="$(git --git-dir="${remote}" log -1 --format='%(trailers:key=Authored-by,valueonly)' "${branch}~1" | sed '/^$/d')"
+  fix_trailer="$(git --git-dir="${remote}" log -1 --format='%(trailers:key=Authored-by,valueonly)' "${branch}" | sed '/^$/d')"
+  if [ "${human_trailer}" != "Alice <${human_email}>" ] || [ "${fix_trailer}" != "fullsend-fix <${bot_email}>" ]; then
+    echo "FAIL: ${test_name} — Authored-by trailers not kept through the rebase and republish"
+    echo "  human: '${human_trailer}'  fix: '${fix_trailer}'"
+    cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -4466,6 +4565,7 @@ run_push_history_rewrite_preserves_redo_test
 run_push_history_rewrite_preserves_redo_after_signed_push_test
 run_push_history_rewrite_refuses_lost_published_code_agent_commit_test
 run_push_history_rewrite_refuses_lost_human_commit_with_spoofed_trailer_test
+run_push_history_rewrite_preserves_rebased_published_human_commit_test
 run_redo_refused_test "push-history-rewrite-refuses-lost-other-bot-commit-with-trailer" seed_other_bot_with_trailer "github-actions\[bot\]"
 run_redo_refused_test "push-history-rewrite-refuses-ambiguous-double-trailer-commit" seed_published_with_two_trailers "fullsend-ai-coder\[bot\]"
 run_push_history_rewrite_ordinary_append_test
