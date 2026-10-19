@@ -111,6 +111,16 @@ dimension using category as the key:
 | docs-currency        | `stale-doc`, `missing-doc`, `incorrect-doc`, `incomplete-doc`                                                                                                                                                                                                            |
 | cross-repo-contracts | `breaking-api`, `breaking-schema`, `breaking-config`, `breaking-cli`, `missing-deprecation`, `missing-version-bump`, `backward-incompatible`                                                                                                                             |
 
+**Step 6b remap.** Before merging, normalize dimensional findings: if a
+finding from a dimension sub-agent has a category outside that dimension's row
+in this table, remap it to the nearest category in that row. Never remap the
+non-dimensional categories `scope-authorization-implicit`, `sub-agent-failure`,
+`protected-path`, or `provenance-warning` — they are valid as-is, and
+`sub-agent-failure` in particular must stay unchanged so step 6d withholds it
+and the post-script detects the incomplete review. Sub-agents are told to emit
+only valid categories; this remap is a safety net so a stray label does not
+make the whole review fail schema validation.
+
 The host accepts only categories in this table. A missing or malformed
 projection triggers the full first-review path; never infer categories.
 
