@@ -3,12 +3,9 @@
 #   REWRITE_BASE=<sha>   parent of the oldest in-scope commit
 #   IN_SCOPE=<n>         number of contiguous fix-agent commits at HEAD
 # Exits 1 with the reason when HEAD is not the fix agent's, so the caller
-# fails closed. A commit is the fix agent's when its author is
-# "$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>"; a commit the post-script published
-# through the GitHub API is authored by the App's bot user (name ending in
-# "[bot]", email GIT_AUTHOR_EMAIL) and, when it carries exactly one
-# Authored-by trailer, that trailer is its author. post-fix applies the
-# same rule (commit_author_identity).
+# fails closed. A commit is the fix agent's by the identity rule under
+# "Fail closed" in SKILL.md, the rule post-fix applies as
+# commit_author_identity.
 set -euo pipefail
 base_ref="${1:?usage: authorized-range.sh BASE_REF}"
 : "${GIT_AUTHOR_NAME:?}" "${GIT_AUTHOR_EMAIL:?}"

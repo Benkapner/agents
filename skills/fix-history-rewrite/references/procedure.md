@@ -173,9 +173,8 @@ range as follows:
 
 Do not rewrite past a human-authored commit. Do not rewrite commits
 authored by the code agent (`fullsend-code` or any name other than
-`$GIT_AUTHOR_NAME`, read as under "Fail closed" in SKILL.md). Unrelated
-branch changes stay intact. When ownership is ambiguous, fail closed and
-explain the blocker in structured output.
+`$GIT_AUTHOR_NAME`). Unrelated branch changes stay intact. When ownership
+is ambiguous, fail closed and explain the blocker in structured output.
 
 ## How to redo / reset
 

@@ -103,9 +103,8 @@ _signed_push_base_parent() {
   [ -n "${best}" ] && echo "${best}"
 }
 
-# _signed_push_commit COMMIT — recreates the local COMMIT with every parent
-# swapped for the SHA GitHub created for it and prints the SHA of the commit
-# GitHub created.
+# _signed_push_commit COMMIT — rebuilds COMMIT on its rebuilt parents and
+# prints the SHA GitHub created.
 _signed_push_commit() {
   local commit="$1"
   local entries="${_SIGNED_PUSH_DIR}/entries" payload="${_SIGNED_PUSH_DIR}/payload"
@@ -157,12 +156,10 @@ _signed_push_commit() {
   parents="$(for parent in $(git rev-parse "${commit}^@"); do
     _signed_push_mapped "${parent}"
   done | jq -Rn '[inputs]')"
-  # The author becomes the App's bot user, so the local identity goes into
-  # a trailer. A commit that bot authored came back from GitHub and keeps
-  # the trailer it was published with; any other commit loses every
-  # Authored-by line first, so a crafted one cannot survive a rebase.
-  # interpret-trailers runs outside the checkout so a repo-local
-  # trailer.*.cmd cannot run here.
+  # A commit the App bot authored came back from GitHub and keeps the
+  # trailer it was published with; any other commit loses every Authored-by
+  # line first, so a crafted one cannot survive. interpret-trailers runs
+  # outside the checkout so a repo-local trailer.*.cmd cannot run here.
   author="$(git log -1 --format='%an <%ae>' "${commit}")"
   if [[ "${author}" == *"[bot] <${GIT_BOT_EMAIL:-}>" ]]; then
     keep=1

@@ -850,8 +850,6 @@ commit_author_identity() {
 # signoff_is_bot_commit <sha> — 0 when the commit is in scope for rewriting.
 # Author, not committer: a rebase re-stamps the committer onto commits the
 # human wrote. Author is also what the DCO app checks when it waives bots.
-# The author comes from commit_author_identity, so a human commit the
-# GitHub API republished under the bot stays out of scope.
 signoff_is_bot_commit() {
   local _sb_bot _sb_email
   _sb_bot="$(signoff_bot_email)"
