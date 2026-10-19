@@ -101,7 +101,7 @@ validate_prior_review_projection() {
       IN(
         "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
         "auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln", "sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection", "unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open", "permission-expansion", "permission-reduction", "role-escalation", "workflow-permission", "secret-exposure",
-        "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering",
+        "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
         "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
         "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
         "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
@@ -113,18 +113,20 @@ validate_prior_review_projection() {
     .version as $projection_version
     | if (
       type == "object" and
-      ((keys - ["version", "findings", "dispositions"]) | length == 0) and
+      ((keys - ["version", "action", "findings", "dispositions"]) | length == 0) and
       (.version | IN(1, 2)) and
       .version == $marker_version and
+      ((.action == null) or (.action | IN("approve", "request-changes", "comment", "reject"))) and
       (.findings | type == "array") and
       all(.findings[];
         type == "object" and
-        ((keys - ["severity", "category", "file", "line", "id"]) | length == 0) and
+        ((keys - ["severity", "category", "file", "line", "id", "actionable"]) | length == 0) and
         (.severity | IN("info", "low", "medium", "high", "critical")) and
         (.category | type == "string" and allowed_category) and
         ((.file == null and $projection_version == 2) or (.file | safe_path)) and
         (.line == null or (.line | type == "number" and . > 0 and floor == .)) and
-        (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$")))
+        (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$"))) and
+        (.actionable == null or (.actionable | type == "boolean"))
       ) and
       ([.findings[].id | select(. != null)] | length == (unique | length)) and
       (.dispositions == null or (
@@ -144,8 +146,10 @@ validate_prior_review_projection() {
         category: .category,
         file: .file,
         line: .line
-      } + (if .id == null then {} else {id: .id} end)]
-    } + (if .dispositions == null then {} else {
+      } + (if .id == null then {} else {id: .id} end)
+        + (if .actionable == null then {} else {actionable: .actionable} end)]
+    } + (if .action == null then {} else {action: .action} end)
+    + (if .dispositions == null then {} else {
       dispositions: [.dispositions[] | {id, status}]
     } end) else error("invalid prior review projection") end
   ' > "${tmp_file}"; then
@@ -164,6 +168,47 @@ validate_prior_review_projection() {
     rm -f "${tmp_file}"
     echo "::warning::Prior review projection rejected — using full first-review dispatch"
   fi
+}
+
+# Fetch resolved review threads for the final pre-sandbox authorization step
+# as rich, verified records eligible for human dismissal. Raw comment text is
+# used only on the host to extract finding-id stamps and is never persisted
+# or copied into the sandbox.
+# Close eligible prior findings before the model sees the ledger. Only exact
+# stamped ids are authoritative. High and critical findings remain open.
+apply_human_dismissals() {
+  local prior_file="$1"
+  local dismissals tmp_file
+
+  [[ -s "${prior_file}" ]] || return 0
+  dismissals="$(forge_get_human_dismissals)" || dismissals='[]'
+  if ! jq -e 'type == "array"' <<< "${dismissals}" >/dev/null 2>&1; then
+    dismissals='[]'
+  fi
+
+  tmp_file="$(mktemp "${prior_file}.dismissals.XXXXXX")"
+  if ! jq --argjson dismissals "${dismissals}" '
+    def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+    def closed_status: IN("resolved_by_change", "dismissed_by_human");
+    ([ $dismissals[]?.finding_ids[]? ] | unique) as $dismissed_ids
+    | ([.dispositions[]? | select(.status | closed_status) | .id]) as $closed
+    | ([.findings[] | select((.id | valid_id) and (.id as $id | $closed | index($id) == null))]) as $open
+    | ([ $open[]
+         | . as $finding
+         | select((.severity | IN("high", "critical")) | not)
+         | select($dismissed_ids | index($finding.id) != null)
+         | {id: .id, status: "dismissed_by_human"}
+       ]) as $new
+    | if ($new | length) == 0 then .
+      else .dispositions = ([.dispositions[]? | select(.id as $id | any($new[]; .id == $id) | not)] + $new)
+      end
+  ' "${prior_file}" > "${tmp_file}"; then
+    rm -f "${tmp_file}"
+    echo "::warning::Human-dismissal matching failed — keeping prior dispositions unchanged"
+    return 0
+  fi
+
+  mv "${tmp_file}" "${prior_file}"
 }
 
 if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
@@ -249,6 +294,14 @@ if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
       echo "::warning::Cannot deepen clone — missing credentials or unsupported forge"
     fi
   fi
+fi
+
+# Fetch and apply current human-dismissal evidence only after all early exits
+# and immediately before the validated ledger is copied into the sandbox.
+if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
+  case "${PRIOR_REVIEW_PROVENANCE:-none}" in
+    app-verified|bot-verified) apply_human_dismissals "${PRIOR_REVIEW_FILE}" ;;
+  esac
 fi
 
 echo "PR #${PR_NUMBER} is open — proceeding with review agent"

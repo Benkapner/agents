@@ -2,7 +2,7 @@
 # validate-output-schema-test.sh — Test validate-output-schema.sh with fixtures.
 #
 # Run from the repo root:
-#   bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh
+#   bash scripts/validate-output-schema-test.sh
 
 set -euo pipefail
 
@@ -106,6 +106,18 @@ run_test "valid-split" \
   '{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated."}],"comment":"Splitting into independent sub-issues."}' \
   "true"
 
+run_test "valid-move-without-evidence" \
+  '{"action":"move","reasoning":"the affected code is maintained elsewhere","move_to":{"target":"org/other-repo"},"comment":"Moving this issue to the repository that owns the affected code."}' \
+  "true"
+
+run_test "valid-move-with-evidence" \
+  '{"action":"move","reasoning":"the affected code is maintained elsewhere","move_to":{"target":"org/other-repo","evidence":["The affected package lives in org/other-repo."]},"comment":"Moving this issue to the repository that owns the affected code."}' \
+  "true"
+
+run_test "valid-move-jira-project-key" \
+  '{"action":"move","reasoning":"the issue belongs to another Jira project","move_to":{"target":"OTHERPROJ"},"comment":"Moving this issue to the owning Jira project."}' \
+  "true"
+
 # --- Jira tracker shapes ---
 # duplicate_of is an integer on GitHub/GitLab but a full issue key on Jira.
 run_test "valid-jira-duplicate-key" \
@@ -134,6 +146,50 @@ run_test "duplicate-missing-duplicate-of" \
 
 run_test "sufficient-missing-triage-summary" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"comment":"Done."}' \
+  "false"
+
+run_test "move-missing-move-to" \
+  '{"action":"move","reasoning":"owned elsewhere","comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-missing-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-empty-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":""},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-url-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"https://github.com/org/other-repo"},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-whitespace-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"   "},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-newline-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo\n::set-output name=target::malicious"},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-trailing-newline-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo\n"},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-dot-segment-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/.."},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-parent-path-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"../.."},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-malformed-evidence" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo","evidence":["valid evidence",42]},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-with-triage-summary-rejected" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo"},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":true},"comment":"Moving this issue."}' \
   "false"
 
 run_test "prerequisites-missing-prerequisites-field" \
@@ -400,7 +456,7 @@ run_test_output "additional-properties-shows-allowed" \
 run_test_output "additional-properties-lists-known-keys" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
   "false" \
-  "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
+  "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, move_to, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
 
 run_test_output "valid-output-no-allowed-line" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
@@ -512,13 +568,15 @@ run_test_custom_filename "review-reject-missing-findings" \
   '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'findings' is a required property"
 
 run_test_custom_filename "review-reject-missing-body" \
   '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'body' is a required property"
 
 run_test_custom_filename "review-failure-time-budget-valid" \
   '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"time-budget"}' \
@@ -530,13 +588,105 @@ run_test_custom_filename "review-failure-unknown-reason-rejected" \
   '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"ran-out-of-time"}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "is not one of"
+
+# --- review-result.schema.json per-action required fields ---
+
+run_test_custom_filename "review-request-changes-missing-findings" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Please change."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'findings' is a required property"
+
+run_test_custom_filename "review-request-changes-missing-body" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-request-changes-missing-head-sha" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","body":"Please change.","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-request-changes-empty-findings" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Please change.","findings":[]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "should be non-empty"
+
+run_test_custom_filename "review-comment-missing-body" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-comment-missing-head-sha" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","body":"FYI only."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-failure-missing-reason" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'reason' is a required property"
+
+run_test_custom_filename "review-approve-missing-body" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-approve-missing-head-sha" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","body":"LGTM."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-reject-missing-head-sha" \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
 
 run_test_custom_filename "review-approve-valid" \
   '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good, only minor nits."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
+
+# --- review-result.schema.json: repo path segments ---
+# GitLab project paths may nest groups arbitrarily (group/subgroup/project).
+
+for repo_case in "owner/repo" "group/subgroup/project" "a/b/c/d"; do
+  run_test_custom_filename "review-repo-valid-${repo_case//\//_}" \
+    "{\"action\":\"failure\",\"pr_number\":1,\"repo\":\"${repo_case}\",\"reason\":\"time-budget\"}" \
+    "agent-result.json" \
+    "${REVIEW_SCHEMA}" \
+    "true"
+done
+
+for repo_case in "repo" "" "/a/b" "a/b/" "a//b"; do
+  run_test_custom_filename "review-repo-invalid-${repo_case//\//_}" \
+    "{\"action\":\"failure\",\"pr_number\":1,\"repo\":\"${repo_case}\",\"reason\":\"time-budget\"}" \
+    "agent-result.json" \
+    "${REVIEW_SCHEMA}" \
+    "false"
+done
 
 # --- review-result.schema.json: short / non-hex SHA rejected ---
 

@@ -141,6 +141,101 @@ forge_get_recent_redispatch_comments() {
      | length'
 }
 
+# Return a JSON object mapping finding ids to the review-comment URL of the
+# review agent's original inline comment. This is best-effort context for
+# carried blockers; the ledger itself remains metadata-only. Only comments
+# authored by the current viewer are considered, so a human cannot forge a
+# finding link by mentioning an id in a reply.
+forge_get_finding_comment_links() {
+  local owner name query cursor has_next page response page_nodes nodes_json links
+  local -a gh_args
+
+  owner="${REPO%%/*}"
+  name="${REPO##*/}"
+  cursor=""
+  has_next="true"
+  page=0
+  nodes_json="[]"
+
+  query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        reviewThreads(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            comments(first: 100) {
+              pageInfo { hasNextPage }
+              nodes { body viewerDidAuthor url }
+            }
+          }
+        }
+      }
+    }
+  }'
+
+  while [[ "${has_next}" == "true" ]]; do
+    page=$((page + 1))
+    if [[ "${page}" -gt 20 ]]; then
+      echo "::warning::Review thread pagination hit page cap — finding links may be incomplete" >&2
+      break
+    fi
+
+    gh_args=(api graphql
+      -f owner="${owner}"
+      -f name="${name}"
+      -F number="${PR_NUMBER}"
+      -f query="${query}")
+    if [[ -n "${cursor}" ]]; then
+      gh_args+=(-f cursor="${cursor}")
+    fi
+
+    if ! response=$(GH_TOKEN="${REVIEW_TOKEN}" gh "${gh_args[@]}" 2>/dev/null); then
+      echo "::warning::Failed to fetch review threads — blocking finding links unavailable" >&2
+      echo '{}'
+      return 0
+    fi
+    if echo "${response}" | jq -e '.errors | type == "array" and length > 0' >/dev/null 2>&1; then
+      echo "::warning::Review thread query returned errors — blocking finding links unavailable" >&2
+      echo '{}'
+      return 0
+    fi
+
+    page_nodes=$(echo "${response}" | jq -c '.data.repository.pullRequest.reviewThreads.nodes // []' 2>/dev/null) || {
+      echo "::warning::Failed to parse review threads — blocking finding links unavailable" >&2
+      echo '{}'
+      return 0
+    }
+    nodes_json=$(jq -c --argjson page "${page_nodes}" '. + $page' <<< "${nodes_json}" 2>/dev/null) || {
+      echo "::warning::Failed to merge review thread pages — blocking finding links unavailable" >&2
+      echo '{}'
+      return 0
+    }
+
+    has_next=$(echo "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' 2>/dev/null) || has_next="false"
+    cursor=$(echo "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' 2>/dev/null) || cursor=""
+    if [[ "${has_next}" == "true" && -z "${cursor}" ]]; then
+      echo "::warning::Review thread page missing cursor — blocking finding links may be incomplete" >&2
+      break
+    fi
+  done
+
+  links=$(jq -c --arg base "${PR_URL}" '
+    [ .[]
+      | (.comments.nodes // [])[]
+      | select(.viewerDidAuthor == true)
+      | . as $comment
+      | (($comment.body // "") | scan("finding:(f_[A-Za-z0-9]+)") | .[0]) as $id
+      | select(($id | type) == "string")
+      | select(($comment.url // "") | startswith($base + "#discussion_r"))
+      | select(($comment.url // "") | test("#discussion_r[0-9]+$"))
+      | {id: $id, url: $comment.url}
+    ]
+    | reduce .[] as $match ({}; .[$match.id] //= $match.url)
+  ' <<< "${nodes_json}" 2>/dev/null) || links='{}'
+  jq -e 'type == "object"' <<< "${links}" >/dev/null 2>&1 || links='{}'
+  printf '%s\n' "${links}"
+}
+
 # --- Review threads ---
 
 # Select GitHub review-thread node IDs that are safe to auto-resolve.
@@ -288,134 +383,6 @@ forge_resolve_outdated_review_threads() {
 }
 
 # --- Human dismissals ---
-
-# Print a JSON array of resolved review threads that can stand as a human
-# dismissal of a prior finding: resolved by a user who is not the PR author
-# and holds write, maintain, or admin on the repository. Bots and logins
-# that cannot be checked are never eligible. Each entry carries the thread
-# path and lines, whether the review agent itself commented in it, and any
-# finding ids stamped in the agent's comments (`finding:f_…` markers), so
-# the caller can match a thread to a ledger entry. Prints [] when nothing qualifies or any lookup fails: a dismissal
-# the runner cannot verify stays open.
-forge_get_human_dismissals() {
-  local owner name query cursor has_next page response page_nodes nodes_json
-  local pr_author login role candidates eligible
-  local -a gh_args
-
-  owner="${REPO%%/*}"
-  name="${REPO##*/}"
-  cursor=""
-  has_next="true"
-  page=0
-  nodes_json="[]"
-
-  # The author exclusion is only as good as the author lookup: without a
-  # known author nothing can be verified.
-  pr_author="$(forge_get_pr_author)"
-  if [[ -z "${pr_author}" ]]; then
-    echo "::warning::Could not determine the PR author — human dismissals cannot be verified" >&2
-    echo '[]'
-    return 0
-  fi
-
-  query='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $number) {
-        reviewThreads(first: 100, after: $cursor) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            isResolved
-            path
-            line
-            originalLine
-            resolvedBy { login }
-            comments(first: 100) {
-              pageInfo { hasNextPage }
-              nodes { body viewerDidAuthor }
-            }
-          }
-        }
-      }
-    }
-  }'
-
-  while [[ "${has_next}" == "true" ]]; do
-    page=$((page + 1))
-    if [[ "${page}" -gt 20 ]]; then
-      echo "::warning::Review thread pagination hit page cap — remaining threads not checked for dismissals" >&2
-      break
-    fi
-
-    gh_args=(api graphql
-      -f owner="${owner}"
-      -f name="${name}"
-      -F number="${PR_NUMBER}"
-      -f query="${query}")
-    if [[ -n "${cursor}" ]]; then
-      gh_args+=(-f cursor="${cursor}")
-    fi
-
-    if ! response=$(GH_TOKEN="${REVIEW_TOKEN}" gh "${gh_args[@]}" 2>/dev/null); then
-      echo "::warning::Failed to fetch review threads — human dismissals cannot be verified" >&2
-      echo '[]'
-      return 0
-    fi
-    if echo "${response}" | jq -e '.errors | type == "array" and length > 0' >/dev/null 2>&1; then
-      echo "::warning::Review thread query returned errors — human dismissals cannot be verified" >&2
-      echo '[]'
-      return 0
-    fi
-    page_nodes=$(echo "${response}" | jq -c '.data.repository.pullRequest.reviewThreads.nodes // []' 2>/dev/null) || {
-      echo '[]'
-      return 0
-    }
-    nodes_json=$(jq -c --argjson page "${page_nodes}" '. + $page' <<< "${nodes_json}" 2>/dev/null) || {
-      echo '[]'
-      return 0
-    }
-    has_next=$(echo "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' 2>/dev/null) || has_next="false"
-    cursor=$(echo "${response}" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' 2>/dev/null) || cursor=""
-    if [[ "${has_next}" == "true" && -z "${cursor}" ]]; then
-      break
-    fi
-  done
-
-  # Resolved threads with a known resolver and complete comment pages. A
-  # finding id stamp counts only in a comment this token authored (the
-  # review agent's own), never in a reply anyone else wrote.
-  candidates=$(jq -c '
-    [ .[]
-      | select(type == "object")
-      | select(.isResolved == true)
-      | select((.resolvedBy.login // "") != "")
-      | select((.comments.pageInfo.hasNextPage // false) == false)
-      | {
-          path: .path,
-          line: .line,
-          original_line: .originalLine,
-          resolved_by: .resolvedBy.login,
-          agent_authored: ([ (.comments.nodes // [])[] | select(.viewerDidAuthor == true) ] | length > 0),
-          ids: ([ (.comments.nodes // [])[] | select(.viewerDidAuthor == true) | .body // "" | scan("finding:(f_[A-Za-z0-9]+)") | .[0] ] | unique)
-        }
-    ]' <<< "${nodes_json}" 2>/dev/null) || candidates="[]"
-
-  # Eligibility: not the PR author, a plain user login, and write or above
-  # on the repository. One permission lookup per distinct resolver.
-  eligible="[]"
-  while IFS= read -r login; do
-    [[ -z "${login}" ]] && continue
-    [[ "${login,,}" == "${pr_author,,}" ]] && continue
-    [[ "${login}" =~ ^[A-Za-z0-9-]+$ ]] || continue
-    role=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/collaborators/${login}/permission" \
-      --jq '.role_name' 2>/dev/null) || role=""
-    case "${role}" in
-      admin|maintain|write) eligible=$(jq -c --arg l "${login}" '. + [$l]' <<< "${eligible}") ;;
-      *) ;;
-    esac
-  done < <(jq -r '[.[].resolved_by] | unique | .[]' <<< "${candidates}" 2>/dev/null)
-
-  jq -c --argjson eligible "${eligible}" '[ .[] | select(.resolved_by as $l | $eligible | index($l) != null) ]' <<< "${candidates}" 2>/dev/null || echo '[]'
-}
 
 # --- Labels ---
 
@@ -661,6 +628,12 @@ forge_get_recent_redispatch_comments() {
      | length'
 }
 
+# GitLab notes do not expose the same GitHub review-comment URL shape. Keep
+# the caller forge-neutral and let it fall back to the finding context.
+forge_get_finding_comment_links() {
+  echo '{}'
+}
+
 # GitHub-only: GitLab discussions have no isOutdated equivalent in this
 # issue's scope. No-op so post-review can call this unconditionally.
 forge_resolve_outdated_review_threads() {
@@ -668,13 +641,6 @@ forge_resolve_outdated_review_threads() {
 }
 
 # --- Labels ---
-
-# Human dismissals need a resolved thread from a reviewer the runner can
-# vouch for. That check is not implemented for GitLab discussions, so no
-# dismissal is verified here and a dismissed_by_human disposition stays open.
-forge_get_human_dismissals() {
-  echo '[]'
-}
 
 forge_add_label() {
   local label="$1"
@@ -729,6 +695,110 @@ forge_list_repo_labels() {
     exit 1
     ;;
 esac
+
+# Fetch resolved review threads once per stage and return rich, verified
+# records for both pre-review ledger updates and post-review result checks.
+# Comment bodies never leave the host: only authors and exact finding-ID
+# stamps are retained in the returned records.
+forge_get_human_dismissals() {
+  local pr_author response trusted_reviewers
+  local -a fetch_args
+
+  pr_author="$(forge_get_pr_author)"
+  if [[ -z "${pr_author}" ]]; then
+    echo "::warning::Could not determine the PR author — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  case "${FULLSEND_FORGE}" in
+    github)
+      local org app_set
+      org="${REPO%%/*}"
+      app_set="${FULLSEND_APP_SET:-}"
+      trusted_reviewers="$(jq -nc \
+        --arg org "${org}" \
+        --arg app_set "${app_set}" '
+          [
+            ($org + "-review"), ($org + "-review[bot]"),
+            "fullsend-ai-review", "fullsend-ai-review[bot]",
+            (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+          ] | unique
+        ')"
+      ;;
+    gitlab)
+      local review_actor
+      review_actor="$(_gitlab_api GET "/user" 2>/dev/null | jq -r '.username // empty' 2>/dev/null)" || review_actor=""
+      if [[ -z "${review_actor}" ]]; then
+        echo "::warning::Could not determine the GitLab review bot — human dismissals cannot be verified" >&2
+        echo '[]'
+        return 0
+      fi
+      trusted_reviewers="$(jq -nc --arg actor "${review_actor}" '[$actor]')"
+      ;;
+  esac
+
+  fetch_args=(fetch-review-threads --forge "${FULLSEND_FORGE}" --repo "${REPO}" --pr "${PR_NUMBER}")
+  if [[ "${FULLSEND_FORGE}" == "gitlab" && -n "${CI_SERVER_URL:-}" ]]; then
+    fetch_args+=(--base-url "${CI_SERVER_URL}")
+  fi
+  if ! response="$(GH_TOKEN="${REVIEW_TOKEN:-${GH_TOKEN:-}}" \
+    GITLAB_TOKEN="${REVIEW_TOKEN:-${GITLAB_TOKEN:-}}" \
+    fullsend "${fetch_args[@]}" 2>/dev/null)"; then
+    echo "::warning::Failed to fetch review threads — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  if ! jq -e 'type == "object" and (.threads | type == "array") and (.truncated == false)' \
+    <<< "${response}" >/dev/null 2>&1; then
+    echo "::warning::Review thread fetch was invalid or truncated — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  jq -c --arg author "${pr_author}" --arg forge "${FULLSEND_FORGE}" --argjson trusted "${trusted_reviewers}" '
+    [ .threads[]
+      | select(type == "object")
+      | select(.is_resolved == true)
+      | select(.resolved_by_type == "User")
+      | select(.resolved_by_role_verified == true)
+      | select(.resolved_by_role | IN("write", "maintain", "admin"))
+      | select((.resolved_by | ascii_downcase) != ($author | ascii_downcase))
+      | select(.comments_truncated == false)
+      | . as $thread
+      | [ $thread.comments[]?
+          | {
+              author: (.author // ""),
+              author_type: (.author_type // ""),
+              finding_ids: [(.body // "" | scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->") | .[0])] | unique
+            }
+        ] as $comments
+      | [ $comments[]
+          | select(
+              if $forge == "github" then
+                (.author_type == "Bot") and
+                (.author as $login | ($trusted | map(ascii_downcase) | index($login | ascii_downcase)) != null)
+              else
+                (.author as $login | ($trusted | map(ascii_downcase) | index($login | ascii_downcase)) != null)
+              end
+            )
+        ] as $trusted_comments
+      | select(($trusted_comments | length) > 0)
+      | {
+          path: $thread.path,
+          line: $thread.line,
+          original_line: $thread.original_line,
+          resolved_by: $thread.resolved_by,
+          resolved_by_type: $thread.resolved_by_type,
+          resolved_by_role: $thread.resolved_by_role,
+          resolved_by_role_verified: $thread.resolved_by_role_verified,
+          comment_authors: ($comments | map({author, author_type})),
+          finding_ids: ([$trusted_comments[].finding_ids[]] | unique)
+        }
+    ]
+  ' <<< "${response}" 2>/dev/null || echo '[]'
+}
 # END bundled: lib/review-ops.lib.sh
 
 forge_validate_pr_url
@@ -810,7 +880,7 @@ validate_prior_review_projection() {
       IN(
         "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
         "auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln", "sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection", "unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open", "permission-expansion", "permission-reduction", "role-escalation", "workflow-permission", "secret-exposure",
-        "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering",
+        "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
         "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
         "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
         "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
@@ -822,18 +892,20 @@ validate_prior_review_projection() {
     .version as $projection_version
     | if (
       type == "object" and
-      ((keys - ["version", "findings", "dispositions"]) | length == 0) and
+      ((keys - ["version", "action", "findings", "dispositions"]) | length == 0) and
       (.version | IN(1, 2)) and
       .version == $marker_version and
+      ((.action == null) or (.action | IN("approve", "request-changes", "comment", "reject"))) and
       (.findings | type == "array") and
       all(.findings[];
         type == "object" and
-        ((keys - ["severity", "category", "file", "line", "id"]) | length == 0) and
+        ((keys - ["severity", "category", "file", "line", "id", "actionable"]) | length == 0) and
         (.severity | IN("info", "low", "medium", "high", "critical")) and
         (.category | type == "string" and allowed_category) and
         ((.file == null and $projection_version == 2) or (.file | safe_path)) and
         (.line == null or (.line | type == "number" and . > 0 and floor == .)) and
-        (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$")))
+        (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$"))) and
+        (.actionable == null or (.actionable | type == "boolean"))
       ) and
       ([.findings[].id | select(. != null)] | length == (unique | length)) and
       (.dispositions == null or (
@@ -853,8 +925,10 @@ validate_prior_review_projection() {
         category: .category,
         file: .file,
         line: .line
-      } + (if .id == null then {} else {id: .id} end)]
-    } + (if .dispositions == null then {} else {
+      } + (if .id == null then {} else {id: .id} end)
+        + (if .actionable == null then {} else {actionable: .actionable} end)]
+    } + (if .action == null then {} else {action: .action} end)
+    + (if .dispositions == null then {} else {
       dispositions: [.dispositions[] | {id, status}]
     } end) else error("invalid prior review projection") end
   ' > "${tmp_file}"; then
@@ -873,6 +947,47 @@ validate_prior_review_projection() {
     rm -f "${tmp_file}"
     echo "::warning::Prior review projection rejected — using full first-review dispatch"
   fi
+}
+
+# Fetch resolved review threads for the final pre-sandbox authorization step
+# as rich, verified records eligible for human dismissal. Raw comment text is
+# used only on the host to extract finding-id stamps and is never persisted
+# or copied into the sandbox.
+# Close eligible prior findings before the model sees the ledger. Only exact
+# stamped ids are authoritative. High and critical findings remain open.
+apply_human_dismissals() {
+  local prior_file="$1"
+  local dismissals tmp_file
+
+  [[ -s "${prior_file}" ]] || return 0
+  dismissals="$(forge_get_human_dismissals)" || dismissals='[]'
+  if ! jq -e 'type == "array"' <<< "${dismissals}" >/dev/null 2>&1; then
+    dismissals='[]'
+  fi
+
+  tmp_file="$(mktemp "${prior_file}.dismissals.XXXXXX")"
+  if ! jq --argjson dismissals "${dismissals}" '
+    def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+    def closed_status: IN("resolved_by_change", "dismissed_by_human");
+    ([ $dismissals[]?.finding_ids[]? ] | unique) as $dismissed_ids
+    | ([.dispositions[]? | select(.status | closed_status) | .id]) as $closed
+    | ([.findings[] | select((.id | valid_id) and (.id as $id | $closed | index($id) == null))]) as $open
+    | ([ $open[]
+         | . as $finding
+         | select((.severity | IN("high", "critical")) | not)
+         | select($dismissed_ids | index($finding.id) != null)
+         | {id: .id, status: "dismissed_by_human"}
+       ]) as $new
+    | if ($new | length) == 0 then .
+      else .dispositions = ([.dispositions[]? | select(.id as $id | any($new[]; .id == $id) | not)] + $new)
+      end
+  ' "${prior_file}" > "${tmp_file}"; then
+    rm -f "${tmp_file}"
+    echo "::warning::Human-dismissal matching failed — keeping prior dispositions unchanged"
+    return 0
+  fi
+
+  mv "${tmp_file}" "${prior_file}"
 }
 
 if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
@@ -958,6 +1073,14 @@ if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
       echo "::warning::Cannot deepen clone — missing credentials or unsupported forge"
     fi
   fi
+fi
+
+# Fetch and apply current human-dismissal evidence only after all early exits
+# and immediately before the validated ledger is copied into the sandbox.
+if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
+  case "${PRIOR_REVIEW_PROVENANCE:-none}" in
+    app-verified|bot-verified) apply_human_dismissals "${PRIOR_REVIEW_FILE}" ;;
+  esac
 fi
 
 echo "PR #${PR_NUMBER} is open — proceeding with review agent"
