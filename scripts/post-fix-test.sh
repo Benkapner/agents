@@ -2967,10 +2967,8 @@ run_push_history_rewrite_preserves_squash_test() {
 }
 
 # commit_as_published REPO EMAIL NAME MSG [TRAILER_EMAIL] — a commit as the
-# GitHub API publishes it: the App bot as author, with EMAIL as its noreply
-# address (GIT_BOT_EMAIL), GitHub as committer, and the identity it was
-# committed with, NAME <TRAILER_EMAIL> (default EMAIL), only in the
-# Authored-by trailer.
+# GitHub API publishes it: App bot author with EMAIL (GIT_BOT_EMAIL), GitHub
+# committer, NAME <TRAILER_EMAIL> (default EMAIL) in the Authored-by trailer.
 commit_as_published() {
   local repo="$1" email="$2" name="$3" msg="$4" trailer_email="${5:-$2}"
   GIT_AUTHOR_NAME='fullsend-ai-coder[bot]' GIT_AUTHOR_EMAIL="${email}" \
@@ -3045,6 +3043,32 @@ seed_published_with_two_trailers() {
   GIT_COMMITTER_NAME='GitHub' GIT_COMMITTER_EMAIL='noreply@github.com' \
     git -C "${base}/seed" commit -q -m "fix: attempt 1" -m "Authored-by: fullsend-fix <${bot_email}>
 Authored-by: fullsend-fix <${bot_email}>"
+}
+
+# A code-agent commit published through the API, then a fix attempt: the
+# bot author is shared, only the Authored-by trailer tells them apart.
+seed_published_code_agent_commit() {
+  local base="$1" bot_email="$2"
+  echo "code" > "${base}/seed/code.txt"
+  git -C "${base}/seed" add code.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-code" "feat: code agent work"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
+}
+
+# A human commit carrying a fix-agent Authored-by trailer: the trailer only
+# counts on bot-authored commits, so the human stays the author.
+seed_human_with_spoofed_trailer() {
+  local base="$1" bot_email="$2"
+  echo "human" > "${base}/seed/human.txt"
+  git -C "${base}/seed" add human.txt
+  GIT_AUTHOR_NAME="Human" GIT_AUTHOR_EMAIL="human@example.com" \
+  GIT_COMMITTER_NAME="Human" GIT_COMMITTER_EMAIL="human@example.com" \
+    git -C "${base}/seed" commit -q -m "feat: human work" -m "Authored-by: fullsend-fix <${bot_email}>"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
 }
 
 # seed_pr_branch BASE — bare remote at BASE/remote.git with main at "init",
@@ -3135,116 +3159,6 @@ run_push_history_rewrite_preserves_redo_after_signed_push_test() {
   if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor "${code_sha}" refs/heads/agent/99-test-fix; then
     echo "FAIL: ${test_name} — the code agent's commit is no longer on the remote"
     git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  echo "PASS: ${test_name}"
-}
-
-# A redo that drops a code-agent commit published through the API is still
-# refused: the bot author is shared, the Authored-by trailer is not.
-run_push_history_rewrite_refuses_lost_published_code_agent_commit_test() {
-  local test_name="push-history-rewrite-refuses-lost-published-code-agent-commit"
-  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
-  mkdir -p "${base}"
-  local bot_email="bot@example.com"
-
-  seed_pr_branch "${base}"
-  echo "code" > "${base}/seed/code.txt"
-  git -C "${base}/seed" add code.txt
-  commit_as_published "${base}/seed" "${bot_email}" "fullsend-code" "feat: code agent work"
-  echo "f1" > "${base}/seed/file.txt"
-  git -C "${base}/seed" add file.txt
-  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
-  local remote_tip
-  remote_tip="$(git -C "${base}/seed" rev-parse HEAD)"
-  publish_pr_branch "${base}"
-  git -C "${base}/repo" reset -q --hard origin/main
-  echo "gone" > "${base}/repo/file.txt"
-  git -C "${base}/repo" add file.txt
-  commit_as "${base}/repo" "${bot_email}" "fullsend-fix" "fix: redo past code agent"
-
-  write_history_rewritten_result "${base}/iteration-1/output"
-
-  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
-  local exit_code=0
-  GIT_BOT_EMAIL="${bot_email}" \
-    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
-    "test-user" "redo from scratch" || exit_code=$?
-
-  if [ "${exit_code}" -eq 0 ]; then
-    echo "FAIL: ${test_name} — expected non-zero exit when a code-agent commit would be lost"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if ! grep -q "fullsend-code" "${stdout_log}"; then
-    echo "FAIL: ${test_name} — missing fail-closed message naming the lost code-agent commit"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  local after
-  after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
-  if [ "${after}" != "${remote_tip}" ]; then
-    echo "FAIL: ${test_name} — remote branch moved despite fail-closed rewrite"
-    echo "  want ${remote_tip}, got ${after}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  echo "PASS: ${test_name}"
-}
-
-# A fix-agent Authored-by trailer in a human's commit changes nothing: the
-# trailer only counts on bot-authored commits, so the redo is refused.
-run_push_history_rewrite_refuses_lost_human_commit_with_spoofed_trailer_test() {
-  local test_name="push-history-rewrite-refuses-lost-human-commit-with-spoofed-trailer"
-  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
-  mkdir -p "${base}"
-  local bot_email="bot@example.com"
-
-  seed_pr_branch "${base}"
-  echo "human" > "${base}/seed/human.txt"
-  git -C "${base}/seed" add human.txt
-  GIT_AUTHOR_NAME="Human" GIT_AUTHOR_EMAIL="human@example.com" \
-  GIT_COMMITTER_NAME="Human" GIT_COMMITTER_EMAIL="human@example.com" \
-    git -C "${base}/seed" commit -q -m "feat: human work" -m "Authored-by: fullsend-fix <${bot_email}>"
-  echo "f1" > "${base}/seed/file.txt"
-  git -C "${base}/seed" add file.txt
-  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
-  local remote_tip
-  remote_tip="$(git -C "${base}/seed" rev-parse HEAD)"
-  publish_pr_branch "${base}"
-  git -C "${base}/repo" reset -q --hard origin/main
-  echo "gone" > "${base}/repo/file.txt"
-  git -C "${base}/repo" add file.txt
-  commit_as "${base}/repo" "${bot_email}" "fullsend-fix" "fix: redo past human"
-
-  write_history_rewritten_result "${base}/iteration-1/output"
-
-  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
-  local exit_code=0
-  GIT_BOT_EMAIL="${bot_email}" \
-    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
-    "test-user" "redo from scratch" || exit_code=$?
-
-  if [ "${exit_code}" -eq 0 ]; then
-    echo "FAIL: ${test_name} — expected non-zero exit when a human commit would be lost"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if ! grep -q "author Human <human@example.com>" "${stdout_log}"; then
-    echo "FAIL: ${test_name} — missing fail-closed message naming the lost human commit"
-    cat "${stdout_log}"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  local after
-  after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
-  if [ "${after}" != "${remote_tip}" ]; then
-    echo "FAIL: ${test_name} — remote branch moved despite fail-closed rewrite"
-    echo "  want ${remote_tip}, got ${after}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -4563,8 +4477,8 @@ run_push_history_rewrite_preserves_squash_test
 run_push_history_rewrite_refuses_partial_squash_test
 run_push_history_rewrite_preserves_redo_test
 run_push_history_rewrite_preserves_redo_after_signed_push_test
-run_push_history_rewrite_refuses_lost_published_code_agent_commit_test
-run_push_history_rewrite_refuses_lost_human_commit_with_spoofed_trailer_test
+run_redo_refused_test "push-history-rewrite-refuses-lost-published-code-agent-commit" seed_published_code_agent_commit "fullsend-code"
+run_redo_refused_test "push-history-rewrite-refuses-lost-human-commit-with-spoofed-trailer" seed_human_with_spoofed_trailer "author Human <human@example.com>"
 run_push_history_rewrite_preserves_rebased_published_human_commit_test
 run_redo_refused_test "push-history-rewrite-refuses-lost-other-bot-commit-with-trailer" seed_other_bot_with_trailer "github-actions\[bot\]"
 run_redo_refused_test "push-history-rewrite-refuses-ambiguous-double-trailer-commit" seed_published_with_two_trailers "fullsend-ai-coder\[bot\]"

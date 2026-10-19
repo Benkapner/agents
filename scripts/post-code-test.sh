@@ -33,6 +33,15 @@ else
   echo "PASS: bundled-script-has-signed-push"
 fi
 
+# The Authored-by trailer the signed publish adds must not reach the PR body.
+if ! grep -qF "sed '/^Authored-by:/d'" "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-strips-authored-by"
+  echo "  ${POST_SCRIPT} does not drop Authored-by from the commit body"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-strips-authored-by"
+fi
+
 if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-gitleaks-install"
   echo "  ${POST_SCRIPT} missing install_gitleaks"
@@ -971,40 +980,6 @@ count_related_to_commit_body_test() {
 
   echo "PASS: ${test_name}"
 }
-
-# The Authored-by trailer the signed publish adds must not reach the PR body.
-authored_by_stripped_commit_body_test() {
-  local test_name="$1"
-  local raw_commit_body="$2"
-  local processed
-  processed="$(printf '%s\n' "${raw_commit_body}" \
-    | sed '/^Signed-off-by:/d' \
-    | sed '/^Authored-by:/d' \
-    | sed '/^Closes #/d' \
-    | sed '/^Related to #/d' \
-    | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
-  local actual
-  actual="$(build_pr_body "${processed}" "42" "agent/42-fix" "abc123..def456" "" "skipped" "true")"
-  if echo "${actual}" | grep -q "Authored-by"; then
-    echo "FAIL: ${test_name}"
-    echo "  PR body still carries the Authored-by trailer:"
-    echo "${actual}" | sed 's/^/    /'
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if ! echo "${actual}" | grep -q "Body line kept."; then
-    echo "FAIL: ${test_name}"
-    echo "  PR body lost the commit body text"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  echo "PASS: ${test_name}"
-}
-
-authored_by_stripped_commit_body_test "pr-body-strips-authored-by-trailer" "Body line kept.
-
-Authored-by: fullsend-code <bot@example.com>
-Signed-off-by: Someone <s@example.com>"
 
 count_related_to_commit_body_test "single-related-to-commit-body-fallback" \
   "Partial fix for widget rendering.
