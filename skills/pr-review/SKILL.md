@@ -853,7 +853,7 @@ of findings in the standard format:
 ```json
 {
   "severity": "critical|high|medium|low|info",
-  "category": "<dimension-specific category>",
+  "category": "<canonical taxonomy category>",
   "file": "<relative path>",
   "line": "<line number, optional>",
   "description": "<explanation>",
@@ -922,6 +922,9 @@ Findings with no file (e.g., PR metadata findings) form their own
 group.
 
 #### 6b. Merge identical-category findings
+
+First, apply the category remap in
+[the re-review procedure](references/re-review.md#3a-group-prior-findings-by-review-dimension).
 
 Within each group, merge findings that have
 

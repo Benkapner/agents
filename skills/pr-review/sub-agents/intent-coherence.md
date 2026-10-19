@@ -22,6 +22,14 @@ whether naming/abstraction choices align with existing project trajectory.
 
 **Do not own:** Code correctness, security vulnerabilities, style details.
 
+**Categories:** each finding's `category` must be exactly one of
+`scope-exceeded`, `tier-mismatch`, `unauthorized-change`, `scope-creep`,
+`missing-authorization`, `misleading-label`, `design-direction`,
+`complexity-ratio`, `misplaced-abstraction`, `architectural-conflict`,
+`design-smell`, `over-engineering`, `under-engineering`, `scope-bundling`,
+or `scope-authorization-implicit` (only for the mechanical-change rule
+below). Any other value is invalid.
+
 ## Re-review remediation rule
 
 When the context package includes `Prior-finding remediation candidates`,
