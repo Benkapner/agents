@@ -95,12 +95,6 @@ forge_get_pr_author() {
     --repo "${REPO}" --json author --jq '.author.login' 2>/dev/null || true
 }
 
-# Fails when the labels cannot be read.
-forge_get_pr_labels() {
-  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
-    --repo "${REPO}" --json labels --jq '.labels[].name' 2>/dev/null
-}
-
 forge_get_pr_info() {
   GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
     --repo "${REPO}" --json state,isDraft 2>/dev/null || {
@@ -423,16 +417,6 @@ forge_remove_label() {
     -X DELETE --silent 2>/dev/null || true
 }
 
-# Succeeds when the label is gone afterwards; 404 means it was already absent.
-forge_remove_label_checked() {
-  local label="$1"
-  local encoded err
-  encoded=$(printf '%s' "${label}" | jq -sRr @uri)
-  err=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/${encoded}" \
-    -X DELETE --silent 2>&1) && return 0
-  [[ "${err}" == *"HTTP 404"* ]]
-}
-
 forge_remove_label_edit() {
   local label="$1"
   GH_TOKEN="${REVIEW_TOKEN}" gh pr edit "${PR_NUMBER}" --repo "${REPO}" \
@@ -495,9 +479,6 @@ GITLAB_REVIEW_OPS_SH_LOADED=1
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
 #
-# Also derives the trusted origin (scheme, host, and optional port) from
-# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
-#
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
 [[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
@@ -521,35 +502,6 @@ _validate_gitlab_host() {
   fi
   if [[ "${host,,}" != "${CI_SERVER_HOST,,}" ]]; then
     echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' does not match CI_SERVER_HOST" >&2
-    return 1
-  fi
-}
-
-# Prints the trusted GitLab origin (https://host[:port]) for API requests
-# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
-# variable that carries any non-default port; falls back to
-# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
-# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
-_gitlab_trusted_origin() {
-  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
-  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
-  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
-    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
-    return 1
-  fi
-  local host="${BASH_REMATCH[1]}"
-  _validate_gitlab_host "${host}" || return 1
-  printf '%s\n' "${origin}"
-}
-
-# Validates an origin (https://host[:port]) parsed from an untrusted URL
-# against the trusted CI server origin. Scheme, host, and port must all
-# match: a URL without a port only matches a trusted origin without one.
-_validate_gitlab_origin() {
-  local origin="$1" trusted
-  trusted=$(_gitlab_trusted_origin) || return 1
-  if [[ "${origin,,}" != "${trusted,,}" ]]; then
-    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
     return 1
   fi
 }
@@ -615,13 +567,6 @@ forge_get_pr_author() {
   local mr_data
   mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || { echo ""; return; }
   echo "${mr_data}" | jq -r '.author.username // empty'
-}
-
-# Fails when the labels cannot be read.
-forge_get_pr_labels() {
-  local mr_data
-  mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || return 1
-  jq -r '.labels[]? // empty' <<< "${mr_data}"
 }
 
 forge_get_pr_info() {
@@ -725,11 +670,6 @@ forge_remove_label() {
   local label="$1"
   _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
-}
-
-forge_remove_label_checked() {
-  _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
-    --data-urlencode "remove_labels=$1" > /dev/null 2>&1
 }
 
 forge_remove_label_edit() {
@@ -882,17 +822,6 @@ forge_parse_pr_url
 
 echo "::add-mask::${REVIEW_TOKEN}"
 
-REVIEW_UX_ENABLED_RAW="${REVIEW_UX_ENABLED:-true}"
-case "${REVIEW_UX_ENABLED_RAW}" in
-  true|false) ;;
-  *)
-    echo "::error::REVIEW_UX_ENABLED='$(_gha_sanitize "${REVIEW_UX_ENABLED_RAW}")' is invalid (expected 'true' or 'false')"
-    echo '{"action":"failure","reason":"tool-failure"}' | \
-      forge_post_review -
-    exit 1
-    ;;
-esac
-
 # Temp file cleanup: accumulate files to remove on exit so later traps
 # don't overwrite earlier ones.
 CLEANUP_FILES=()
@@ -954,40 +883,6 @@ if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
 fi
 
 echo "Using result: ${RESULT_FILE}"
-# The sandbox prompt skips this dimension when the flag is false. Keep the
-# runner authoritative too: remove any UX findings before severity filtering,
-# ledger accounting, or posting if a model dispatched the dimension anyway.
-REREVIEW_UX_ORIGINAL_ACTION=""
-UX_DISABLED=false
-if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" ]]; then
-  UX_DISABLED=true
-  UX_DISABLED_RESULT="$(mktemp)"
-  CLEANUP_FILES+=("${UX_DISABLED_RESULT}")
-  UX_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
-  UX_FINDINGS_BEFORE="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${RESULT_FILE}")"
-  jq --argjson removed "${UX_FINDINGS_BEFORE}" '
-    if (.findings | type) == "array" then
-      .findings |= map(select(.category != "uxd-evaluate-code-heuristics"))
-      | if $removed > 0 and (.action == "request-changes" or .action == "reject") then
-          if ([.findings[]?
-               | select((.severity | IN("medium", "high", "critical"))
-                        or (.actionable // false))] | length) == 0 then
-            .action = "comment"
-          else .
-          end
-        else .
-        end
-      | if (.findings | length) == 0 then del(.findings) else . end
-    else . end
-  ' "${RESULT_FILE}" > "${UX_DISABLED_RESULT}"
-  RESULT_FILE="${UX_DISABLED_RESULT}"
-  if [[ "${UX_FINDINGS_BEFORE}" -gt 0 ]] \
-      && [[ "${UX_ORIGINAL_ACTION}" = "request-changes" || "${UX_ORIGINAL_ACTION}" = "reject" ]] \
-      && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
-    REREVIEW_UX_ORIGINAL_ACTION="${UX_ORIGINAL_ACTION}"
-  fi
-  echo "User-experience findings suppressed (REVIEW_UX_ENABLED=false)"
-fi
 # The severity filter below can drop an info-level sub-agent-failure. Keep the
 # unfiltered result so the projection still sees every failed dimension.
 UNFILTERED_RESULT_FILE="${RESULT_FILE}"
@@ -1035,7 +930,7 @@ MINT_IDS="$(
 # Prior ledger: give legacy prior findings (written before ids existed) an id
 # so they enter the ledger instead of vanishing, and split prior ids into
 # open and closed. Minted ids used here are removed from the pool below.
-PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" --argjson ux_disabled "${UX_DISABLED}" '
+PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
   def closed_status: IN("resolved_by_change", "dismissed_by_human");
   ([ (.dispositions // [])[] | select(type == "object" and (.id | valid_id) and (.status | type == "string")) ]) as $disp
@@ -1050,35 +945,62 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" --argjson ux_disabled "${UX_
       closed: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
                 | select($d != null and ($d.status | closed_status)) | . + {status: $d.status} ],
       open_ids: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
-                  | select($d == null or ($d.status | closed_status | not))
-                  | select(($ux_disabled | not) or .category != "uxd-evaluate-code-heuristics")
-                  | .id ],
+                  | select($d == null or ($d.status | closed_status | not)) | .id ],
       used_mints: $r.mint_i
     }
 ' <<< "${PRIOR_JSON}")"
 MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< "${MINT_IDS}")"
 
-# Ids the model wrote, captured before remint. A first-review supplied id
-# is foreign and replaced below; the original string can still appear in
-# body/description/remediation and must be in the scrub set.
-SUPPLIED_FINDING_IDS="$(jq -c '
-  [ .findings[]?.id?, .dispositions[]?.id? ]
-  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
-' "${RESULT_FILE}" 2>/dev/null || echo '[]')"
+# Human dismissals are the runner's to verify, not the model's to assert:
+# a dismissed_by_human disposition counts only against a resolved review
+# thread from an eligible reviewer (not the PR author, write or above).
+# Fetched once, and only when the model used that status or, on GitHub, a
+# prior human-dismissed finding has a line its thread may still anchor.
+HUMAN_DISMISSALS='[]'
+if jq -e '[.dispositions[]? | select(type == "object" and .status == "dismissed_by_human")] | length > 0' "${RESULT_FILE}" >/dev/null 2>&1 \
+    || { [[ "${FULLSEND_FORGE}" = "github" ]] \
+         && jq -e '[.closed[] | select(.status == "dismissed_by_human" and (.line | type) == "number")] | length > 0' <<< "${PRIOR_LEDGER}" >/dev/null 2>&1; }; then
+  HUMAN_DISMISSALS="$(forge_get_human_dismissals)" || HUMAN_DISMISSALS='[]'
+  if ! jq -e 'type == "array"' <<< "${HUMAN_DISMISSALS}" >/dev/null 2>&1; then
+    HUMAN_DISMISSALS='[]'
+  fi
+fi
+
+# Where a prior human-dismissed finding still sits unchanged: its verified
+# dismissal thread carries the finding's exact stamp, is on the same file,
+# and still has a line. GitHub reports a thread's current line and nulls it
+# once a push changes that line (the thread goes outdated). GitLab keeps the
+# line the note was written on, so it cannot show the line is unchanged and
+# gets no anchors.
+DISMISSED_ANCHORS='[]'
+if [[ "${FULLSEND_FORGE}" = "github" ]]; then
+  DISMISSED_ANCHORS="$(jq -c --argjson dismissals "${HUMAN_DISMISSALS}" '
+    [ .closed[]
+      | select(.status == "dismissed_by_human" and (.file | type) == "string")
+      | . as $p
+      | first($dismissals[]?
+          | select(.path == $p.file and (.line | type) == "number")
+          | select(any(.finding_ids[]?; . == $p.id))) as $t
+      | {id: $p.id, file: $p.file, line: $t.line}
+    ]
+  ' <<< "${PRIOR_LEDGER}")"
+fi
 
 # Id assignment for this review. A supplied id is kept only when it is an
 # open prior id no earlier row already took and this review is not
 # resolving; a closed, resolving, foreign, or duplicate id is replaced (a
 # reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
-# category match: the exact line first, else the only candidate at that
-# place (a shifted line must not create a second ledger entry). Do not copy
-# an id this review is closing. A missing file (null or N/A) is not a
-# place, so those rows mint instead of inheriting. Otherwise mint.
-# Supplied open ids of later rows are reserved for them.
+# category match at the exact line; else the human-dismissed id anchored at
+# the row's exact file and line, whatever the category, unless the row is
+# high or critical (a dismissal never covers those); else the only open
+# candidate at that place (a shifted line must not create a second ledger
+# entry). Do not copy an id this review is closing. A missing file (null or
+# N/A) is not a place, so those rows mint instead of inheriting. Otherwise
+# mint. Supplied open ids of later rows are reserved for them.
 if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   ID_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${ID_RESULT}")
-  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" '
+  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" --argjson dismissed "${DISMISSED_ANCHORS}" '
     def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
     def anchor_line: if type == "number" then . else null end;
     def anchor_file: if . == "N/A" or . == null then null else . end;
@@ -1114,7 +1036,13 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                      | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category)
                    ]) as $same_place
                 | ([ $same_place[] | select((.line | anchor_line) == ($f.line | anchor_line)) ]) as $exact
+                | ([ $dismissed[]
+                     | select(.id as $pid | $taken | index($pid) == null)
+                     | select(($f.severity | IN("high", "critical")) | not)
+                     | select(.file == ($f.file | anchor_file) and .line == ($f.line | anchor_line))
+                   ]) as $dismissed_here
                 | if ($exact | length) == 1 then {id: $exact[0].id, mint_i: $state.mint_i}
+                  elif ($dismissed_here | length) > 0 then {id: $dismissed_here[0].id, mint_i: $state.mint_i}
                   elif ($same_place | length) == 1 then {id: $same_place[0].id, mint_i: $state.mint_i}
                   elif ($mints[$state.mint_i] | valid_id | not) then error("ran out of finding ids")
                   else {id: $mints[$state.mint_i], mint_i: ($state.mint_i + 1)}
@@ -1128,6 +1056,23 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       )
   ' "${RESULT_FILE}" > "${ID_RESULT}"
   mv "${ID_RESULT}" "${RESULT_FILE}"
+
+  # A row that took a human-dismissed id raises that finding again on a line
+  # no push has changed. The dismissal holds: keep the id closed in the
+  # ledger and do not post the row or let it count toward the verdict.
+  REDISMISSED_IDS="$(jq -r --argjson dismissed "${DISMISSED_ANCHORS}" '
+    [ .findings[] | .id | select(. as $id | any($dismissed[]; .id == $id)) ] | join(", ")
+  ' "${RESULT_FILE}")"
+  if [[ -n "${REDISMISSED_IDS}" ]]; then
+    echo "::notice::Finding(s) on an unchanged human-dismissed line keep dismissed id(s) ${REDISMISSED_IDS}; not raised again"
+    REDISMISSED_RESULT="$(mktemp)"
+    CLEANUP_FILES+=("${REDISMISSED_RESULT}")
+    jq --argjson dismissed "${DISMISSED_ANCHORS}" '
+      .findings |= map(select(.id as $id | any($dismissed[]; .id == $id) | not))
+      | if (.findings | length) == 0 then del(.findings) else . end
+    ' "${RESULT_FILE}" > "${REDISMISSED_RESULT}"
+    mv "${REDISMISSED_RESULT}" "${RESULT_FILE}"
+  fi
 fi
 
 # A legacy projection may have valid findings but no prior verdict. Do not
@@ -1269,25 +1214,14 @@ if [[ "${REREVIEW_BLOCKING_RANK}" -lt "$(severity_rank medium)" ]]; then
   REREVIEW_BLOCKING_RANK="$(severity_rank medium)"
 fi
 REREVIEW_CURRENT_MEDIUM_PLUS_COUNT="$(jq -r '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${UNFILTERED_RESULT_FILE}")"
-rereview_action_can_promote() {
-  [[ "$1" = "request-changes" ]] && return 0
-  [[ "$1" = "comment" ]] || return 1
-  if [[ "${REREVIEW_FILTERED_TO_ZERO}" = "true" ]] \
-      && [[ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" || \
-           "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
-    return 0
-  fi
-  if [[ "${REREVIEW_UX_ORIGINAL_ACTION}" = "request-changes" || \
-        "${REREVIEW_UX_ORIGINAL_ACTION}" = "reject" ]]; then
-    return 0
-  fi
-  return 1
-}
 if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]] \
     && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
     && [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
     && [[ "${PRIOR_REJECT_HOLD}" != "true" ]] \
-    && rereview_action_can_promote "${ACTION}"; then
+    && [[ "${ACTION}" = "request-changes" || \
+         ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
+           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
+                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) ) ]]; then
   REREVIEW_SAFETY_CANDIDATE=true
   ACTION="approve"
 fi
@@ -1645,8 +1579,7 @@ REVIEW_CONTROL_LABELS=(
 )
 
 is_control_label() {
-  # Forges match label names case-insensitively, so compare lowercased.
-  local label="${1,,}"
+  local label="$1"
   for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
     if [[ "${cl}" == "${label}" ]]; then
       return 0
@@ -1654,10 +1587,6 @@ is_control_label() {
   done
   # Pipeline-managed label prefixes
   if [[ "${label}" == risk/* ]]; then
-    return 0
-  fi
-  # Maintainer-set per-PR fix budget (issue #1680)
-  if [[ "${label}" == fullsend-fix-budget/* ]]; then
     return 0
   fi
   return 1
@@ -1698,12 +1627,8 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
     LA_ACTION_SHOWN=$(_gha_sanitize "${LA_ACTION}")
     LA_LABEL_SHOWN=$(_gha_sanitize "${LA_LABEL}")
 
-    # Leading/trailing whitespace is rejected: forges (notably GitLab) trim
-    # it, so " fullsend-fix-budget/2" would evade is_control_label yet still
-    # act on the real control label.
-    if [[ "${LA_LABEL}" == *::* || "${LA_LABEL}" == " "* || "${LA_LABEL}" == *" " \
-          || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
-      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters, a double colon, or leading/trailing whitespace"
+    if [[ "${LA_LABEL}" == *::* || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters or a double colon"
       continue
     fi
 
@@ -1834,18 +1759,6 @@ else
 fi
 
 
-# Human dismissals are the runner's to verify, not the model's to assert:
-# a dismissed_by_human disposition counts only against a resolved review
-# thread from an eligible reviewer (not the PR author, write or above).
-# Fetched once, and only when the model used that status.
-HUMAN_DISMISSALS='[]'
-if jq -e '[.dispositions[]? | select(type == "object" and .status == "dismissed_by_human")] | length > 0' "${RESULT_FILE}" >/dev/null 2>&1; then
-  HUMAN_DISMISSALS="$(forge_get_human_dismissals)" || HUMAN_DISMISSALS='[]'
-  if ! jq -e 'type == "array"' <<< "${HUMAN_DISMISSALS}" >/dev/null 2>&1; then
-    HUMAN_DISMISSALS='[]'
-  fi
-fi
-
 # Ledger accounting. Each open prior id gets one effective status, decided
 # here and used by both the approval guard and the projection:
 #   resolved_by_change  — rationale and evidence given.
@@ -1944,7 +1857,7 @@ fi
 BLOCKING_IDS="$(jq -r '.blocking | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${BLOCKING_IDS}" && "${ACTION}" = "approve" ]]; then
   echo "::warning::Approval withheld: prior high/critical finding id(s) ${BLOCKING_IDS} are still open"
-  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) are still open.'
+  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) '"${BLOCKING_IDS}"$' are still open.'
   LEDGER_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${LEDGER_RESULT}")
   jq --arg notice "${LEDGER_NOTICE}" \
@@ -1987,7 +1900,7 @@ PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" 
         file: (.file // "N/A"),
         description: (
           if (.description | type == "string" and length > 0) then .description
-          else ("Previously reported finding remains open: "
+          else ("Previously reported finding " + .id + " remains open: "
             + .severity + " " + .category + " in " + (.file // "PR-level")
             + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end) + ".")
           end
@@ -2008,7 +1921,7 @@ if [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -gt 0 ]]; then
   fi
 fi
 PRIOR_BLOCKING_SUMMARY="$(jq -r --argjson links "${FINDING_COMMENT_LINKS}" '
-  map("- " + .severity + " " + .category + " at "
+  map("- " + .id + ": " + .severity + " " + .category + " at "
       + (.file // "PR-level")
       + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end)
       + (if ($links[.id] | type) == "string" then
@@ -2039,10 +1952,14 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
     RESULT_FILE="${HOLD_RESULT}"
     ACTION="comment"
     DOWNGRADED=true
-  elif rereview_action_can_promote "${ACTION}" \
-      && [[ "${DOWNGRADED}" = "false" ]] \
+  elif [[ "${ACTION}" = "request-changes" \
+      || ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
+           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
+                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) \
+           && "${DOWNGRADED}" = "false" ) ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
-      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]]; then
+      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
+      && [[ "${DOWNGRADED}" = "false" ]]; then
     echo "New findings on a re-review are low/info only — changing '${ACTION}' to 'approve'"
     REREVIEW_RESULT=$(mktemp)
     CLEANUP_FILES+=("${REREVIEW_RESULT}")
@@ -2135,8 +2052,7 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
       "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
       "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
-      "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
-      "uxd-evaluate-code-heuristics"
+      "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
     );
   def safe_path:
     type == "string" and length > 0 and . != "N/A" and
@@ -2214,69 +2130,9 @@ if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
   PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
   PROJECTION_MARKER="<!-- fullsend:review-findings-v2:${PRIOR_FINDINGS_ENCODED} -->"
 fi
-# Finding ids are ledger keys, not prose. The skill tells the model not to
-# print them, and this pass makes that true regardless: every id this run
-# knows (prior ledger, current findings, dispositions) and anything shaped
-# like a minted id is removed from the visible body and from each finding's
-# description and remediation, which fullsend posts as inline comments. The
-# projection marker below and the inline stamps fullsend adds are built
-# from the JSON ids, not from this text, so they keep them.
-KNOWN_FINDING_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson supplied "${SUPPLIED_FINDING_IDS}" '
-  [ $prior.findings[]?.id?, .findings[]?.id?, .dispositions[]?.id?, $supplied[]? ]
-  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
-' "${RESULT_FILE}")"
-LEAKED_FINDING_IDS="$(jq -r --argjson known "${KNOWN_FINDING_IDS}" '
-  [ (.body // ""), (.findings[]? | .description // "", .remediation // "") ]
-  | map(select(type == "string"))
-  | map([ scan("\\b(f_[A-Za-z0-9]+)\\b|(?<![A-Za-z0-9_])_(f_[A-Za-z0-9]+)_(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])__(f_[A-Za-z0-9]+)__(?![A-Za-z0-9_])") | .[] | select(. != null) ] | .[])
-  | map(select(. as $id | ($known | index($id)) != null or test("^f_[0-9a-f]{16}$")))
-  | unique | join(", ")
-' "${RESULT_FILE}")"
-if [[ -n "${LEAKED_FINDING_IDS}" ]]; then
-  echo "::warning::Removed finding id(s) ${LEAKED_FINDING_IDS} from the posted review text; ids stay in the ledger only"
-fi
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
-jq --arg marker "${PROJECTION_MARKER}" --argjson known_ids "${KNOWN_FINDING_IDS}" '
-  # Closed list of id frames only. Do not tidy unrelated whitespace.
-  # $ids is an alternation of every id. A run of ids separated by commas or
-  # blanks leaves one hole, and a list item, heading or line that starts
-  # with ids loses them and the colon after them. A wrapper (~~, **, `, [],
-  # (), _, __) wraps the whole id run, not one id: ~~f_x, f_y~~ must go whole,
-  # since a leftover ~~~~ opens a code fence, **** is a rule and `` an empty
-  # code span. Runs are atomic so ids that match two alternatives cannot
-  # backtrack exponentially.
-  def id_run($item):
-    "(?>" + $item + "(?:[ \\t]*,[ \\t]*" + $item + "|[ \\t]+" + $item + ")*)";
-  def scrub_id($ids):
-    ("(?:" + $ids + ")") as $id
-    | id_run($id) as $inner
-    | ("(?:\\*\\*" + $inner + "\\*\\*|`" + $inner + "`|~~" + $inner + "~~"
-      + "|\\[" + $inner + "\\]\\([^)]*\\)|\\(" + $inner + "\\)"
-      + "|(?<![A-Za-z0-9_])__" + $inner + "__(?![A-Za-z0-9_])"
-      + "|(?<![A-Za-z0-9_])_" + $inner + "_(?![A-Za-z0-9_])|\\b" + $id + "\\b)") as $frame
-    | id_run($frame) as $run
-    | gsub("(?m)^(?<pfx>[ \\t]*(?:[-*+]|\\d+[.)]|#{1,6})[ \\t]+)" + $run + "[ \\t]*:[ \\t]*"; .pfx)
-    | gsub("(?m)^" + $run + "[ \\t]*(?::[ \\t]*)?"; "")
-    | gsub($run; "");
-  def scrub_ids:
-    if type != "string" then . else
-      # Minted ids already match f_[0-9a-f]{16}; listing them again gives each
-      # id two ways to match.
-      # Longest first: the atomic run never backtracks, so a shorter id that
-      # prefixes a longer one (f_hi1, f_hi10) must not win the alternation.
-      scrub_id(($known_ids | map(select(test("^f_[0-9a-f]{16}$") | not)) | sort_by(-length)) + ["f_[0-9a-f]{16}"] | join("|"))
-    end;
-    .body |= scrub_ids
-  | if (.findings | type) == "array" then
-      .findings |= map(
-        .description |= scrub_ids
-        | if (.description | type) == "string" and (.description | length) == 0
-          then .description = "Previously reported finding remains open." else . end
-        | if has("remediation") then .remediation |= scrub_ids else . end
-      )
-    else . end
-  |
+jq --arg marker "${PROJECTION_MARKER}" '
   # pre-review ends the current section at the first line containing a
   # history delimiter, so any copy in the agent body would hide the marker.
   def strip_reserved:
