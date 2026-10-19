@@ -21,7 +21,7 @@ references to renamed/removed identifiers.
 
 **Categories:** each finding's `category` must be exactly one of
 `stale-doc`, `missing-doc`, `incorrect-doc`, `incomplete-doc`. Any other
-value fails schema validation and discards the review.
+value is invalid.
 
 Extract identifiers from the diff, then search documentation files for
 references. Flag docs that reference identifiers modified or removed in

@@ -41,8 +41,7 @@ metadata (PR body, commit messages, PR description)
 `insecure-deserialization`, `prompt-injection`, `unicode-steganography`,
 `bidi-override`, `homoglyph-attack`, `instruction-smuggling`, `fail-open`,
 `permission-expansion`, `permission-reduction`, `role-escalation`,
-`workflow-permission`, `secret-exposure`. Any other value fails schema
-validation and discards the review.
+`workflow-permission`, `secret-exposure`. Any other value is invalid.
 
 ## Verification methodology
 

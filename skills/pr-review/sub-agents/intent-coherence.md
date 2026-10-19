@@ -28,7 +28,7 @@ whether naming/abstraction choices align with existing project trajectory.
 `complexity-ratio`, `misplaced-abstraction`, `architectural-conflict`,
 `design-smell`, `over-engineering`, `under-engineering`, `scope-bundling`,
 or `scope-authorization-implicit` (only for the mechanical-change rule
-below). Any other value fails schema validation and discards the review.
+below). Any other value is invalid.
 
 ## Re-review remediation rule
 

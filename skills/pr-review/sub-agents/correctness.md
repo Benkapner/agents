@@ -25,8 +25,8 @@ accuracy in implementation plans and design documents.
 `logic-error`, `nil-deref`, `off-by-one`, `edge-case`, `api-contract`,
 `missing-test`, `test-inadequate`, `pattern-violation`, `test-weakened`,
 `test-removed`, `mock-loosened`, `assertion-weakened`, `coverage-reduced`,
-`test-poisoning`, `split-payload`, `stale-reference`. Any other value fails
-schema validation and discards the review. Use `edge-case` for race
+`test-poisoning`, `split-payload`, `stale-reference`. Any other value is
+invalid. Use `edge-case` for race
 conditions and unhandled-error paths; use `logic-error` when the handling
 is wrong rather than missing.
 

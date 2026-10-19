@@ -21,7 +21,7 @@ may depend on. Evaluate backward compatibility of any public API surface.
 **Categories:** each finding's `category` must be exactly one of
 `breaking-api`, `breaking-schema`, `breaking-config`, `breaking-cli`,
 `missing-deprecation`, `missing-version-bump`, `backward-incompatible`.
-Any other value fails schema validation and discards the review.
+Any other value is invalid.
 
 Skip this review if no exported interfaces, schemas, or public APIs are
 modified in the diff.

@@ -23,7 +23,7 @@ not from general best practices.
 **Categories:** each finding's `category` must be exactly one of
 `naming-convention`, `error-handling-idiom`, `api-shape`,
 `code-organization`, `doc-style`, `pattern-inconsistency`. Any other value
-fails schema validation and discards the review.
+is invalid.
 
 ## Tool-owned filenames
 

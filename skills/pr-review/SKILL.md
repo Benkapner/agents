@@ -923,8 +923,15 @@ group.
 
 #### 6b. Merge identical-category findings
 
-First, remap any category outside its dimension's step 3a row to the nearest
-one in that row.
+First, normalize dimensional findings: if a finding from a dimension
+sub-agent has a category outside that dimension's step 3a row, remap it to
+the nearest category in that row. Never remap the non-dimensional
+categories `scope-authorization-implicit`, `sub-agent-failure`,
+`protected-path`, or `provenance-warning` — they are valid as-is, and
+`sub-agent-failure` in particular must stay unchanged so step 6d withholds it
+and the post-script detects the incomplete review. Sub-agents are told to
+emit only valid categories; this remap is a safety net so a stray label does
+not make the whole review fail schema validation.
 
 Within each group, merge findings that have
 

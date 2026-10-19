@@ -23,8 +23,10 @@ For each finding, return a JSON array as follows
 }
 ```
 
-The `category` must be one of the categories listed in your sub-agent
-definition above; any other value is invalid.
+Dimension sub-agents: the `category` must be one of the categories listed in
+your sub-agent definition above; any other value is invalid. The challenger
+is exempt: it must keep each input finding's `category` unchanged, whatever
+the category is.
 
 **Line number accuracy:** For the `line` field, cite the exact line
 number where the problematic code or text appears. After determining
