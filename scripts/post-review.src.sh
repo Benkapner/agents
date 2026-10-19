@@ -1269,6 +1269,9 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
     ACTION="comment"
     DOWNGRADED=true
   elif rereview_action_can_promote "${ACTION}" \
+      && { [[ "${ACTION}" != "comment" ]] \
+           || { [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
+                && [[ "${PRIOR_REJECT_HOLD}" != "true" ]]; }; } \
       && [[ "${DOWNGRADED}" = "false" ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
       && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]]; then
