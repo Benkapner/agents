@@ -34,12 +34,15 @@ MR_IID=$(basename "${PR_URL}")
 # the token never outlives the calls that need it.
 OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc; umask "$OLDMASK"
 
-# MR metadata: title, description, author, labels, draft status, head SHA
-MR_DATA=$(curl --fail --silent --show-error \
+# MR metadata: title, description, author, labels, draft status, head SHA.
+# Saved to a file, not captured in a variable and piped inside $( ), so
+# the field reads below stay in the scanner's accepted dialect.
+curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}")
-HEAD_SHA=$(echo "$MR_DATA" | jq -r '.sha')
-IS_DRAFT=$(echo "$MR_DATA" | jq -r '.draft')
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}" \
+  > /sandbox/workspace/mr-data.json
+HEAD_SHA=$(jq -r '.sha' /sandbox/workspace/mr-data.json)
+IS_DRAFT=$(jq -r '.draft' /sandbox/workspace/mr-data.json)
 
 # MR changes (includes diff per file), saved for later Bash calls
 # (shell variables do not survive between calls; files do)
@@ -145,9 +148,11 @@ COMPARE_INCOMPLETE_FILE=/sandbox/workspace/pr-compare-incomplete
 COMPARE_COMPLETE_FILTER='def safe_path: type == "string" and length > 0 and test("^[ -~]+$") and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path))'
 INCOMPLETE_COMPARE=true
 CHANGED_FILES=all
-if ! { printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
+if printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
   && printf '%s\n' all > "$CHANGED_FILES_FILE" \
-  && cp /sandbox/workspace/pr-diff.txt "$INCREMENTAL_DIFF"; }; then
+  && cp /sandbox/workspace/pr-diff.txt "$INCREMENTAL_DIFF"; then
+  :
+else
   echo "cannot initialize fail-closed compare state" >&2
   exit 1
 fi
@@ -184,7 +189,7 @@ elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \
   fi
 fi
 
-CHANGED_FILES=$(cat "$CHANGED_FILES_FILE")
+CHANGED_FILES=$(cat -- "$CHANGED_FILES_FILE")
 
 : > /tmp/gitlab-api.curlrc
 ```
