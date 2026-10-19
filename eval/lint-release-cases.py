@@ -18,30 +18,36 @@ Exit codes:
 
 import os
 from pathlib import Path
-import re
 import sys
 
 import yaml
 
 
 class AnnotationLoader(yaml.SafeLoader):
-    """Require lowercase YAML booleans, stricter than the runner’s text check."""
+    """Preserve aliases as distinct nodes instead of resolving release markers."""
+
+    def compose_node(self, parent, index):
+        alias = self.peek_event() if self.check_event(yaml.AliasEvent) else None
+        node = super().compose_node(parent, index)
+        if alias:
+            return yaml.ScalarNode("!alias", "", alias.start_mark, alias.end_mark)
+        return node
 
 
-AnnotationLoader.yaml_implicit_resolvers = {
-    key: [(tag, pattern) for tag, pattern in resolvers
-          if tag != "tag:yaml.org,2002:bool"]
-    for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
-}
-AnnotationLoader.add_implicit_resolver(
-    "tag:yaml.org,2002:bool", re.compile(r"^(?:true|false)$"),
-    list("tf"),
-)
-
-# Explicit boolean tags bypass implicit resolvers; preserve the runner's spelling check.
-AnnotationLoader.add_constructor(
-    "tag:yaml.org,2002:bool", lambda loader, node: loader.construct_scalar(node) == "true",
-)
+def has_release_marker(node) -> bool:
+    if not isinstance(node, yaml.MappingNode):
+        return False
+    # Do not infer release coverage through YAML merge keys.
+    if any(key.tag == "tag:yaml.org,2002:merge" for key, _ in node.value):
+        return False
+    markers = [value for key, value in node.value
+               if key.tag == "tag:yaml.org,2002:str" and key.value == "release"]
+    if len(markers) != 1:
+        return False
+    value = markers[0]
+    return (isinstance(value, yaml.ScalarNode)
+            and value.tag == "tag:yaml.org,2002:bool"
+            and value.value == "true")
 
 
 def main() -> int:
@@ -57,12 +63,12 @@ def main() -> int:
             if annotations.parent.name.startswith("."):
                 continue
             try:
-                data = yaml.load(annotations.read_text(), Loader=AnnotationLoader)
+                data = yaml.compose(annotations.read_text(encoding="utf-8"), Loader=AnnotationLoader)
             except (OSError, UnicodeError, yaml.YAMLError) as error:
                 print(f"ERROR: {annotations.relative_to(repo_root)}: {error}", file=sys.stderr)
                 errors += 1
                 continue
-            if isinstance(data, dict) and data.get("release") is True:
+            if has_release_marker(data):
                 release_cases += 1
         if not release_cases:
             print(

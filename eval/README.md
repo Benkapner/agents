@@ -136,9 +136,12 @@ boolean `release: true` in its `annotations.yaml`. This lint is intentionally
 stricter than the runner's text comparison: the runner also selects a quoted
 `release: "true"`, but the lint rejects that string. Lowercase YAML boolean
 `true` counts, including the explicitly tagged `release: !!bool true` form.
+Aliases and duplicate release keys do not establish coverage. An annotation
+with a top-level merge key is rejected even alongside a literal release marker;
+the lint does not emulate the runner’s merge precedence.
 The release coverage lint runs in pre-commit and CI, including when the last
 release case is deleted. It requires Python 3 and PyYAML (`python3 -m pip install PyYAML==6.0.3`);
-pre-commit installs its own dependency. Run the offline fixture tests with
+pre-commit installs its own dependency. The offline fixture tests also require yq. Run them with
 `bash eval/lint-release-cases-test.sh`; they also run in `make script-test`.
 The script-test CI job installs PyYAML for these tests. The runtime skip
 behavior described under [Tiers](#tiers) is unchanged.

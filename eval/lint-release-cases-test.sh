@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for eval/lint-release-cases.py; requires Python 3 and PyYAML.
+# Tests for eval/lint-release-cases.py; requires Python 3, PyYAML, and yq.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,7 +27,7 @@ make_agent() {
   printf 'agent: %s\n' "$2" > "${WORKDIR}/$1/eval/$2/eval.yaml"
 }
 
-for value in true True TRUE tagged-true tagged-True tagged-TRUE false missing quoted number yes on nested malformed null comment-only; do
+for value in true True TRUE tagged-true tagged-True tagged-TRUE false missing quoted number yes on alias alias-key merge merge-override merge-literal anchored duplicate nested malformed null comment-only; do
   make_agent "$value" code
   annotations="${WORKDIR}/${value}/eval/code/cases/smoke/annotations.yaml"
   case "$value" in
@@ -41,15 +41,30 @@ for value in true True TRUE tagged-true tagged-True tagged-TRUE false missing qu
     number) printf 'release: 1\n' > "$annotations" ;;
     yes) printf 'release: yes\n' > "$annotations" ;;
     on) printf 'release: on\n' > "$annotations" ;;
+    alias) printf 'a: &x true\nrelease: *x\n' > "$annotations" ;;
+    alias-key) printf 'k: &k release\n*k: true\n' > "$annotations" ;;
+    merge) printf 'defaults: &defaults {release: true}\n<<: *defaults\n' > "$annotations" ;;
+    merge-override) printf 'defaults: &defaults {release: true}\n<<: *defaults\nrelease: false\n' > "$annotations" ;;
+    merge-literal) printf 'defaults: &defaults {release: false}\n<<: *defaults\nrelease: true\n' > "$annotations" ;;
+    anchored) printf 'release: &x true\n' > "$annotations" ;;
+    duplicate) printf 'release: true\nrelease: false\n' > "$annotations" ;;
     nested) printf 'metadata:\n  release: true\n' > "$annotations" ;;
     malformed) printf 'release: [\n' > "$annotations" ;;
     null) printf 'release: null\n' > "$annotations" ;;
     comment-only) printf '# No release marker\n' > "$annotations" ;;
   esac
-  if [[ "$value" == true || "$value" == tagged-true ]]; then
+  if [[ "$value" == true || "$value" == tagged-true || "$value" == anchored ]]; then
     run_case "$value" 0 'code: OK (1 release-tier case(s))'
   else
     run_case "$value" 1 'eval/code/eval.yaml: no release-tier case'
+  fi
+  # The lint may be stricter, but must never accept a case the runner skips.
+  if REPO_ROOT="${WORKDIR}/${value}" python3 "${LINTER}" >/dev/null 2>&1; then
+    selected="$(yq '.release // false' "$annotations")"
+    if [[ "$selected" != true ]]; then
+      echo "FAIL: ${value} passes lint but the runner selects '${selected}'"
+      FAILURES=$((FAILURES + 1))
+    fi
   fi
 done
 
