@@ -32,7 +32,7 @@ MR_IID=$(basename "${PR_URL}")
 # shell variables do not survive between them — files (at a fixed,
 # predictable path) do. Written and scrubbed within this same block so
 # the token never outlives the calls that need it.
-(umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc)
+OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc; umask "$OLDMASK"
 
 # MR metadata: title, description, author, labels, draft status, head SHA
 MR_DATA=$(curl --fail --silent --show-error \
@@ -112,7 +112,7 @@ timed out — scrub the token: `: > /tmp/pr-head.curlrc`.
 ```bash
 # Recreate the curl config for this block (see MR data fetching above
 # for why a stable path, not a mktemp variable, is used).
-(umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc)
+OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc; umask "$OLDMASK"
 
 # Fetch linked issue metadata. Step 2b resolves bare `#N` and
 # same-repository issue URLs only.
@@ -154,7 +154,7 @@ fi
 
 # Recreate the curl config for this block (see MR data fetching above
 # for why a stable path, not a mktemp variable, is used).
-(umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc)
+OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc; umask "$OLDMASK"
 
 if ! curl --fail --silent --show-error --get \
   -K /tmp/gitlab-api.curlrc \
@@ -193,10 +193,9 @@ Each block above writes and scrubs `/tmp/gitlab-api.curlrc` within its
 own Bash call. As a fallback in case a block is interrupted before its
 own scrub line runs, once every GitLab API call in this skill is done
 for the review, scrub the token again as its own explicit Bash call:
-`: > /tmp/gitlab-api.curlrc` — not `rm`, and not an `EXIT` trap (a trap
-set in one Bash call does not fire for commands run in a later,
-independent call, and would instead delete the file before the later
-consumers ever read it).
+`: > /tmp/gitlab-api.curlrc` — not `rm`. Every consumer of the file sits
+inside the block that recreates it, so each block scrubs it on its own;
+this explicit call only covers a block that was interrupted.
 
 ## Notes
 
