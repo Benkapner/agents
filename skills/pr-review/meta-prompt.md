@@ -23,9 +23,8 @@ For each finding, return a JSON array as follows
 }
 ```
 
-The `category` must come from the canonical taxonomy in
-`skills/pr-review/references/re-review.md` (plus `protected-path`,
-`provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`).
+The `category` must be one of the categories listed in your sub-agent
+definition above; any other value is invalid.
 
 **Line number accuracy:** For the `line` field, cite the exact line
 number where the problematic code or text appears. After determining

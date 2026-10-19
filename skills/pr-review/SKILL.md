@@ -863,11 +863,6 @@ of findings in the standard format:
 }
 ```
 
-The `category` must come from the canonical taxonomy in
-`skills/pr-review/references/re-review.md` (plus `protected-path`,
-`provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`).
-Other values fail schema validation.
-
 If a sub-agent fails to return findings (timeout, error, empty
 response), record a finding noting the gap. The severity depends on
 the sub-agent's tier:
@@ -927,6 +922,9 @@ Findings with no file (e.g., PR metadata findings) form their own
 group.
 
 #### 6b. Merge identical-category findings
+
+First, remap any category outside its dimension's step 3a row to the nearest
+one in that row.
 
 Within each group, merge findings that have
 

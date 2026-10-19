@@ -20,6 +20,11 @@ not from general best practices.
 
 **Do not own:** Logic correctness, security, documentation content/staleness.
 
+**Categories:** each finding's `category` must be exactly one of
+`naming-convention`, `error-handling-idiom`, `api-shape`,
+`code-organization`, `doc-style`, `pattern-inconsistency`. Any other value
+fails schema validation and discards the review.
+
 ## Tool-owned filenames
 
 Treat filenames recognized by external tools as compatibility contracts. Do
