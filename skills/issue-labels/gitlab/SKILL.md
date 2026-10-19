@@ -34,7 +34,7 @@ Requests read the token from a curl config file instead. This is the same file
 as the `gitlab` forge skill's. Write it before the first request:
 
 ```bash
-(umask 077; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
+(umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
 ## Step 1: Discover available labels

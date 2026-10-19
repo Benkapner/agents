@@ -16,7 +16,7 @@ through a curl config file instead (fullsend-ai/agents#1190). Write the file
 once, before your first request. Only your user can read it:
 
 ```bash
-(umask 077; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
+(umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
 All requests then read that file with `-K`:
