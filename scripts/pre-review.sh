@@ -79,6 +79,11 @@ forge_get_pr_author() {
     --repo "${REPO}" --json author --jq '.author.login' 2>/dev/null || true
 }
 
+forge_get_pr_labels() {
+  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json labels --jq '.labels[].name' 2>/dev/null || true
+}
+
 forge_get_pr_info() {
   GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
     --repo "${REPO}" --json state,isDraft 2>/dev/null || {
@@ -553,6 +558,12 @@ forge_get_pr_author() {
   echo "${mr_data}" | jq -r '.author.username // empty'
 }
 
+forge_get_pr_labels() {
+  local mr_data
+  mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || { echo ""; return; }
+  echo "${mr_data}" | jq -r '.labels[]? // empty'
+}
+
 forge_get_pr_info() {
   local mr_data
   mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || {
@@ -1020,6 +1031,18 @@ The \`/fs-review\` command only reviews open PRs/MRs.
   forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
   exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Clear stale merge approval (ADR 0002, building block 12) — a new review run
+# means the head may have moved, so ready-for-merge from a prior run must not
+# survive until post-review. Runs before the author skip list so skipped
+# authors also lose a stale label. post-review re-adds it only on approval.
+# ---------------------------------------------------------------------------
+PR_LABELS="$(forge_get_pr_labels)"
+if grep -qxF "ready-for-merge" <<< "${PR_LABELS}"; then
+  forge_remove_label "ready-for-merge"
+  echo "::notice::Removed ready-for-merge from PR #${PR_NUMBER} at review start"
 fi
 
 # ---------------------------------------------------------------------------

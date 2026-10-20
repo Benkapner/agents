@@ -63,6 +63,11 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
     author)
       RESPONSE="{\"author\":{\"login\":\"${PR_AUTHOR}\"}}"
       ;;
+    labels)
+      # MOCK_PR_LABELS: comma-separated label names on the PR.
+      RESPONSE="$(jq -cn --arg l "${MOCK_PR_LABELS:-}" \
+        '{labels: [$l | split(",")[] | select(. != "") | {name: .}]}')"
+      ;;
     *)
       RESPONSE="{}"
       ;;
@@ -706,6 +711,43 @@ run_test_stdout "case-insensitive-skip" \
   0 \
   "REVIEW_SKIP_AUTHORS=app/renovate"
 
+# 13. Open PR carrying ready-for-merge → label removed at review start
+run_test_gh_call "open-pr-removes-ready-for-merge" \
+  "OPEN" "some-human" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-for-merge -X DELETE" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-review,ready-for-merge"
+
+run_test_stdout "open-pr-ready-for-merge-removal-notice" \
+  "OPEN" "some-human" \
+  "::notice::Removed ready-for-merge from PR #42 at review start" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-merge"
+
+# 14. Open PR without ready-for-merge → no label DELETE call
+run_test_no_gh_call "open-pr-without-label-no-delete" \
+  "OPEN" "some-human" \
+  "-X DELETE" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-review"
+
+# 15. Closed or merged PR → early exit runs first, no label DELETE call
+for closed_state in MERGED CLOSED; do
+  run_test_no_gh_call "${closed_state,,}-pr-keeps-ready-for-merge" \
+    "${closed_state}" "some-human" \
+    "-X DELETE" \
+    0 \
+    "MOCK_PR_LABELS=ready-for-merge"
+done
+
+# 16. Skipped author → ready-for-merge is still removed before the skip exit
+run_test_gh_call "skip-author-still-removes-ready-for-merge" \
+  "OPEN" "app/renovate" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-for-merge -X DELETE" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=app/renovate
+MOCK_PR_LABELS=ready-for-merge"
+
 # ---------------------------------------------------------------------------
 # GitLab forge pre-review tests
 # ---------------------------------------------------------------------------
@@ -757,7 +799,7 @@ fi
 if [[ "\${URL}" == *"/merge_requests/"* ]]; then
   MR_STATE=\$(cat "${TMPDIR}/mr-state.txt")
   MR_AUTHOR=\$(cat "${TMPDIR}/mr-author.txt")
-  echo "{\"state\":\"\${MR_STATE}\",\"draft\":false,\"author\":{\"username\":\"\${MR_AUTHOR}\"},\"iid\":42}"
+  echo "{\"state\":\"\${MR_STATE}\",\"draft\":false,\"author\":{\"username\":\"\${MR_AUTHOR}\"},\"labels\":\${MOCK_MR_LABELS_JSON:-[]},\"iid\":42}"
   exit 0
 fi
 
@@ -874,6 +916,34 @@ run_gitlab_test_stdout "gitlab-no-token-proceeds" \
   "No token available" \
   0 \
   "REVIEW_TOKEN="
+
+# GitLab: open MR carrying ready-for-merge → label removed; without it → no PUT
+for gitlab_labels in '["ready-for-merge"]' '["ready-for-review"]'; do
+  gitlab_mock_bin="$(build_gitlab_mock "opened" "some-user")"
+  env \
+    PATH="${gitlab_mock_bin}:${PATH}" \
+    PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42" \
+    FULLSEND_FORGE="gitlab" \
+    REVIEW_TOKEN="fake-gitlab-token" \
+    CI_SERVER_HOST="gitlab.com" \
+    MOCK_MR_LABELS_JSON="${gitlab_labels}" \
+    bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout.log" 2>&1 || true
+  if [[ "${gitlab_labels}" == *ready-for-merge* ]]; then
+    gitlab_test="gitlab-open-mr-removes-ready-for-merge"
+    grep -qF "remove_labels=ready-for-merge" "${TMPDIR}/curl-calls.log" && gitlab_ok=1 || gitlab_ok=0
+  else
+    gitlab_test="gitlab-open-mr-without-label-no-remove"
+    grep -qF "remove_labels=" "${TMPDIR}/curl-calls.log" && gitlab_ok=0 || gitlab_ok=1
+  fi
+  if [[ ${gitlab_ok} -eq 1 ]]; then
+    echo "PASS: ${gitlab_test}"
+  else
+    echo "FAIL: ${gitlab_test}"
+    cat "${TMPDIR}/curl-calls.log"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
 
 # GitLab uses the authenticated review-token identity as its trusted bot
 # provider and the normalized resolver role from fullsend#7907.

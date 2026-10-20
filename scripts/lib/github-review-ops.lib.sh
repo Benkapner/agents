@@ -42,6 +42,11 @@ forge_get_pr_author() {
     --repo "${REPO}" --json author --jq '.author.login' 2>/dev/null || true
 }
 
+forge_get_pr_labels() {
+  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json labels --jq '.labels[].name' 2>/dev/null || true
+}
+
 forge_get_pr_info() {
   GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
     --repo "${REPO}" --json state,isDraft 2>/dev/null || {

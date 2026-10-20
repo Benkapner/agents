@@ -88,6 +88,12 @@ forge_get_pr_author() {
   echo "${mr_data}" | jq -r '.author.username // empty'
 }
 
+forge_get_pr_labels() {
+  local mr_data
+  mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || { echo ""; return; }
+  echo "${mr_data}" | jq -r '.labels[]? // empty'
+}
+
 forge_get_pr_info() {
   local mr_data
   mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || {
