@@ -971,7 +971,8 @@ for gitlab_labels in '["ready-for-merge"]' '["ready-for-review"]'; do
     gitlab_ok=0
   elif [[ "${gitlab_labels}" == *ready-for-merge* ]]; then
     gitlab_test="gitlab-open-mr-removes-ready-for-merge"
-    grep -qF "remove_labels=ready-for-merge" "${TMPDIR}/curl-calls.log" \
+    grep -F -- "--request PUT" "${TMPDIR}/curl-calls.log" \
+      | grep -F "/merge_requests/42 " | grep -qF "remove_labels=ready-for-merge" \
       && grep -qF "::notice::Removed ready-for-merge from PR #42" "${TMPDIR}/stdout.log" \
       && gitlab_ok=1 || gitlab_ok=0
   else
