@@ -68,9 +68,10 @@ gh repo create "$EPHEMERAL_REPO" --public --description "Ephemeral eval repo (au
 echo "Created repo: $EPHEMERAL_REPO"
 
 TARGET_DIR=$(mktemp -d)
-GH_CRED_HELPER='!f(){ echo "password=${GH_TOKEN}"; };f'
+# Username comes from the helper; URL userinfo is lost when curl strips it from the effective URL.
+GH_CRED_HELPER='!f(){ echo "username=x-access-token"; echo "password=${GH_TOKEN}"; };f'
 git -c "credential.helper=${GH_CRED_HELPER}" \
-  clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
+  clone "https://github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
 if [[ -d "${CASE_SOURCE_DIR}/repo" ]]; then
