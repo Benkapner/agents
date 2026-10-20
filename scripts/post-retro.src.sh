@@ -204,7 +204,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     # proposals, and report it in the summary comment.
     if ! ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage"); then
       SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
-      echo "::error::Failed to create issue in ${TARGET_REPO} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
+      echo "::warning::Failed to create issue in ${TARGET_REPO} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
       FAILED_PROPOSALS="${FAILED_PROPOSALS}
 - **${TITLE}** (\`${TARGET_REPO}\`)"
       continue

@@ -995,7 +995,7 @@ run_create_fail_case "create-fail-then-ok" \
   GH_MOCK_ISSUE_FAIL_REPO "test-org/unavailable-repo"
 assert_create_fail_exit "create-fail-then-ok-exit-zero"
 assert_file_contains "create-fail-then-ok-error-logged" "${TMPDIR}/stdout.log" \
-  "::error::Failed to create issue in test-org/unavailable-repo for proposal[0] (Proposal in unavailable repo)"
+  "::warning::Failed to create issue in test-org/unavailable-repo for proposal[0] (Proposal in unavailable repo)"
 assert_file_contains "create-fail-then-ok-later-attempted" "${GH_LOG}" \
   "gh issue create --repo test-org/target-repo"
 assert_file_contains "create-fail-then-ok-summary-posted" "${GH_LOG}" \
@@ -1015,9 +1015,9 @@ run_create_fail_case "create-all-fail" \
   GH_MOCK_ISSUE_FAIL_REPO "*"
 assert_create_fail_exit "create-all-fail-exit-zero"
 assert_file_contains "create-all-fail-first-logged" "${TMPDIR}/stdout.log" \
-  "::error::Failed to create issue in test-org/unavailable-repo for proposal[0]"
+  "::warning::Failed to create issue in test-org/unavailable-repo for proposal[0]"
 assert_file_contains "create-all-fail-second-logged" "${TMPDIR}/stdout.log" \
-  "::error::Failed to create issue in test-org/target-repo for proposal[1]"
+  "::warning::Failed to create issue in test-org/target-repo for proposal[1]"
 assert_file_contains "create-all-fail-summary-posted" "${GH_LOG}" \
   "repos/test-org/test-repo/issues/10/comments"
 assert_file_lacks "create-all-fail-no-filed-section" "${GH_STDIN_LOG}" \
@@ -1596,7 +1596,7 @@ run_create_fail_case "gl-create-fail-then-ok" \
 assert_create_fail_exit "gl-create-fail-then-ok-exit-zero"
 assert_file_lacks "gl-create-fail-then-ok-no-gh" "${GH_LOG}" "gh "
 assert_file_contains "gl-create-fail-then-ok-error-logged" "${TMPDIR}/stdout.log" \
-  "::error::Failed to create issue in test-group/unavailable-project for proposal[0] (Proposal in unavailable project)"
+  "::warning::Failed to create issue in test-group/unavailable-project for proposal[0] (Proposal in unavailable project)"
 assert_file_contains "gl-create-fail-then-ok-later-attempted" "${CURL_LOG}" \
   "/projects/test-group%2Ftarget-project/issues"
 assert_file_contains "gl-create-fail-then-ok-summary-posted" "${CURL_LOG}" \
@@ -1616,9 +1616,9 @@ run_create_fail_case "gl-create-all-fail" \
   CURL_MOCK_ISSUE_FAIL "api-error"
 assert_create_fail_exit "gl-create-all-fail-exit-zero"
 assert_file_contains "gl-create-all-fail-first-logged" "${TMPDIR}/stdout.log" \
-  "::error::Failed to create issue in test-group/unavailable-project for proposal[0]"
+  "::warning::Failed to create issue in test-group/unavailable-project for proposal[0]"
 assert_file_contains "gl-create-all-fail-second-logged" "${TMPDIR}/stdout.log" \
-  "::error::Failed to create issue in test-group/target-project for proposal[1]"
+  "::warning::Failed to create issue in test-group/target-project for proposal[1]"
 assert_file_contains "gl-create-all-fail-summary-posted" "${CURL_LOG}" \
   "/merge_requests/10/notes"
 assert_file_lacks "gl-create-all-fail-no-filed-section" "${CURL_BODY_LOG}" \
