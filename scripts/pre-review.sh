@@ -79,6 +79,12 @@ forge_get_pr_author() {
     --repo "${REPO}" --json author --jq '.author.login' 2>/dev/null || true
 }
 
+# Fails when the labels cannot be read.
+forge_get_pr_labels() {
+  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json labels --jq '.labels[].name' 2>/dev/null
+}
+
 forge_get_pr_info() {
   GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
     --repo "${REPO}" --json state,isDraft 2>/dev/null || {
@@ -401,6 +407,16 @@ forge_remove_label() {
     -X DELETE --silent 2>/dev/null || true
 }
 
+# Succeeds when the label is gone afterwards; 404 means it was already absent.
+forge_remove_label_checked() {
+  local label="$1"
+  local encoded err
+  encoded=$(printf '%s' "${label}" | jq -sRr @uri)
+  err=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/${encoded}" \
+    -X DELETE --silent 2>&1) && return 0
+  [[ "${err}" == *"HTTP 404"* ]]
+}
+
 forge_remove_label_edit() {
   local label="$1"
   GH_TOKEN="${REVIEW_TOKEN}" gh pr edit "${PR_NUMBER}" --repo "${REPO}" \
@@ -553,6 +569,13 @@ forge_get_pr_author() {
   echo "${mr_data}" | jq -r '.author.username // empty'
 }
 
+# Fails when the labels cannot be read.
+forge_get_pr_labels() {
+  local mr_data
+  mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || return 1
+  jq -r '.labels[]? // empty' <<< "${mr_data}"
+}
+
 forge_get_pr_info() {
   local mr_data
   mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || {
@@ -654,6 +677,11 @@ forge_remove_label() {
   local label="$1"
   _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
+}
+
+forge_remove_label_checked() {
+  _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
+    --data-urlencode "remove_labels=$1" > /dev/null 2>&1
 }
 
 forge_remove_label_edit() {
@@ -1020,6 +1048,20 @@ The \`/fs-review\` command only reviews open PRs/MRs.
   forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
   exit 0
+fi
+
+# ADR 0002 block 12: clear a stale ready-for-merge at review start, before the
+# skip-author exit. post-review re-adds it only when this run approves.
+if ! PR_LABELS="$(forge_get_pr_labels)"; then
+  echo "::warning::Could not read PR labels — removing ready-for-merge unchecked"
+  PR_LABELS="ready-for-merge"
+fi
+if grep -qxF "ready-for-merge" <<< "${PR_LABELS}"; then
+  if forge_remove_label_checked "ready-for-merge"; then
+    echo "::notice::Removed ready-for-merge from PR #${PR_NUMBER} at review start"
+  else
+    echo "::warning::Failed to remove ready-for-merge from PR #${PR_NUMBER}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
