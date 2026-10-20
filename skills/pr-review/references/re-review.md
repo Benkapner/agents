@@ -110,6 +110,7 @@ dimension using category as the key:
 | style-conventions    | `naming-convention`, `error-handling-idiom`, `api-shape`, `code-organization`, `doc-style`, `pattern-inconsistency`                                                                                                                                                      |
 | docs-currency        | `stale-doc`, `missing-doc`, `incorrect-doc`, `incomplete-doc`                                                                                                                                                                                                            |
 | cross-repo-contracts | `breaking-api`, `breaking-schema`, `breaking-config`, `breaking-cli`, `missing-deprecation`, `missing-version-bump`, `backward-incompatible`                                                                                                                             |
+| user-experience      | `uxd-evaluate-code-heuristics`                                                                                                                                                                                                                                           |
 
 **Step 6b remap.** Before merging, normalize dimensional findings: if a
 finding from a dimension sub-agent has a category outside that dimension's row

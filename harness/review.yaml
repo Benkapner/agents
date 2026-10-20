@@ -64,6 +64,8 @@ env:
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
+    # UXD runs by default; set false in a harness overlay to opt out.
+    REVIEW_UX_ENABLED: "true"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.gitignore,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
@@ -80,6 +82,10 @@ forge:
   github:
     providers:
       - github-ro
+      - providers/github-public-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-public-ro.yaml
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -107,9 +113,11 @@ forge:
   gitlab:
     providers:
       - providers/gitlab-ro.yaml
+      - providers/github-public-ro.yaml
     openshell:
       profiles:
         - profiles/fullsend-gitlab-ro.yaml
+        - profiles/fullsend-github-public-ro.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab

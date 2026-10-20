@@ -128,6 +128,7 @@
             "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
             "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
             "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
+            "uxd-evaluate-code-heuristics",
             "protected-path", "provenance-warning", "scope-authorization-implicit", "sub-agent-failure"
           ]
         },
