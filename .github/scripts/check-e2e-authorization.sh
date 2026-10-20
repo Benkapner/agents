@@ -101,10 +101,10 @@ get_collaborator_role() {
     maintain|write) [[ "${perm}" == "write" ]] && echo "${role}" || echo "none" ;;
     triage|read) [[ "${perm}" == "read" ]] && echo "${role}" || echo "none" ;;
     *)
-      # Custom role: fall back to the canonical permission field
+      # Custom role or bot/app with empty role_name: fall back to canonical permission
       case "${perm}" in
-        admin|write|read) echo "${perm}" ;;
-        *) echo "none" ;;
+        admin|write|read|none) echo "${perm}" ;;
+        *) return 1 ;;
       esac
       ;;
   esac
@@ -118,9 +118,23 @@ is_write_role() {
 }
 
 # The ERR trap is not inherited by functions: return 1 so it fires at the call.
+# Concurrent workflows (e.g. Functional Tests and Behaviour Tests) race to delete
+# the label; treat HTTP 404 (Label does not exist) as already removed.
 remove_ok_to_test_label() {
   if [[ "${CHECK_E2E_AUTH_DRY_RUN:-}" != "true" ]]; then
-    gh api -X DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/${OK_TO_TEST_LABEL}" >/dev/null || return 1
+    local del_err
+    del_err="$(mktemp)"
+    if ! gh api -X DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/${OK_TO_TEST_LABEL}" >/dev/null 2>"${del_err}"; then
+      if grep -qiE "HTTP 404|Label does not exist" "${del_err}"; then
+        rm -f "${del_err}"
+        label_removed=true
+        return 0
+      fi
+      cat "${del_err}" >&2
+      rm -f "${del_err}"
+      return 1
+    fi
+    rm -f "${del_err}"
   fi
   label_removed=true
 }
@@ -209,10 +223,10 @@ if [[ "${reason}" == "ok_to_test" ]]; then
   fi
 
   # Any missing identity results in denial (Fail Closed).
+  # Do not remove the label when the labeler identity is missing, avoiding race conditions.
   if [[ -z "${labeler_login}" ]]; then
     authorized=false
     reason="untrusted_labeler"
-    remove_ok_to_test_label
   else
     if ! labeler_role="$(get_collaborator_role "${labeler_login}")"; then
       write_error_output

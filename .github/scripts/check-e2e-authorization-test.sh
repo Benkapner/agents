@@ -102,6 +102,10 @@ case "\$*" in
     fi
     ;;
   *DELETE*)
+    if [[ "\${MOCK_FAIL_DELETE_404:-false}" == "true" ]]; then
+      echo "gh: Label does not exist (HTTP 404)" >&2
+      exit 1
+    fi
     exit 0
     ;;
   *)
@@ -266,19 +270,27 @@ export LABEL_ACTOR_LOGIN="maintainer"
 output=$(run_auth 1 "test-org/test-repo")
 assert_authorized "ok-to-test label by write maintainer is authorized" "${output}"
 
-# Labeled event without LABEL_ACTOR_LOGIN fails closed
+# Labeled event without LABEL_ACTOR_LOGIN fails closed without deleting label
 unset LABEL_ACTOR_LOGIN
 output=$(run_auth 1 "test-org/test-repo")
-assert_unauthorized "labeled event without actor login is untrusted_labeler" "${output}" "untrusted_labeler"
+assert_unauthorized "labeled event without actor login is untrusted_labeler" "${output}" "untrusted_labeler" "false"
 export LABEL_ACTOR_LOGIN="maintainer"
 
-# ok-to-test label applied by triage user is denied and untrusted_labeler
+# ok-to-test label applied by triage user is denied and untrusted_labeler; label is removed
 set_role "triager" "triage"
 export LABEL_ACTOR_LOGIN="triager"
-export CHECK_E2E_AUTH_DRY_RUN="true"
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-01-01T11:00:00Z","actor":{"login":"triager"}}]'
+unset CHECK_E2E_AUTH_DRY_RUN
 output=$(run_auth 1 "test-org/test-repo")
-assert_unauthorized "ok-to-test by triage user is denied as untrusted_labeler" "${output}" "untrusted_labeler"
-unset EVENT_ACTION LABEL_ACTOR_LOGIN CHECK_E2E_AUTH_DRY_RUN
+assert_unauthorized "ok-to-test by triage user is denied as untrusted_labeler" "${output}" "untrusted_labeler" "true"
+
+# Label removal with concurrent 404 is treated as already removed
+export MOCK_FAIL_DELETE_404="true"
+output=$(run_auth 1 "test-org/test-repo")
+assert_unauthorized "label removal race with 404 treated as already removed" "${output}" "untrusted_labeler" "true"
+unset MOCK_FAIL_DELETE_404
+export CHECK_E2E_AUTH_DRY_RUN="true"
+unset EVENT_ACTION LABEL_ACTOR_LOGIN
 
 # Missing author identity in both env and PR payload fails closed
 unset PR_AUTHOR_LOGIN PR_AUTHOR_ASSOCIATION
