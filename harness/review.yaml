@@ -64,8 +64,8 @@ env:
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
-    # UXD runs by default; set false in a harness overlay to opt out.
-    REVIEW_UX_ENABLED: "true"
+    # UXD is opt-in; set true in a harness overlay to enable it.
+    REVIEW_UX_ENABLED: "false"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.gitignore,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
