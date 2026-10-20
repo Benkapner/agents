@@ -2865,6 +2865,47 @@ assert_last_result "posted-text-drops-reminted-foreign-id" \
 assert_disposition_stdout "posted-text-drops-reminted-foreign-id" \
   "::warning::Removed finding id(s) f_invented1 from the posted review text" "present"
 
+# A struck-through id must go whole: a leftover "~~~~" at the start of a
+# line opens a code fence that swallows the rest of the review (#1717).
+run_disposition_case "posted-text-drops-struck-through-ids" \
+  "$(jq -c --arg body "$(printf '%s' 'Review
+
+### Earlier findings
+~~f_hi1~~ dismissed
+- ~~f_hi1~~: dismissed
+- ~~f_hi1~~ dismissed')" '.action="request-changes" | .body=$body | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"See ~~f_hi1~~ here.",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings[0].id == "f_hi1"'
+assert_last_result "posted-text-drops-struck-through-ids" \
+  '(.body | contains("~~~~") | not) and (.body | contains("~~") | not) and (.body | contains("### Earlier findings\ndismissed\n- dismissed\n-  dismissed")) and (.body | test("f_hi1") | not) and .findings[0].description == "See  here."'
+assert_disposition_stdout "posted-text-drops-struck-through-ids" \
+  "::warning::Removed finding id(s) f_hi1 from the posted review text" "present"
+
+# Ordered and "+" list items, link-wrapped ids, headings, a line that starts
+# with "id:", adjacent ids and _id_ leave no orphaned ":" or "," and no
+# fused words; a run of adjacent ids leaves one hole (#1717).
+run_disposition_case "posted-text-drops-list-heading-and-adjacent-ids" \
+  "$(jq -c --arg body "$(printf '%s' 'Review
+
+### Earlier findings
+1. f_hi1: resolved
+2) f_hi2: resolved
++ f_hi1: resolved
+- [f_hi1](#c): resolved
+#### f_hi1: title
+Line one
+f_hi1: resolved
+f_hi1,f_hi2: both
+- f_hi1, f_hi2: both
+Issues f_hi1 f_hi2 remain.
+See _f_hi1_ too.')" '.action="request-changes" | .body=$body | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"Same as f_hi1,f_hi2 and f_hi1 f_hi2.",id:"f_hi1"},{severity:"high",category:"logic-error",file:"old.go",line:9,description:"d",id:"f_hi2"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""},{id:"f_hi2",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"},{"severity":"high","category":"logic-error","file":"old.go","line":9,"id":"f_hi2"}]}' \
+  '([.findings[].id] | sort) == ["f_hi1","f_hi2"]'
+assert_last_result "posted-text-drops-list-heading-and-adjacent-ids" \
+  '(.body | contains("### Earlier findings\n1. resolved\n2) resolved\n+ resolved\n- resolved\n#### title\nLine one\nresolved\nboth\n- both\nIssues  remain.\nSee  too.")) and (.body | test("f_hi[12]") | not) and (.body | test("(?m)^[ \\t]*(?:[-*+]|\\d+[.)]|#+)?[ \\t]*[,:]") | not) and ([.findings[] | select(.id == "f_hi1") | .description] == ["Same as  and ."])'
+assert_disposition_stdout "posted-text-drops-list-heading-and-adjacent-ids" \
+  "::warning::Removed finding id(s) f_hi1, f_hi2 from the posted review text" "present"
+
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
 run_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \
