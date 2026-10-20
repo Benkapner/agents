@@ -1361,7 +1361,9 @@ jq --arg marker "${PROJECTION_MARKER}" --argjson known_ids "${KNOWN_FINDING_IDS}
     if type != "string" then . else
       # Minted ids already match f_[0-9a-f]{16}; listing them again gives each
       # id two ways to match.
-      scrub_id(($known_ids | map(select(test("^f_[0-9a-f]{16}$") | not))) + ["f_[0-9a-f]{16}"] | join("|"))
+      # Longest first: the atomic run never backtracks, so a shorter id that
+      # prefixes a longer one (f_hi1, f_hi10) must not win the alternation.
+      scrub_id(($known_ids | map(select(test("^f_[0-9a-f]{16}$") | not)) | sort_by(-length)) + ["f_[0-9a-f]{16}"] | join("|"))
     end;
     .body |= scrub_ids
   | if (.findings | type) == "array" then

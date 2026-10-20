@@ -2881,6 +2881,18 @@ assert_last_result "posted-text-drops-struck-through-ids" \
 assert_disposition_stdout "posted-text-drops-struck-through-ids" \
   "::warning::Removed finding id(s) f_hi1 from the posted review text" "present"
 
+# The id run is atomic, so a known id that prefixes another (f_hi1, f_hi10)
+# must not win the match and leave "~~~~" or "****" behind (#1717).
+run_disposition_case "posted-text-drops-prefix-overlapping-wrapped-ids" \
+  "$(jq -c --arg body "$(printf '%s' 'Review
+
+~~f_hi10~~ gone
+**f_hi1, f_hi10** both')" '.action="request-changes" | .body=$body | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"},{severity:"high",category:"logic-error",file:"old.go",line:9,description:"d",id:"f_hi10"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""},{id:"f_hi10",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"},{"severity":"high","category":"logic-error","file":"old.go","line":9,"id":"f_hi10"}]}' \
+  '([.findings[].id] | sort) == ["f_hi1","f_hi10"]'
+assert_last_result "posted-text-drops-prefix-overlapping-wrapped-ids" \
+  '(.body | contains("~~~~") | not) and (.body | contains("****") | not) and (.body | test("f_hi1") | not) and (.body | contains("gone\nboth"))'
+
 # Ordered and "+" list items, link-wrapped ids, headings, a line that starts
 # with "id:", adjacent ids and _id_ leave no orphaned ":" or "," and no
 # fused words; a run of adjacent ids leaves one hole (#1717).
