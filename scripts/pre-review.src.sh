@@ -243,16 +243,18 @@ The \`/fs-review\` command only reviews open PRs/MRs.
   exit 0
 fi
 
-# ---------------------------------------------------------------------------
-# Clear stale merge approval (ADR 0002, building block 12) — a new review run
-# means the head may have moved, so ready-for-merge from a prior run must not
-# survive until post-review. Runs before the author skip list so skipped
-# authors also lose a stale label. post-review re-adds it only on approval.
-# ---------------------------------------------------------------------------
-PR_LABELS="$(forge_get_pr_labels)"
+# ADR 0002 block 12: clear a stale ready-for-merge at review start, before the
+# skip-author exit. post-review re-adds it only when this run approves.
+if ! PR_LABELS="$(forge_get_pr_labels)"; then
+  echo "::warning::Could not read PR labels — removing ready-for-merge unchecked"
+  PR_LABELS="ready-for-merge"
+fi
 if grep -qxF "ready-for-merge" <<< "${PR_LABELS}"; then
-  forge_remove_label "ready-for-merge"
-  echo "::notice::Removed ready-for-merge from PR #${PR_NUMBER} at review start"
+  if forge_remove_label_checked "ready-for-merge"; then
+    echo "::notice::Removed ready-for-merge from PR #${PR_NUMBER} at review start"
+  else
+    echo "::warning::Failed to remove ready-for-merge from PR #${PR_NUMBER}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -64,6 +64,7 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
       RESPONSE="{\"author\":{\"login\":\"${PR_AUTHOR}\"}}"
       ;;
     labels)
+      [[ -n "${MOCK_PR_LABELS_FAIL:-}" ]] && exit 1
       # MOCK_PR_LABELS: comma-separated label names on the PR.
       RESPONSE="$(jq -cn --arg l "${MOCK_PR_LABELS:-}" \
         '{labels: [$l | split(",")[] | select(. != "") | {name: .}]}')"
@@ -82,6 +83,9 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
 elif [[ "$1" == "issue" && "$2" == "comment" ]]; then
   cat > /dev/null
   exit 0
+elif [[ "$1" == "api" && " $* " == *" -X DELETE "* && -n "${MOCK_LABEL_DELETE_ERR:-}" ]]; then
+  echo "${MOCK_LABEL_DELETE_ERR}" >&2
+  exit 1
 fi
 MOCKEOF
 
@@ -150,7 +154,7 @@ run_test_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
     echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
@@ -202,7 +206,7 @@ run_test_gh_call() {
     return
   fi
 
-  if ! grep -qF "${expected_pattern}" "${gh_log}" 2>/dev/null; then
+  if ! grep -qF -- "${expected_pattern}" "${gh_log}" 2>/dev/null; then
     echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
     echo "Actual calls:"
     cat "${gh_log}" 2>/dev/null || echo "(no calls)"
@@ -254,7 +258,7 @@ run_test_no_gh_call() {
     return
   fi
 
-  if grep -qF "${forbidden_pattern}" "${gh_log}" 2>/dev/null; then
+  if grep -qF -- "${forbidden_pattern}" "${gh_log}" 2>/dev/null; then
     echo "FAIL: ${test_name} — forbidden gh call pattern '${forbidden_pattern}' was found"
     echo "Actual calls:"
     cat "${gh_log}"
@@ -740,7 +744,41 @@ for closed_state in MERGED CLOSED; do
     "MOCK_PR_LABELS=ready-for-merge"
 done
 
-# 16. Skipped author → ready-for-merge is still removed before the skip exit
+# 16. Label read fails → removal is still attempted, with a warning
+run_test_gh_call "label-read-failure-still-removes" \
+  "OPEN" "some-human" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-for-merge -X DELETE" \
+  0 \
+  "MOCK_PR_LABELS_FAIL=1"
+
+run_test_stdout "label-read-failure-warns" \
+  "OPEN" "some-human" \
+  "::warning::Could not read PR labels" \
+  0 \
+  "MOCK_PR_LABELS_FAIL=1"
+
+# 17. DELETE fails → warning, no success notice; 404 counts as removed
+run_test_stdout "label-delete-failure-warns" \
+  "OPEN" "some-human" \
+  "::warning::Failed to remove ready-for-merge from PR #42" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-merge
+MOCK_LABEL_DELETE_ERR=gh: Server Error (HTTP 500)"
+if grep -qF "::notice::Removed ready-for-merge" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: label-delete-failure-no-notice — success notice printed after a failed DELETE"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: label-delete-failure-no-notice"
+fi
+
+run_test_stdout "label-delete-404-is-removed" \
+  "OPEN" "some-human" \
+  "::notice::Removed ready-for-merge from PR #42 at review start" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-merge
+MOCK_LABEL_DELETE_ERR=gh: Label does not exist (HTTP 404)"
+
+# 18. Skipped author → ready-for-merge is still removed before the skip exit
 run_test_gh_call "skip-author-still-removes-ready-for-merge" \
   "OPEN" "app/renovate" \
   "gh api repos/test-org/test-repo/issues/42/labels/ready-for-merge -X DELETE" \
@@ -859,7 +897,7 @@ run_gitlab_test_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
     echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
@@ -927,10 +965,15 @@ for gitlab_labels in '["ready-for-merge"]' '["ready-for-review"]'; do
     REVIEW_TOKEN="fake-gitlab-token" \
     CI_SERVER_HOST="gitlab.com" \
     MOCK_MR_LABELS_JSON="${gitlab_labels}" \
-    bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout.log" 2>&1 || true
-  if [[ "${gitlab_labels}" == *ready-for-merge* ]]; then
+    bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout.log" 2>&1 && gitlab_rc=0 || gitlab_rc=$?
+  if [[ ${gitlab_rc} -ne 0 ]]; then
+    gitlab_test="gitlab-labels-${gitlab_labels}-exit-0"
+    gitlab_ok=0
+  elif [[ "${gitlab_labels}" == *ready-for-merge* ]]; then
     gitlab_test="gitlab-open-mr-removes-ready-for-merge"
-    grep -qF "remove_labels=ready-for-merge" "${TMPDIR}/curl-calls.log" && gitlab_ok=1 || gitlab_ok=0
+    grep -qF "remove_labels=ready-for-merge" "${TMPDIR}/curl-calls.log" \
+      && grep -qF "::notice::Removed ready-for-merge from PR #42" "${TMPDIR}/stdout.log" \
+      && gitlab_ok=1 || gitlab_ok=0
   else
     gitlab_test="gitlab-open-mr-without-label-no-remove"
     grep -qF "remove_labels=" "${TMPDIR}/curl-calls.log" && gitlab_ok=0 || gitlab_ok=1

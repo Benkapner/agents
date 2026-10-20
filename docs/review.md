@@ -48,8 +48,9 @@ These labels reflect the review outcome and are updated after each review.
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. Also applied when the risk verdict gate downgrades an approval. |
 | `rejected` | The review agent rejected the PR and closed it. |
 
-`ready-for-merge` is removed at the start of every review run and re-added only
-if the new run approves the current head.
+Each review run on an open PR removes `ready-for-merge` before the review
+starts, including runs skipped by `REVIEW_SKIP_AUTHORS`. The label comes back
+only when that run approves the current head.
 
 When the review agent requests changes (without rejecting), no outcome label is
 applied — the `pull_request_review` event triggers the [fix agent](fix.md) directly.
