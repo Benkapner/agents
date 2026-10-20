@@ -1326,7 +1326,7 @@ KNOWN_FINDING_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson supplied 
 LEAKED_FINDING_IDS="$(jq -r --argjson known "${KNOWN_FINDING_IDS}" '
   [ (.body // ""), (.findings[]? | .description // "", .remediation // "") ]
   | map(select(type == "string"))
-  | map([ scan("\\bf_[A-Za-z0-9]+\\b") ] | .[])
+  | map([ scan("\\b(f_[A-Za-z0-9]+)\\b|(?<![A-Za-z0-9_])_(f_[A-Za-z0-9]+)_(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])__(f_[A-Za-z0-9]+)__(?![A-Za-z0-9_])") | .[] | select(. != null) ] | .[])
   | map(select(. as $id | ($known | index($id)) != null or test("^f_[0-9a-f]{16}$")))
   | unique | join(", ")
 ' "${RESULT_FILE}")"
@@ -1337,18 +1337,33 @@ TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
 jq --arg marker "${PROJECTION_MARKER}" --argjson known_ids "${KNOWN_FINDING_IDS}" '
   # Closed list of id frames only. Do not tidy unrelated whitespace.
-  def scrub_id($id):
-    gsub("(?m)^(?<pfx>[ \\t]*[-*][ \\t]+)(?:\\*\\*|`)?" + $id + "(?:\\*\\*|`)?[ \\t]*:[ \\t]*"; .pfx)
-    | gsub("\\[" + $id + "\\]\\([^)]*\\)"; "")
-    | gsub("`" + $id + "`"; "")
-    | gsub("\\*\\*" + $id + "\\*\\*"; "")
-    | gsub("\\(" + $id + "\\)"; "")
-    | gsub("(?m)^" + $id + "\\b[ \\t]*"; "")
-    | gsub("\\b" + $id + "\\b"; "");
+  # $ids is an alternation of every id. A run of ids separated by commas or
+  # blanks leaves one hole, and a list item, heading or line that starts
+  # with ids loses them and the colon after them. A wrapper (~~, **, `, [],
+  # (), _, __) wraps the whole id run, not one id: ~~f_x, f_y~~ must go whole,
+  # since a leftover ~~~~ opens a code fence, **** is a rule and `` an empty
+  # code span. Runs are atomic so ids that match two alternatives cannot
+  # backtrack exponentially.
+  def id_run($item):
+    "(?>" + $item + "(?:[ \\t]*,[ \\t]*" + $item + "|[ \\t]+" + $item + ")*)";
+  def scrub_id($ids):
+    ("(?:" + $ids + ")") as $id
+    | id_run($id) as $inner
+    | ("(?:\\*\\*" + $inner + "\\*\\*|`" + $inner + "`|~~" + $inner + "~~"
+      + "|\\[" + $inner + "\\]\\([^)]*\\)|\\(" + $inner + "\\)"
+      + "|(?<![A-Za-z0-9_])__" + $inner + "__(?![A-Za-z0-9_])"
+      + "|(?<![A-Za-z0-9_])_" + $inner + "_(?![A-Za-z0-9_])|\\b" + $id + "\\b)") as $frame
+    | id_run($frame) as $run
+    | gsub("(?m)^(?<pfx>[ \\t]*(?:[-*+]|\\d+[.)]|#{1,6})[ \\t]+)" + $run + "[ \\t]*:[ \\t]*"; .pfx)
+    | gsub("(?m)^" + $run + "[ \\t]*(?::[ \\t]*)?"; "")
+    | gsub($run; "");
   def scrub_ids:
     if type != "string" then . else
-      reduce $known_ids[] as $id (.; scrub_id($id))
-      | scrub_id("f_[0-9a-f]{16}")
+      # Minted ids already match f_[0-9a-f]{16}; listing them again gives each
+      # id two ways to match.
+      # Longest first: the atomic run never backtracks, so a shorter id that
+      # prefixes a longer one (f_hi1, f_hi10) must not win the alternation.
+      scrub_id(($known_ids | map(select(test("^f_[0-9a-f]{16}$") | not)) | sort_by(-length)) + ["f_[0-9a-f]{16}"] | join("|"))
     end;
     .body |= scrub_ids
   | if (.findings | type) == "array" then
