@@ -296,11 +296,10 @@ and `Glob` to inspect project configuration:
 5. **Check for PR template.** Find the repo's pull request template(s).
    If multiple templates exist, note them — you will select the right
    one in step 10d after classifying the task type. If found, read and
-   note visible headings
-   and prompts (skip HTML comments). If no visible sections remain after
-   stripping comments, treat it as no template found. You will structure
-   the `pr_body` field in step 10d to match template sections — the
-   post-script uses `pr_body` as the PR description.
+   note visible headings and prompts (skip HTML comments); if none remain,
+   treat it as no template. For normal PRs, structure `pr_body` to match
+   those sections in step 10d. A repository-boundary no-commit escalation
+   follows `agents/code.md`'s compact output instead.
 
 From these files, determine:
 

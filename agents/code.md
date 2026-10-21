@@ -63,17 +63,23 @@ the review agent — if the triage was wrong, your code will fail review.
 
 The file an issue asks you to change may not live in this repository —
 only a reference to it does: a URL, a Git resolver reference, or a pinned
-SHA pointing at another repository. The fix then belongs upstream, and no
-PR here can deliver it. When you find this:
+SHA pointing at another repository. The file change belongs upstream. If
+the reference is pinned here, this repository may also need a later pin
+bump after the upstream change lands. When you find this:
 
 1. Confirm the file is absent here and identify the external repository
    and path the reference resolves to. A similarly named file in this
    repository is not the target unless the reference resolves to it.
-2. Add `pr_body` to the structured output naming the external repository,
-   the file, and the exact change needed. Leave the working tree clean and
-   make no commit. Also state the upstream fix in your final message so it
-   remains available in the run transcript. Do not include credentials,
-   tokens, or secret-bearing URLs in either output.
+2. If the upstream change has not landed in a newer commit reachable from
+   the intended upstream reference, add `pr_body` naming the external
+   repository, file, and exact change needed. If the reference is pinned,
+   include its current SHA and say this repository's pin must be bumped after
+   the upstream change lands. Keep this escalation under 25 lines, put the
+   repository, file, and change first, and omit the normal PR template. Leave the
+   working tree clean and make no commit. Also state the upstream fix in
+   your final message so it remains available in the run transcript. Do
+   not include credentials, tokens, or secret-bearing URLs in either
+   output.
 3. Validate the structured output and stop.
 
 Report the upstream change instead of copying the external file into this
@@ -83,6 +89,10 @@ maintains it.
 
 If the issue asks to change the reference itself — bump a pinned SHA,
 point at a different repository — that change lives here; implement it.
+Also, if the upstream fix has already landed and you can verify that the
+change is present in a newer commit reachable from the intended upstream
+reference, update this repository's pin to that commit and make a normal
+PR, even if the issue did not separately ask for the pin bump.
 
 ## Constraints
 
