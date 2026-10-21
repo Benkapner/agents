@@ -53,7 +53,10 @@ def has_release_marker(node) -> bool:
 def main() -> int:
     repo_root = Path(os.environ.get("REPO_ROOT", Path(__file__).resolve().parent.parent))
     errors = 0
-    manifests = sorted((repo_root / "eval").glob("*/eval.yaml"))
+    manifests = [
+        manifest for manifest in sorted((repo_root / "eval").glob("*/eval.yaml"))
+        if not manifest.parent.name.startswith(".")
+    ]
     if not manifests:
         print("ERROR: no eval/*/eval.yaml manifests found", file=sys.stderr)
         return 1

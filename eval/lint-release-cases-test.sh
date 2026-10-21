@@ -79,6 +79,14 @@ run_case invalid-utf8 1 'eval/review/eval.yaml: no release-tier case'
 printf 'release: true\n' > "${WORKDIR}/invalid-utf8/eval/review/cases/smoke/annotations.yaml"
 run_case invalid-utf8 1 'review: OK (1 release-tier case(s))'
 
+# Hidden directories include the initialized .agent-eval-harness submodule.
+make_agent hidden-agent .agent-eval-harness
+run_case hidden-agent 1 'ERROR: no eval/*/eval.yaml manifests found'
+make_agent hidden-agent code
+run_case hidden-agent 1 'eval/code/eval.yaml: no release-tier case'
+printf 'release: true\n' > "${WORKDIR}/hidden-agent/eval/code/cases/smoke/annotations.yaml"
+run_case hidden-agent 0 'code: OK (1 release-tier case(s))'
+
 # Hidden case directories are not selected by the release runner's shell glob.
 make_agent hidden-case code
 mkdir -p "${WORKDIR}/hidden-case/eval/code/cases/.smoke"
