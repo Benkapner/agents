@@ -76,6 +76,11 @@ check "file: deletes the repo named in the workspace hook outputs" \
   "repo delete halfsend/eval-from-file --yes" "$(cat "$CAPTURE/gh-calls.log")"
 
 # --- 3. Environment wins over the file ------------------------------------
+mkdir -p "$TMP/ws-both"
+cat > "$TMP/ws-both/.hook-outputs.yaml" <<'YAML'
+env:
+  EPHEMERAL_REPO: "halfsend/eval-from-file"
+YAML
 run_teardown both EPHEMERAL_REPO=halfsend/eval-from-env
 check "both: the environment value is the one deleted" \
   "repo delete halfsend/eval-from-env --yes" "$(cat "$CAPTURE/gh-calls.log")"
