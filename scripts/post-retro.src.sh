@@ -177,15 +177,30 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       continue
     fi
 
-    # Dedup-receipt gate: reject proposals without a recorded duplicate search.
-    # The schema requires related_issues, but the fallback result-discovery
-    # path (no FULLSEND_VALIDATED_ITERATION_DIR) can reach this point with
-    # unvalidated output. Same rationale as the evidence-for gate above: a
-    # post-script gate backs up the prompt instruction. See #1730.
-    if ! jq -e ".proposals[$i].related_issues.searched | length >= 2" "${RESULT_FILE}" >/dev/null 2>&1; then
-      echo "::warning::proposal[$i] rejected — missing or incomplete dedup receipt (related_issues.searched needs at least 2 phrases). Folding into summary."
+    # Dedup-receipt gate: skip proposals without a well-formed duplicate-search
+    # receipt. This is the enforcement for #1730 — related_issues is optional in
+    # the schema (a missing/weak receipt must skip only its own proposal, not
+    # fail whole-result validation and drop valid siblings and the summary), so
+    # the gate validates the full receipt shape here, on both the validated and
+    # fallback (no FULLSEND_VALIDATED_ITERATION_DIR) paths. The shape check is
+    # exhaustive because the body builder below iterates searched and found and
+    # concatenates note: a non-array searched or a non-string note would abort
+    # BODY=$(...) under `set -e` mid-loop, after earlier proposals were filed.
+    # Requirements: searched is an array of >= 2 distinct, non-blank strings;
+    # found (if present) is an array; note (if present) is a string.
+    if ! jq -e "
+      .proposals[$i].related_issues as \$r |
+      (\$r | type) == \"object\"
+      and (\$r.searched | type) == \"array\"
+      and (\$r.searched | length) >= 2
+      and (\$r.searched | map(select(type == \"string\" and (gsub(\"^\\\\s+|\\\\s+\$\"; \"\") | length > 0))) | length) == (\$r.searched | length)
+      and (\$r.searched | unique | length) == (\$r.searched | length)
+      and ((\$r | has(\"found\") | not) or (\$r.found | type) == \"array\")
+      and ((\$r | has(\"note\") | not) or (\$r.note | type) == \"string\")
+    " "${RESULT_FILE}" >/dev/null 2>&1; then
+      echo "::warning::proposal[$i] not filed — missing or malformed dedup receipt (related_issues.searched must be at least 2 distinct non-empty phrases). Folding into summary."
       RECEIPT_SKIPPED="${RECEIPT_SKIPPED}
-- **${TITLE}** (${TARGET_REPO})"
+- **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
       continue
     fi
 
@@ -262,7 +277,7 @@ if [[ -n "${SKIPPED_TARGETS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals skipped (target repo not allowed)\n\nFile manually or update `create_issues.allow_targets` in config.yaml:\n%s' "${COMMENT}" "${SKIPPED_TARGETS}")
 fi
 if [[ -n "${RECEIPT_SKIPPED}" ]]; then
-  COMMENT=$(printf '%s\n\n### Proposals skipped (no dedup receipt)\n\nNot filed because they did not record a duplicate search (`related_issues`). See the proposal details in the run summary:\n%s' "${COMMENT}" "${RECEIPT_SKIPPED}")
+  COMMENT=$(printf '%s\n\n### Proposals skipped (no dedup receipt)\n\nNot filed because they did not record a valid duplicate search (`related_issues`). Re-run retro, or search for duplicates and file manually:\n%s' "${COMMENT}" "${RECEIPT_SKIPPED}")
 fi
 
 # Truncate to forge-specific comment limit.

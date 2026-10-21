@@ -121,7 +121,7 @@ applying either fix category.
 
 ## Before proposing: check for existing issues
 
-**This step is mandatory and leaves a receipt.** For each proposal, search for existing issues covering it and record the search in the proposal's `related_issues` field — the schema rejects proposals without one. Without this check, repeated retro runs produce duplicate issues that waste human triage time.
+**This step is mandatory and leaves a receipt.** For each proposal, search for existing issues covering it and record the search in the proposal's `related_issues` field. A proposal whose receipt is missing or records fewer than two distinct search phrases is **not filed** — post-retro skips it and folds it into the summary comment. Without this check, repeated retro runs produce duplicate issues that waste human triage time.
 
 Dispatch a subagent to run your forge-specific skill's search commands, **two passes with different keys**:
 
@@ -135,7 +135,7 @@ The subagent must return each candidate's number, title, state, **and body** (or
 - An existing issue covers the proposal if it describes the **same root problem, even if the symptoms or wording differ** — the same rule triage applies when closing duplicates. When in doubt, treat it as covered.
 - **Skip the proposal** if an open issue proposes the same or substantially overlapping change; reference it in your summary instead.
 - **Closed issues — keyed on close reason, not a flat window:**
-  - *duplicate* (any age): follow to the canonical; skip and reference it if the canonical is open.
+  - *duplicate* (any age): follow the chain to the canonical by **opening the duplicate candidate and reading its own body and comments** for the "duplicate of #X" reference (the duplicate points to the canonical, not the reverse — a search for issues that merely mention the candidate's number will not find it). Fetch #X directly, following further duplicate links if it is itself closed as a duplicate. Skip and reference the canonical if it is open.
   - *not planned*: skip if closed within 30 days — a maintainer already rejected it.
   - *completed with a merged fix*: if the symptom **recurred after the merge**, keep the proposal as a regression referencing the old issue and fix PR; otherwise skip.
   - *completed without a real fix*: keep the proposal, reference the old issue.

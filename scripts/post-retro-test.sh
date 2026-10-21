@@ -594,6 +594,90 @@ FIXTURE_NO_RECEIPT='{
   ]
 }'
 
+# Fixture: a malformed receipt (searched is a string, not an array) in the first
+# proposal, followed by a valid proposal. The gate must skip the first WITHOUT
+# aborting — the second must still be filed and the summary posted. This is the
+# regression guard for the length-on-string bug (the string would pass a bare
+# length>=2 check and then crash the body builder's join under set -e).
+FIXTURE_MALFORMED_THEN_VALID='{
+  "summary": "The retro analysis found two improvement opportunities.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Proposal with malformed receipt",
+      "what_happened": "First thing happened.",
+      "what_could_go_better": "It could go better.",
+      "proposed_change": "Change it.",
+      "validation_criteria": "It works.",
+      "related_issues": { "searched": "a single string not an array" }
+    },
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Proposal with valid receipt",
+      "what_happened": "Second thing happened.",
+      "what_could_go_better": "It could also go better.",
+      "proposed_change": "Change it too.",
+      "validation_criteria": "It also works.",
+      "related_issues": {
+        "searched": [
+          "valid first phrase",
+          "valid second phrase"
+        ],
+        "found": []
+      }
+    }
+  ]
+}'
+
+# Fixture: a receipt with two empty-string phrases — length is 2 but they are
+# blank, so the gate must skip.
+FIXTURE_RECEIPT_EMPTY_STRINGS='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Proposal with blank search phrases",
+      "what_happened": "Something happened.",
+      "what_could_go_better": "It could go better.",
+      "proposed_change": "Change it.",
+      "validation_criteria": "It works.",
+      "related_issues": { "searched": ["", ""] }
+    }
+  ]
+}'
+
+# Fixture: a receipt with a single phrase — fewer than the required two.
+FIXTURE_RECEIPT_SINGLE_PHRASE='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Proposal with one search phrase",
+      "what_happened": "Something happened.",
+      "what_could_go_better": "It could go better.",
+      "proposed_change": "Change it.",
+      "validation_criteria": "It works.",
+      "related_issues": { "searched": ["only one phrase"] }
+    }
+  ]
+}'
+
+# Fixture: a receipt with two identical phrases — not two distinct searches.
+FIXTURE_RECEIPT_DUPLICATE_PHRASES='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Proposal with duplicate search phrases",
+      "what_happened": "Something happened.",
+      "what_could_go_better": "It could go better.",
+      "proposed_change": "Change it.",
+      "validation_criteria": "It works.",
+      "related_issues": { "searched": ["same phrase", "same phrase"] }
+    }
+  ]
+}'
+
 # Fixture: two allowed proposals — the first targets a repo where issue
 # creation fails (via GH_MOCK_ISSUE_FAIL_REPO), the second succeeds.
 FIXTURE_CREATE_FAIL_THEN_OK='{
@@ -1025,12 +1109,48 @@ run_test "receipt-empty-found" \
 run_test_no_gh_call "receipt-gate-skips-filing" \
   "${FIXTURE_NO_RECEIPT}" \
   "gh issue create" \
-  "::warning::proposal[0] rejected"
+  "::warning::proposal[0] not filed"
 
 # Receipt gate: skipped proposal appears in the summary comment.
 run_test_stdin "receipt-gate-skipped-in-summary" \
   "${FIXTURE_NO_RECEIPT}" \
   "Proposals skipped (no dedup receipt)"
+
+# Receipt gate: skipped proposal folds its what_happened first line (not just
+# title) into the summary comment.
+run_test_stdin "receipt-gate-folds-content" \
+  "${FIXTURE_NO_RECEIPT}" \
+  "The widget service crashed on empty input."
+
+# Receipt gate: a malformed receipt (searched is a string) must skip proposal[0]
+# WITHOUT aborting — proposal[1] is still filed. Regression guard for the
+# length-on-string bug that crashed the body builder mid-loop.
+run_test "receipt-gate-malformed-does-not-abort-filing" \
+  "${FIXTURE_MALFORMED_THEN_VALID}" \
+  "gh issue create"
+
+# Same fixture: the run still posts its summary comment (loop did not abort).
+run_test_stdin "receipt-gate-malformed-still-posts-summary" \
+  "${FIXTURE_MALFORMED_THEN_VALID}" \
+  "Proposals skipped (no dedup receipt)"
+
+# Receipt gate: two blank phrases (length 2 but empty) are skipped.
+run_test_no_gh_call "receipt-gate-empty-strings-skipped" \
+  "${FIXTURE_RECEIPT_EMPTY_STRINGS}" \
+  "gh issue create" \
+  "::warning::proposal[0] not filed"
+
+# Receipt gate: a single search phrase is skipped.
+run_test_no_gh_call "receipt-gate-single-phrase-skipped" \
+  "${FIXTURE_RECEIPT_SINGLE_PHRASE}" \
+  "gh issue create" \
+  "::warning::proposal[0] not filed"
+
+# Receipt gate: two identical phrases are skipped (not two distinct searches).
+run_test_no_gh_call "receipt-gate-duplicate-phrases-skipped" \
+  "${FIXTURE_RECEIPT_DUPLICATE_PHRASES}" \
+  "gh issue create" \
+  "::warning::proposal[0] not filed"
 
 # Evidence-for gate: proposal titled "Evidence for #1234" is rejected.
 run_test_no_gh_call "evidence-for-rejected" \
@@ -1705,7 +1825,7 @@ run_gl_test_no_gh_call "gl-originating-repo-always-allowed" \
 # GitHub receipt tests; here we verify the gate fires on the GitLab path.
 run_gl_test "gl-receipt-gate-skips-filing" \
   "${GL_FIXTURE_NO_RECEIPT}" \
-  "::warning::proposal[0] rejected"
+  "::warning::proposal[0] not filed"
 # shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
 

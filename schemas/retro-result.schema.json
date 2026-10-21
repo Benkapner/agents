@@ -24,7 +24,7 @@
     "proposal": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["target_repo", "title", "what_happened", "what_could_go_better", "proposed_change", "validation_criteria", "related_issues"],
+      "required": ["target_repo", "title", "what_happened", "what_could_go_better", "proposed_change", "validation_criteria"],
       "properties": {
         "target_repo": {
           "type": "string",
@@ -64,16 +64,13 @@
         "related_issues": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["searched"],
-          "description": "Receipt that the pre-filing duplicate search ran. See the retro-analysis skill's 'Before proposing' section.",
+          "description": "Receipt that the pre-filing duplicate search ran. Optional at the schema level so a missing or quantity-deficient receipt skips only its own proposal in post-retro rather than failing whole-result validation and dropping valid siblings and the summary (the retro validation loop is all-or-nothing with no feedback). The post-retro receipt gate is the enforcement: it requires searched to be an array of at least two distinct non-empty phrases on both the validated and fallback paths. See the retro-analysis skill's 'Before proposing' section.",
           "properties": {
             "searched": {
               "type": "array",
-              "minItems": 2,
               "maxItems": 10,
-              "uniqueItems": true,
-              "items": { "type": "string", "minLength": 3 },
-              "description": "Search phrases actually executed against the target repo — at least one fix-keyed and one root-cause/subsystem-keyed phrase."
+              "items": { "type": "string" },
+              "description": "Search phrases actually executed against the target repo — at least one fix-keyed and one root-cause/subsystem-keyed phrase. The post-retro gate enforces at-least-two-distinct-non-empty; quantity is intentionally not constrained here so a weak receipt skips its own proposal instead of poisoning the whole result."
             },
             "found": {
               "type": "array",

@@ -867,12 +867,13 @@ assert_same_set "category-schema-enum-matches-allowlist-plus-non-dimensional" \
   "${SCHEMA_CATEGORIES}" "$(printf '%s\n%s\n' "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_NON_DIMENSIONAL}" | sort)"
 
 # --- Retro result schema (schemas/retro-result.schema.json) ---
-# The dedup receipt (related_issues) is the enforcement for #1730: proposals
-# without a recorded search, or with fewer than two distinct search phrases,
-# must fail validation.
+# related_issues is OPTIONAL in the schema: a missing or quantity-deficient
+# receipt must skip only its own proposal in post-retro, not fail whole-result
+# validation and drop valid siblings and the summary (the retro validation loop
+# is all-or-nothing with no feedback). Receipt quantity/uniqueness is enforced
+# by the post-retro gate (see post-retro-test.sh), not here. The schema still
+# rejects a structurally wrong receipt (non-array searched, non-string items).
 SCHEMA="${SCRIPT_DIR}/../schemas/retro-result.schema.json"
-
-RETRO_PROPOSAL_NO_RECEIPT='{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v"}]}'
 
 run_test "retro-valid-proposal-with-receipt" \
   '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[123],"note":"n"}}]}' \
@@ -882,19 +883,35 @@ run_test "retro-valid-receipt-empty-found" \
   '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[]}}]}' \
   "true"
 
-run_test "retro-missing-related-issues" \
-  "${RETRO_PROPOSAL_NO_RECEIPT}" \
-  "false" \
-  "'related_issues' is a required property"
+# Missing receipt passes the schema (optional) — the post-retro gate skips it.
+run_test "retro-missing-related-issues-passes-schema" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v"}]}' \
+  "true"
 
-run_test "retro-single-search-phrase-rejected" \
+# Quantity-deficient receipts pass the schema (gate enforces quantity) so that a
+# weak receipt skips only its own proposal rather than failing the whole result.
+run_test "retro-single-search-phrase-passes-schema" \
   '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["only one phrase"]}}]}' \
+  "true"
+
+run_test "retro-duplicate-search-phrases-pass-schema" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["same phrase","same phrase"]}}]}' \
+  "true"
+
+# A structurally wrong receipt still fails the schema: searched must be an array.
+run_test "retro-searched-not-array-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":"a single string"}}]}' \
   "false"
 
-run_test "retro-duplicate-search-phrases-rejected" \
-  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["same phrase","same phrase"]}}]}' \
-  "false" \
-  "non-unique"
+# searched items must be strings.
+run_test "retro-searched-non-string-items-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":[1,2]}}]}' \
+  "false"
+
+# An unknown key in related_issues is rejected (additionalProperties:false).
+run_test "retro-related-issues-unknown-key-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"bogus":1}}]}' \
+  "false"
 
 # --- Summary ---
 

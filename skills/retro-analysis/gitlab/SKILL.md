@@ -95,6 +95,21 @@ curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<keywords>&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, web_url: .web_url, description: .description}'
+
+# Follow a duplicate chain to its canonical: read the DUPLICATE candidate's own
+# description and notes for the "duplicate of #X" reference, then fetch #X
+# directly. (The duplicate points to the canonical, not the reverse — so a
+# search mentioning the candidate's number does NOT find its canonical.)
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>" \
+  | jq '{iid: .iid, title: .title, state: .state, description: .description}'
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>/notes?per_page=50" \
+  | jq '.[] | {body: .body}'
+# Then fetch the referenced canonical directly (follow further links if it is
+# itself a duplicate).
 ```
 
 Use multiple searches with different keyword combinations if the first returns no results — the same idea can be filed under different titles.
