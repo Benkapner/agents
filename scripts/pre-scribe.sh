@@ -633,23 +633,18 @@ forge_post_issue_comment() {
   return 1
 }
 
-# Convert plain text to Atlassian Document Format. Blank lines split
-# paragraphs; single newlines become hardBreak nodes.
-_scribe_text_to_adf() {
-  jq -Rsc '
-    {
-      type: "doc",
-      version: 1,
-      content: [
-        split("\n\n")[]
-        | (split("\n") | map(select(length > 0))) as $lines
-        | select(($lines | length) > 0)
-        | {type: "paragraph",
-           content: ([$lines | to_entries[]
-             | (if .key > 0 then [{type: "hardBreak"}] else [] end) + [{type: "text", text: .value}]]
-             | add)}
-      ]
-    }'
+# Add labels to an existing Jira issue via the REST API. Labels are a
+# comma-separated list; Jira labels cannot contain spaces, so spaces
+# become hyphens.
+_scribe_jira_add_labels() {
+  local key="$1" labels="$2"
+  local labels_json ops
+  labels_json=$(jq -cn --arg l "${labels}" '[$l | split(",")[] | gsub("^\\s+|\\s+$"; "") | gsub("\\s+"; "-") | select(length > 0)]')
+  if [[ "$(printf '%s' "${labels_json}" | jq 'length')" -eq 0 ]]; then
+    return 0
+  fi
+  ops=$(printf '%s' "${labels_json}" | jq '{update:{labels:[.[] | {add:.}]}}')
+  _scribe_jira_api PUT "/issue/${key}" --data "${ops}" > /dev/null
 }
 
 # Fetch every item of a paginated createmeta endpoint (startAt paging) and
@@ -758,30 +753,45 @@ tracker_find_existing_issue() {
 # Create an issue in SCRIBE_JIRA_PROJECT. Body is read from stdin. Labels
 # are a comma-separated list; Jira labels cannot contain spaces, so spaces
 # become hyphens. Returns the issue browse URL.
+#
+# Delegates the actual POST to `fullsend issues create --tracker jira`,
+# which handles Markdown-to-ADF conversion and the Jira REST call.
+# Labels are added separately via the REST API because the CLI does not
+# support a --labels flag.
 forge_create_issue() {
   local _repo="$1" title="$2" labels="$3"
-  local desc labels_json payload response key
-  desc=$(_scribe_text_to_adf)
-  labels_json=$(jq -cn --arg l "${labels}" '[$l | split(",")[] | gsub("^\\s+|\\s+$"; "") | gsub("\\s+"; "-") | select(length > 0)] | unique')
-  # tracker_validate_create sets SCRIBE_JIRA_LABELS_AVAILABLE=false when the
-  # create screen has no Labels field; sending it would fail every create.
-  if [[ "${SCRIBE_JIRA_LABELS_AVAILABLE:-true}" != "true" ]]; then
-    labels_json='[]'
-  fi
-  payload=$(jq -cn --arg proj "${SCRIBE_JIRA_PROJECT}" --arg title "${title}" \
-    --arg itype "${SCRIBE_JIRA_ISSUE_TYPE}" --argjson desc "${desc}" --argjson labels "${labels_json}" \
-    '{fields: ({project: {key: $proj}, summary: $title, description: $desc, issuetype: {name: $itype}}
-      + (if ($labels | length) > 0 then {labels: $labels} else {} end))}')
-  response=$(_scribe_jira_api POST "/issue" --data "${payload}") || {
-    echo "ERROR: forge_create_issue: Jira create failed in project ${SCRIBE_JIRA_PROJECT}" >&2
+  local body response key url
+  body=$(cat)
+  response=$(printf '%s' "${body}" | fullsend issues create \
+    --tracker jira \
+    --project "${SCRIBE_JIRA_PROJECT}" \
+    --type "${SCRIBE_JIRA_ISSUE_TYPE}" \
+    --title "${title}" \
+    --body - \
+    --jira-url "${JIRA_BASE_URL}" \
+    --jira-email "${JIRA_USER_EMAIL}" \
+    --token "${JIRA_TOKEN}") || {
+    echo "ERROR: forge_create_issue: fullsend issues create failed in project ${SCRIBE_JIRA_PROJECT}" >&2
     return 1
   }
   key=$(printf '%s' "${response}" | jq -r '.key // empty' 2>/dev/null)
-  if [[ ! "${key}" =~ ^${SCRIBE_JIRA_PROJECT}-[0-9]+$ ]]; then
-    echo "ERROR: forge_create_issue: Jira response missing a valid issue key" >&2
+  url=$(printf '%s' "${response}" | jq -r '.url // empty' 2>/dev/null)
+  if [[ -z "${key}" ]] || [[ ! "${key}" =~ ^${SCRIBE_JIRA_PROJECT}-[0-9]+$ ]]; then
+    echo "ERROR: forge_create_issue: fullsend issues create returned no valid issue key" >&2
     return 1
   fi
-  echo "${JIRA_BASE_URL}/browse/${key}"
+  # tracker_validate_create sets SCRIBE_JIRA_LABELS_AVAILABLE=false when the
+  # create screen has no Labels field; sending it would fail every create.
+  if [[ "${SCRIBE_JIRA_LABELS_AVAILABLE:-true}" == "true" ]] && [[ -n "${labels}" ]]; then
+    if ! _scribe_jira_add_labels "${key}" "${labels}"; then
+      echo "WARNING: forge_create_issue: failed to add labels to ${key} (issue created)" >&2
+    fi
+  fi
+  if [[ -n "${url}" ]]; then
+    echo "${url}"
+  else
+    echo "${JIRA_BASE_URL}/browse/${key}"
+  fi
 }
 
 forge_issue_url_base() {

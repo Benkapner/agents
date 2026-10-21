@@ -18,8 +18,24 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 GH_LOG="${TMPDIR}/gh-calls.log"
 CURL_LOG="${TMPDIR}/curl-calls.log"
+FULLSEND_LOG="${TMPDIR}/fullsend-calls.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
+
+# Mock fullsend CLI — handles `fullsend issues create --tracker jira`
+cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
+#!/usr/bin/env bash
+echo "fullsend \$*" >> "${FULLSEND_LOG}"
+if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
+  # Read --body from stdin if present (consume it so pipe doesn't break)
+  cat > /dev/null
+  echo '{"number":100,"key":"PROJ-100","title":"mock title","url":"https://mock.atlassian.net/browse/PROJ-100"}'
+  exit 0
+fi
+exit 1
+MOCKEOF
+chmod +x "${MOCK_BIN}/fullsend"
+
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/comments" ]] && [[ "\$*" == *"--paginate"* ]]; then
@@ -112,8 +128,8 @@ if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
         echo '{"issues":[{"key":"PROJ-3","fields":{"summary":"Add dark mode toggle"}}],"nextPageToken":"p2","isLast":false}'
       fi
       ;;
-    */issue)
-      echo '{"id":"10100","key":"PROJ-100"}'
+    */issue/PROJ-*)
+      # Label PUT on a created issue — succeed silently
       ;;
     *)
       exit 22
@@ -162,6 +178,7 @@ run_test() {
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
   : > "${CURL_LOG}"
+  : > "${FULLSEND_LOG}"
 
   local exit_code=0
   (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
@@ -185,16 +202,20 @@ run_test() {
 
   if [[ -n "${expected_pattern}" ]] && ! grep -qF "${expected_pattern}" "${GH_LOG}" 2>/dev/null; then
     if ! grep -qF "${expected_pattern}" "${CURL_LOG}" 2>/dev/null; then
-      if ! grep -qF "${expected_pattern}" "${TMPDIR}/stdout.log"; then
-        echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found"
-        echo "stdout:"
-        cat "${TMPDIR}/stdout.log"
-        echo "gh calls:"
-        cat "${GH_LOG}" 2>/dev/null || true
-        echo "curl calls:"
-        cat "${CURL_LOG}" 2>/dev/null || true
-        FAILURES=$((FAILURES + 1))
-        return
+      if ! grep -qF "${expected_pattern}" "${FULLSEND_LOG}" 2>/dev/null; then
+        if ! grep -qF "${expected_pattern}" "${TMPDIR}/stdout.log"; then
+          echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found"
+          echo "stdout:"
+          cat "${TMPDIR}/stdout.log"
+          echo "gh calls:"
+          cat "${GH_LOG}" 2>/dev/null || true
+          echo "curl calls:"
+          cat "${CURL_LOG}" 2>/dev/null || true
+          echo "fullsend calls:"
+          cat "${FULLSEND_LOG}" 2>/dev/null || true
+          FAILURES=$((FAILURES + 1))
+          return
+        fi
       fi
     fi
   fi
@@ -213,6 +234,7 @@ run_test_stdout() {
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
   : > "${CURL_LOG}"
+  : > "${FULLSEND_LOG}"
 
   local exit_code=0
   (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
@@ -336,6 +358,7 @@ run_validated_dir_test() {
 
   : > "${GH_LOG}"
   : > "${CURL_LOG}"
+  : > "${FULLSEND_LOG}"
 
   local exit_code=0
   (
@@ -523,13 +546,13 @@ export JIRA_TOKEN="fake-jira-token"
 export SCRIBE_JIRA_PROJECT="PROJ"
 export SCRIBE_MODE="all"
 
-# Fails if any Jira create (POST /rest/api/3/issue) or forge write happened.
+# Fails if any Jira create (fullsend issues create) or forge write happened.
 assert_no_writes() {
   local test_name="$1"
-  if grep -qE 'rest/api/3/issue( |$)' "${CURL_LOG}" 2>/dev/null \
+  if grep -qF 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null \
     || grep -qE '^gh issue (create|comment)' "${GH_LOG}" 2>/dev/null; then
     echo "FAIL: ${test_name} — unexpected write call"
-    cat "${CURL_LOG}" "${GH_LOG}" 2>/dev/null || true
+    cat "${FULLSEND_LOG}" "${CURL_LOG}" "${GH_LOG}" 2>/dev/null || true
     FAILURES=$((FAILURES + 1))
   else
     echo "PASS: ${test_name} (no write calls)"
@@ -551,11 +574,12 @@ export SCRIBE_MODE="all"
 export SCRIBE_DRY_RUN="false"
 run_test_stdout "jira/live-creates-issue" "${JIRA_NEW_ISSUE}" \
   "Created: https://mock.atlassian.net/browse/PROJ-100"
-if grep -E 'rest/api/3/issue( |$)' "${CURL_LOG}" | grep -qF '"project":{"key":"PROJ"}'; then
+if grep -qF 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null \
+  && grep -qF -- '--project PROJ' "${FULLSEND_LOG}" 2>/dev/null; then
   echo "PASS: jira/live-create-scoped-to-project"
 else
-  echo "FAIL: jira/live-create-scoped-to-project — create payload missing project PROJ"
-  cat "${CURL_LOG}"
+  echo "FAIL: jira/live-create-scoped-to-project — fullsend issues create not called with --project PROJ"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
   FAILURES=$((FAILURES + 1))
 fi
 if grep -q '^gh issue create' "${GH_LOG}" 2>/dev/null; then
@@ -649,12 +673,12 @@ fi
 assert_no_writes "jira/no-description-field-no-writes"
 unset JIRA_MOCK_NO_DESCRIPTION
 
-# Create screen without Labels: the create must omit labels.
+# Create screen without Labels: the label PUT must not be sent.
 export JIRA_MOCK_NO_LABELS="1"
 run_test_stdout "jira/live-no-labels-field-creates-without-labels" "${JIRA_NEW_ISSUE}" \
   "Created: https://mock.atlassian.net/browse/PROJ-100"
-if grep -E 'rest/api/3/issue( |$)' "${CURL_LOG}" | grep -qF '"labels"'; then
-  echo "FAIL: jira/no-labels-field-payload-omits-labels — labels sent"
+if grep -qF 'issue/PROJ-' "${CURL_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/no-labels-field-payload-omits-labels — label PUT sent"
   cat "${CURL_LOG}"
   FAILURES=$((FAILURES + 1))
 else

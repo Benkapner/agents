@@ -160,8 +160,13 @@ Behavior:
   sensitive-content and suspicious-Unicode gates cover labels as well as
   the title and body.
 
-Design note: this is a bash reimplementation on top of scribe's existing
-forge-ops contract, not an adoption or fork of
+Issue creation delegates to `fullsend issues create --tracker jira`
+([#7083](https://github.com/fullsend-ai/fullsend/issues/7083)), which
+handles Markdown-to-ADF conversion and the Jira REST call. Labels are
+added separately via the REST API because the CLI does not support a
+`--labels` flag. The surrounding validation (createmeta checks, duplicate
+detection, content gates) remains in the post-script. This is not an
+adoption or fork of
 [konflux-ci/scribe4jira](https://github.com/konflux-ci/scribe4jira). It
 keeps all writes host-side with the same content gates as the GitHub and
 GitLab paths. It covers only new issues in one project and issue type, so
