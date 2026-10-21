@@ -95,6 +95,12 @@ forge_get_pr_author() {
     --repo "${REPO}" --json author --jq '.author.login' 2>/dev/null || true
 }
 
+# Fails when the labels cannot be read.
+forge_get_pr_labels() {
+  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json labels --jq '.labels[].name' 2>/dev/null
+}
+
 forge_get_pr_info() {
   GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
     --repo "${REPO}" --json state,isDraft 2>/dev/null || {
@@ -417,6 +423,16 @@ forge_remove_label() {
     -X DELETE --silent 2>/dev/null || true
 }
 
+# Succeeds when the label is gone afterwards; 404 means it was already absent.
+forge_remove_label_checked() {
+  local label="$1"
+  local encoded err
+  encoded=$(printf '%s' "${label}" | jq -sRr @uri)
+  err=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/${encoded}" \
+    -X DELETE --silent 2>&1) && return 0
+  [[ "${err}" == *"HTTP 404"* ]]
+}
+
 forge_remove_label_edit() {
   local label="$1"
   GH_TOKEN="${REVIEW_TOKEN}" gh pr edit "${PR_NUMBER}" --repo "${REPO}" \
@@ -569,6 +585,13 @@ forge_get_pr_author() {
   echo "${mr_data}" | jq -r '.author.username // empty'
 }
 
+# Fails when the labels cannot be read.
+forge_get_pr_labels() {
+  local mr_data
+  mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || return 1
+  jq -r '.labels[]? // empty' <<< "${mr_data}"
+}
+
 forge_get_pr_info() {
   local mr_data
   mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || {
@@ -670,6 +693,11 @@ forge_remove_label() {
   local label="$1"
   _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
+}
+
+forge_remove_label_checked() {
+  _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
+    --data-urlencode "remove_labels=$1" > /dev/null 2>&1
 }
 
 forge_remove_label_edit() {
@@ -950,6 +978,14 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
     }
 ' <<< "${PRIOR_JSON}")"
 MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< "${MINT_IDS}")"
+
+# Ids the model wrote, captured before remint. A first-review supplied id
+# is foreign and replaced below; the original string can still appear in
+# body/description/remediation and must be in the scrub set.
+SUPPLIED_FINDING_IDS="$(jq -c '
+  [ .findings[]?.id?, .dispositions[]?.id? ]
+  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
+' "${RESULT_FILE}" 2>/dev/null || echo '[]')"
 
 # Id assignment for this review. A supplied id is kept only when it is an
 # open prior id no earlier row already took and this review is not
@@ -1809,7 +1845,7 @@ fi
 BLOCKING_IDS="$(jq -r '.blocking | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${BLOCKING_IDS}" && "${ACTION}" = "approve" ]]; then
   echo "::warning::Approval withheld: prior high/critical finding id(s) ${BLOCKING_IDS} are still open"
-  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) '"${BLOCKING_IDS}"$' are still open.'
+  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) are still open.'
   LEDGER_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${LEDGER_RESULT}")
   jq --arg notice "${LEDGER_NOTICE}" \
@@ -1852,7 +1888,7 @@ PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" 
         file: (.file // "N/A"),
         description: (
           if (.description | type == "string" and length > 0) then .description
-          else ("Previously reported finding " + .id + " remains open: "
+          else ("Previously reported finding remains open: "
             + .severity + " " + .category + " in " + (.file // "PR-level")
             + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end) + ".")
           end
@@ -1873,7 +1909,7 @@ if [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -gt 0 ]]; then
   fi
 fi
 PRIOR_BLOCKING_SUMMARY="$(jq -r --argjson links "${FINDING_COMMENT_LINKS}" '
-  map("- " + .id + ": " + .severity + " " + .category + " at "
+  map("- " + .severity + " " + .category + " at "
       + (.file // "PR-level")
       + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end)
       + (if ($links[.id] | type) == "string" then
@@ -2004,7 +2040,8 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
       "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
       "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
-      "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+      "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
+      "uxd-evaluate-code-heuristics"
     );
   def safe_path:
     type == "string" and length > 0 and . != "N/A" and
@@ -2082,9 +2119,69 @@ if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
   PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
   PROJECTION_MARKER="<!-- fullsend:review-findings-v2:${PRIOR_FINDINGS_ENCODED} -->"
 fi
+# Finding ids are ledger keys, not prose. The skill tells the model not to
+# print them, and this pass makes that true regardless: every id this run
+# knows (prior ledger, current findings, dispositions) and anything shaped
+# like a minted id is removed from the visible body and from each finding's
+# description and remediation, which fullsend posts as inline comments. The
+# projection marker below and the inline stamps fullsend adds are built
+# from the JSON ids, not from this text, so they keep them.
+KNOWN_FINDING_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson supplied "${SUPPLIED_FINDING_IDS}" '
+  [ $prior.findings[]?.id?, .findings[]?.id?, .dispositions[]?.id?, $supplied[]? ]
+  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
+' "${RESULT_FILE}")"
+LEAKED_FINDING_IDS="$(jq -r --argjson known "${KNOWN_FINDING_IDS}" '
+  [ (.body // ""), (.findings[]? | .description // "", .remediation // "") ]
+  | map(select(type == "string"))
+  | map([ scan("\\b(f_[A-Za-z0-9]+)\\b|(?<![A-Za-z0-9_])_(f_[A-Za-z0-9]+)_(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])__(f_[A-Za-z0-9]+)__(?![A-Za-z0-9_])") | .[] | select(. != null) ] | .[])
+  | map(select(. as $id | ($known | index($id)) != null or test("^f_[0-9a-f]{16}$")))
+  | unique | join(", ")
+' "${RESULT_FILE}")"
+if [[ -n "${LEAKED_FINDING_IDS}" ]]; then
+  echo "::warning::Removed finding id(s) ${LEAKED_FINDING_IDS} from the posted review text; ids stay in the ledger only"
+fi
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
-jq --arg marker "${PROJECTION_MARKER}" '
+jq --arg marker "${PROJECTION_MARKER}" --argjson known_ids "${KNOWN_FINDING_IDS}" '
+  # Closed list of id frames only. Do not tidy unrelated whitespace.
+  # $ids is an alternation of every id. A run of ids separated by commas or
+  # blanks leaves one hole, and a list item, heading or line that starts
+  # with ids loses them and the colon after them. A wrapper (~~, **, `, [],
+  # (), _, __) wraps the whole id run, not one id: ~~f_x, f_y~~ must go whole,
+  # since a leftover ~~~~ opens a code fence, **** is a rule and `` an empty
+  # code span. Runs are atomic so ids that match two alternatives cannot
+  # backtrack exponentially.
+  def id_run($item):
+    "(?>" + $item + "(?:[ \\t]*,[ \\t]*" + $item + "|[ \\t]+" + $item + ")*)";
+  def scrub_id($ids):
+    ("(?:" + $ids + ")") as $id
+    | id_run($id) as $inner
+    | ("(?:\\*\\*" + $inner + "\\*\\*|`" + $inner + "`|~~" + $inner + "~~"
+      + "|\\[" + $inner + "\\]\\([^)]*\\)|\\(" + $inner + "\\)"
+      + "|(?<![A-Za-z0-9_])__" + $inner + "__(?![A-Za-z0-9_])"
+      + "|(?<![A-Za-z0-9_])_" + $inner + "_(?![A-Za-z0-9_])|\\b" + $id + "\\b)") as $frame
+    | id_run($frame) as $run
+    | gsub("(?m)^(?<pfx>[ \\t]*(?:[-*+]|\\d+[.)]|#{1,6})[ \\t]+)" + $run + "[ \\t]*:[ \\t]*"; .pfx)
+    | gsub("(?m)^" + $run + "[ \\t]*(?::[ \\t]*)?"; "")
+    | gsub($run; "");
+  def scrub_ids:
+    if type != "string" then . else
+      # Minted ids already match f_[0-9a-f]{16}; listing them again gives each
+      # id two ways to match.
+      # Longest first: the atomic run never backtracks, so a shorter id that
+      # prefixes a longer one (f_hi1, f_hi10) must not win the alternation.
+      scrub_id(($known_ids | map(select(test("^f_[0-9a-f]{16}$") | not)) | sort_by(-length)) + ["f_[0-9a-f]{16}"] | join("|"))
+    end;
+    .body |= scrub_ids
+  | if (.findings | type) == "array" then
+      .findings |= map(
+        .description |= scrub_ids
+        | if (.description | type) == "string" and (.description | length) == 0
+          then .description = "Previously reported finding remains open." else . end
+        | if has("remediation") then .remediation |= scrub_ids else . end
+      )
+    else . end
+  |
   # pre-review ends the current section at the first line containing a
   # history delimiter, so any copy in the agent body would hide the marker.
   def strip_reserved:

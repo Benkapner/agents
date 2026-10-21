@@ -104,7 +104,8 @@ validate_prior_review_projection() {
         "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
         "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
         "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
-        "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+        "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
+        "uxd-evaluate-code-heuristics"
       );
     def safe_path:
       type == "string" and length > 0 and . != "N/A" and
@@ -241,6 +242,20 @@ The \`/fs-review\` command only reviews open PRs/MRs.
   forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
   exit 0
+fi
+
+# ADR 0002 block 12: clear a stale ready-for-merge at review start, before the
+# skip-author exit. post-review re-adds it only when this run approves.
+if ! PR_LABELS="$(forge_get_pr_labels)"; then
+  echo "::warning::Could not read PR labels — removing ready-for-merge unchecked"
+  PR_LABELS="ready-for-merge"
+fi
+if grep -qxF "ready-for-merge" <<< "${PR_LABELS}"; then
+  if forge_remove_label_checked "ready-for-merge"; then
+    echo "::notice::Removed ready-for-merge from PR #${PR_NUMBER} at review start"
+  else
+    echo "::warning::Failed to remove ready-for-merge from PR #${PR_NUMBER}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

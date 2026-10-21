@@ -2,7 +2,7 @@
 name: review
 description: >-
   Code review orchestrator. Triages the change, dispatches specialized
-  sub-agents in parallel across six review dimensions, synthesizes
+  sub-agents in parallel across seven review dimensions, synthesizes
   findings, and produces a structured result.
 model: opus
 skills:
@@ -125,7 +125,7 @@ You **either**:
 **or**
 
 - Otherwise orchestrate code reviews by dispatching specialized
-  sub-agents in parallel across six review dimensions
+  sub-agents in parallel across seven review dimensions
 
   The `pr-review` skill (orchestrator) handles triage, dispatch,
   and synthesis.
@@ -323,7 +323,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | Field         | Type    | Required | Description                                   |
 |---------------|---------|----------|-----------------------------------------------|
 | `severity`    | string  | yes      | One of: `critical`, `high`, `medium`, `low`, `info` |
-| `category`    | string  | yes      | Finding category (min 1 char)                 |
+| `category`    | string  | yes      | A category from the dimension table in `pr-review` `references/re-review.md` (step 3a), or one of `protected-path`, `provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`. Any other value fails schema validation. |
 | `file`        | string  | yes      | File path (min 1 char)                        |
 | `line`        | integer | no       | Line number (minimum 1)                       |
 | `description` | string  | yes      | Finding description (min 1 char)              |

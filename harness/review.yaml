@@ -9,7 +9,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:31c13bc2f4b7a451fdf17b765ea0d1be29829e796906584e2c18107f1f20d6bb
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:9d23e266e53dcedaa5f6a727901bb2ccb37922e9752173a4328be9f447063ce7
 policy: policies/base.yaml
 readonly_repo: true
 providers:
@@ -64,6 +64,8 @@ env:
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
+    # UXD is opt-in; set true in a harness overlay to enable it.
+    REVIEW_UX_ENABLED: "false"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.gitignore,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
@@ -80,6 +82,10 @@ forge:
   github:
     providers:
       - github-ro
+      - providers/github-public-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-public-ro.yaml
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -107,9 +113,11 @@ forge:
   gitlab:
     providers:
       - providers/gitlab-ro.yaml
+      - providers/github-public-ro.yaml
     openshell:
       profiles:
         - profiles/fullsend-gitlab-ro.yaml
+        - profiles/fullsend-github-public-ro.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab

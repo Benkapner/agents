@@ -2,7 +2,7 @@
 # validate-output-schema-test.sh — Test validate-output-schema.sh with fixtures.
 #
 # Run from the repo root:
-#   bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh
+#   bash scripts/validate-output-schema-test.sh
 
 set -euo pipefail
 
@@ -106,6 +106,18 @@ run_test "valid-split" \
   '{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated."}],"comment":"Splitting into independent sub-issues."}' \
   "true"
 
+run_test "valid-move-without-evidence" \
+  '{"action":"move","reasoning":"the affected code is maintained elsewhere","move_to":{"target":"org/other-repo"},"comment":"Moving this issue to the repository that owns the affected code."}' \
+  "true"
+
+run_test "valid-move-with-evidence" \
+  '{"action":"move","reasoning":"the affected code is maintained elsewhere","move_to":{"target":"org/other-repo","evidence":["The affected package lives in org/other-repo."]},"comment":"Moving this issue to the repository that owns the affected code."}' \
+  "true"
+
+run_test "valid-move-jira-project-key" \
+  '{"action":"move","reasoning":"the issue belongs to another Jira project","move_to":{"target":"OTHERPROJ"},"comment":"Moving this issue to the owning Jira project."}' \
+  "true"
+
 # --- Jira tracker shapes ---
 # duplicate_of is an integer on GitHub/GitLab but a full issue key on Jira.
 run_test "valid-jira-duplicate-key" \
@@ -134,6 +146,50 @@ run_test "duplicate-missing-duplicate-of" \
 
 run_test "sufficient-missing-triage-summary" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"comment":"Done."}' \
+  "false"
+
+run_test "move-missing-move-to" \
+  '{"action":"move","reasoning":"owned elsewhere","comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-missing-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-empty-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":""},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-url-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"https://github.com/org/other-repo"},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-whitespace-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"   "},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-newline-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo\n::set-output name=target::malicious"},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-trailing-newline-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo\n"},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-dot-segment-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/.."},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-parent-path-target" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"../.."},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-malformed-evidence" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo","evidence":["valid evidence",42]},"comment":"Moving this issue."}' \
+  "false"
+
+run_test "move-with-triage-summary-rejected" \
+  '{"action":"move","reasoning":"owned elsewhere","move_to":{"target":"org/other-repo"},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":true},"comment":"Moving this issue."}' \
   "false"
 
 run_test "prerequisites-missing-prerequisites-field" \
@@ -270,13 +326,13 @@ run_test_custom_filename "custom-output-file-invalid" \
   "false"
 
 run_test_custom_filename "review-approve-actionable-finding-valid" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"docs","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
 run_test_custom_filename "review-finding-additional-property-rejected" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
@@ -323,7 +379,7 @@ run_test_custom_filename_output() {
 }
 
 run_test_custom_filename_output "nested-additional-property-shows-allowed" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
@@ -400,7 +456,7 @@ run_test_output "additional-properties-shows-allowed" \
 run_test_output "additional-properties-lists-known-keys" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
   "false" \
-  "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
+  "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, move_to, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
 
 run_test_output "valid-output-no-allowed-line" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
@@ -503,7 +559,7 @@ run_test_custom_filename "path-traversal-stripped" \
 REVIEW_SCHEMA="${SCRIPT_DIR}/../schemas/review-result.schema.json"
 
 run_test_custom_filename "review-reject-valid" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach.","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
@@ -512,13 +568,15 @@ run_test_custom_filename "review-reject-missing-findings" \
   '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'findings' is a required property"
 
 run_test_custom_filename "review-reject-missing-body" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'body' is a required property"
 
 run_test_custom_filename "review-failure-time-budget-valid" \
   '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"time-budget"}' \
@@ -530,7 +588,80 @@ run_test_custom_filename "review-failure-unknown-reason-rejected" \
   '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"ran-out-of-time"}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "is not one of"
+
+# --- review-result.schema.json per-action required fields ---
+
+run_test_custom_filename "review-request-changes-missing-findings" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Please change."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'findings' is a required property"
+
+run_test_custom_filename "review-request-changes-missing-body" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-request-changes-missing-head-sha" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","body":"Please change.","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-request-changes-empty-findings" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Please change.","findings":[]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "should be non-empty"
+
+run_test_custom_filename "review-comment-missing-body" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-comment-missing-head-sha" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","body":"FYI only."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-failure-missing-reason" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'reason' is a required property"
+
+run_test_custom_filename "review-approve-missing-body" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'body' is a required property"
+
+run_test_custom_filename "review-approve-missing-head-sha" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","body":"LGTM."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
+
+run_test_custom_filename "review-reject-missing-head-sha" \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","body":"Wrong approach.","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'head_sha' is a required property"
 
 run_test_custom_filename "review-approve-valid" \
   '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good, only minor nits."}' \
@@ -560,10 +691,11 @@ done
 # --- review-result.schema.json: short / non-hex SHA rejected ---
 
 run_test_custom_filename "review-reject-short-sha-rejected" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong.","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong.","findings":[{"severity":"high","category":"logic-error","file":"main.go","description":"Bug."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'abc1234' does not match"
 
 run_test_custom_filename "review-approve-nonhex-sha-rejected" \
   '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"ghijkl0123456789ghijkl0123456789ghijkl01","body":"LGTM."}' \
@@ -592,7 +724,7 @@ run_test_custom_filename "review-request-changes-with-protected-path-valid" \
   "true"
 
 run_test_custom_filename "review-approve-no-protected-path-valid" \
-  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM.","findings":[{"severity":"low","category":"style","file":"main.go","description":"Minor style nit."}]}' \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM.","findings":[{"severity":"low","category":"naming-convention","file":"main.go","description":"Minor style nit."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
@@ -660,6 +792,79 @@ run_test_custom_filename "risk-additional-property-rejected" \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
+
+# --- review-result.schema.json finding category taxonomy ---
+# A category outside the projection allowlist makes post-review drop the
+# prior-findings projection, so the next review loses its ledger. The schema
+# must reject such a category before the review is posted.
+
+run_test_custom_filename "review-non-canonical-category-rejected" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"race-condition","file":"main.go","description":"Unsynchronized access."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'race-condition' is not one of"
+
+ALL_CATEGORIES_RESULT="$(jq -c '
+  ."$defs".finding.properties.category.enum
+  | {action: "comment", pr_number: 1, repo: "org/repo",
+     head_sha: "abcdef0123456789abcdef0123456789abcdef01", body: "Review.",
+     findings: map({severity: "low", category: ., file: "main.go", description: "Finding."})}
+' "${REVIEW_SCHEMA}")"
+run_test_custom_filename "review-every-listed-category-valid" \
+  "${ALL_CATEGORIES_RESULT}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+# The category taxonomy is duplicated in the schema, the pre-review and
+# post-review projection allowlists, and the re-review dimension table. All
+# copies must agree, otherwise a schema-valid finding can still break the
+# projection.
+
+# Print the quoted strings inside a jq `def <name>:` block, one per line,
+# ignoring `type == "string"` guards.
+jq_def_strings() {
+  local file="$1" name="$2"
+  awk -v def="def ${name}:" '
+    index($0, def) { found = 1 }
+    found { gsub(/type == "string"/, ""); print }
+    found && /\);/ { exit }
+  ' "${file}" | grep -oE '"[a-z-]+"' | tr -d '"' | sort
+}
+
+assert_same_set() {
+  local test_name="$1" expected="$2" actual="$3"
+  if [[ -z "${expected}" || -z "${actual}" ]]; then
+    echo "FAIL: ${test_name} — could not extract a category list"
+    FAILURES=$((FAILURES + 1))
+  elif [[ "${expected}" == "${actual}" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — category sets differ"
+    diff <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") || true
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+SCHEMA_CATEGORIES="$(jq -r '."$defs".finding.properties.category.enum[]' "${REVIEW_SCHEMA}" | sort)"
+PRE_REVIEW_ALLOWED="$(jq_def_strings "${SCRIPT_DIR}/pre-review.src.sh" allowed_category)"
+POST_REVIEW_ALLOWED="$(jq_def_strings "${SCRIPT_DIR}/post-review.src.sh" allowed_category)"
+# post-review treats these as non-dimensional; sub-agent-failure is matched
+# separately in non_dimensional_finding.
+POST_REVIEW_NON_DIMENSIONAL="$( (jq_def_strings "${SCRIPT_DIR}/post-review.src.sh" non_dimensional_category; echo "sub-agent-failure") | sort)"
+RE_REVIEW_TABLE="$(awk '
+  /^\| Dimension / { found = 1; next }
+  found && !/^\|/ { exit }
+  found { print }
+' "${SCRIPT_DIR}/../skills/pr-review/references/re-review.md" | grep -oE '`[a-z-]+`' | tr -d '`' | sort)"
+
+assert_same_set "category-allowlist-pre-matches-post" \
+  "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_ALLOWED}"
+assert_same_set "category-allowlist-matches-re-review-table" \
+  "${PRE_REVIEW_ALLOWED}" "${RE_REVIEW_TABLE}"
+assert_same_set "category-schema-enum-matches-allowlist-plus-non-dimensional" \
+  "${SCHEMA_CATEGORIES}" "$(printf '%s\n%s\n' "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_NON_DIMENSIONAL}" | sort)"
 
 # --- Summary ---
 
