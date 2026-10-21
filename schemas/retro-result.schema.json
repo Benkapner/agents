@@ -24,7 +24,7 @@
     "proposal": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["target_repo", "title", "what_happened", "what_could_go_better", "proposed_change", "validation_criteria"],
+      "required": ["target_repo", "title", "what_happened", "what_could_go_better", "proposed_change", "validation_criteria", "related_issues"],
       "properties": {
         "target_repo": {
           "type": "string",
@@ -60,6 +60,33 @@
           "minLength": 1,
           "maxLength": 8192,
           "description": "How to know the change had the desired effect. Measurable or observable outcomes."
+        },
+        "related_issues": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["searched"],
+          "description": "Receipt that the pre-filing duplicate search ran. See the retro-analysis skill's 'Before proposing' section.",
+          "properties": {
+            "searched": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 10,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 3 },
+              "description": "Search phrases actually executed against the target repo — at least one fix-keyed and one root-cause/subsystem-keyed phrase."
+            },
+            "found": {
+              "type": "array",
+              "maxItems": 10,
+              "items": { "type": "integer" },
+              "description": "Issue numbers of candidate issues considered and judged not to cover (or to be refined by) this proposal."
+            },
+            "note": {
+              "type": "string",
+              "maxLength": 2048,
+              "description": "One line per candidate: why it does not cover this proposal, or how this proposal refines or regresses it. Omit when found is empty."
+            }
+          }
         }
       }
     }

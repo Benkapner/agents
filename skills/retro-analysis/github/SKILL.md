@@ -71,11 +71,32 @@ gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
 
 ## Duplicate search
 
+Run both passes for every proposal — fix-keyed and root-cause-keyed (see the
+retro-analysis skill's "Before proposing" section).
+
 ```bash
-# Broad keyword search across title and body
+# Fix-keyed: broad keyword search across title and body, open issues
 gh api \
-  "search/issues?q=<topic+keywords>+repo:<target_repo>+is:issue+is:open&per_page=20" \
+  "search/issues?q=<fix+keywords>+repo:<target_repo>+is:issue+is:open&per_page=20" \
   --jq '.items[] | {number: .number, title: .title, url: .html_url, body: .body}'
+
+# Root-cause-keyed: search by the affected subsystem/component instead of the fix
+gh api \
+  "search/issues?q=<subsystem+or+root-cause+keywords>+repo:<target_repo>+is:issue+is:open&per_page=20" \
+  --jq '.items[] | {number: .number, title: .title, url: .html_url, body: .body}'
+
+# Include closed issues to apply the close-reason rules (duplicate / not
+# planned / completed). state_reason carries the close reason; closed_at is
+# required by the 30-day not-planned rule.
+gh api \
+  "search/issues?q=<keywords>+repo:<target_repo>+is:issue&per_page=20" \
+  --jq '.items[] | {number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
+
+# Reference search: issues mentioning a candidate by number can reveal the
+# canonical issue of a duplicate chain
+gh api \
+  "search/issues?q=<candidate-number>+repo:<target_repo>+is:issue&per_page=20" \
+  --jq '.items[] | {number: .number, title: .title, state: .state, url: .html_url, body: .body}'
 ```
 
 Use multiple searches with different keyword combinations if the first returns no results — the same idea can be filed under different titles.

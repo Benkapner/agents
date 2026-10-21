@@ -69,14 +69,32 @@ curl --fail --silent --show-error \
 
 ## Duplicate search
 
-Search the target project — match each proposal's `target_repo`:
+Search the target project — match each proposal's `target_repo`. Run both
+passes for every proposal — fix-keyed and root-cause-keyed (see the
+retro-analysis skill's "Before proposing" section).
 
 ```bash
 TARGET_ENCODED=$(printf '%s' "<target_repo>" | jq -sRr @uri)
+
+# Fix-keyed: keywords drawn from the proposed change, open issues
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<topic+keywords>&state=opened&per_page=20" \
-  | jq '.[] | {iid: .iid, title: .title, web_url: .web_url, description: .description}'
+  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<fix+keywords>&state=opened&per_page=20" \
+  | jq '.[] | {iid: .iid, title: .title, state: .state, web_url: .web_url, description: .description}'
+
+# Root-cause-keyed: search by the affected subsystem/component instead of the fix
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<subsystem+or+root-cause+keywords>&state=opened&per_page=20" \
+  | jq '.[] | {iid: .iid, title: .title, state: .state, web_url: .web_url, description: .description}'
+
+# Include closed issues to apply the close-reason rules (duplicate / not
+# planned / completed). state carries the state; closed_at is required by the
+# 30-day not-planned rule; labels often carry the reason on GitLab.
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<keywords>&per_page=20" \
+  | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, web_url: .web_url, description: .description}'
 ```
 
 Use multiple searches with different keyword combinations if the first returns no results — the same idea can be filed under different titles.

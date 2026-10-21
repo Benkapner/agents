@@ -866,6 +866,36 @@ assert_same_set "category-allowlist-matches-re-review-table" \
 assert_same_set "category-schema-enum-matches-allowlist-plus-non-dimensional" \
   "${SCHEMA_CATEGORIES}" "$(printf '%s\n%s\n' "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_NON_DIMENSIONAL}" | sort)"
 
+# --- Retro result schema (schemas/retro-result.schema.json) ---
+# The dedup receipt (related_issues) is the enforcement for #1730: proposals
+# without a recorded search, or with fewer than two distinct search phrases,
+# must fail validation.
+SCHEMA="${SCRIPT_DIR}/../schemas/retro-result.schema.json"
+
+RETRO_PROPOSAL_NO_RECEIPT='{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v"}]}'
+
+run_test "retro-valid-proposal-with-receipt" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[123],"note":"n"}}]}' \
+  "true"
+
+run_test "retro-valid-receipt-empty-found" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[]}}]}' \
+  "true"
+
+run_test "retro-missing-related-issues" \
+  "${RETRO_PROPOSAL_NO_RECEIPT}" \
+  "false" \
+  "'related_issues' is a required property"
+
+run_test "retro-single-search-phrase-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["only one phrase"]}}]}' \
+  "false"
+
+run_test "retro-duplicate-search-phrases-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["same phrase","same phrase"]}}]}' \
+  "false" \
+  "non-unique"
+
 # --- Summary ---
 
 echo ""

@@ -198,7 +198,14 @@ FIXTURE_ONE_PROPOSAL='{
       "what_happened": "The widget service crashed on empty input.",
       "what_could_go_better": "Input validation should reject empty payloads.",
       "proposed_change": "Add a nil check at the entry point.",
-      "validation_criteria": "Widget service returns 400 on empty input."
+      "validation_criteria": "Widget service returns 400 on empty input.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -228,7 +235,14 @@ FIXTURE_MIXED='{
       "what_happened": "Five reviews ran on the same commit.",
       "what_could_go_better": "Dedup review triggers.",
       "proposed_change": "Check for existing review before dispatch.",
-      "validation_criteria": "No duplicate reviews on same SHA."
+      "validation_criteria": "No duplicate reviews on same SHA.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     },
     {
       "target_repo": "test-org/target-repo",
@@ -236,7 +250,14 @@ FIXTURE_MIXED='{
       "what_happened": "The widget service crashed on empty input.",
       "what_could_go_better": "Input validation should reject empty payloads.",
       "proposed_change": "Add a nil check at the entry point.",
-      "validation_criteria": "Widget service returns 400 on empty input."
+      "validation_criteria": "Widget service returns 400 on empty input.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -251,7 +272,14 @@ FIXTURE_FALSE_POSITIVE='{
       "what_happened": "Evidence collection crashes on empty logs.",
       "what_could_go_better": "Handle empty log files gracefully.",
       "proposed_change": "Add empty-file guard in evidence collector.",
-      "validation_criteria": "No crash on empty log input."
+      "validation_criteria": "No crash on empty log input.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -296,7 +324,14 @@ FIXTURE_MID_TITLE_EVIDENCE='{
       "what_happened": "Report generator lacks test failure evidence.",
       "what_could_go_better": "Include evidence in reports.",
       "proposed_change": "Aggregate test failures into evidence section.",
-      "validation_criteria": "Reports include test failure evidence."
+      "validation_criteria": "Reports include test failure evidence.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -311,7 +346,14 @@ FIXTURE_EVIDENCE_NO_ISSUEREF='{
       "what_happened": "Review coverage is inconsistent.",
       "what_could_go_better": "Standardize review coverage.",
       "proposed_change": "Add coverage checks to CI.",
-      "validation_criteria": "All repos have coverage checks."
+      "validation_criteria": "All repos have coverage checks.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -326,7 +368,14 @@ FIXTURE_TITLE_DOUBLE_COLON='{
       "what_happened": "Attempted injection.",
       "what_could_go_better": "Sanitize titles.",
       "proposed_change": "Strip dangerous sequences.",
-      "validation_criteria": "No injection."
+      "validation_criteria": "No injection.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -341,7 +390,14 @@ FIXTURE_TITLE_PERCENT_ENCODED='{
       "what_happened": "Attempted percent-encoded injection.",
       "what_could_go_better": "Sanitize titles.",
       "proposed_change": "Strip percent-encoded sequences.",
-      "validation_criteria": "No injection."
+      "validation_criteria": "No injection.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -371,7 +427,14 @@ FIXTURE_MIXED_TARGETS='{
       "what_happened": "Something broke.",
       "what_could_go_better": "It should not break.",
       "proposed_change": "Fix the thing.",
-      "validation_criteria": "Thing works."
+      "validation_criteria": "Thing works.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     },
     {
       "target_repo": "disallowed-org/other-repo",
@@ -379,7 +442,14 @@ FIXTURE_MIXED_TARGETS='{
       "what_happened": "Something else broke.",
       "what_could_go_better": "It should also not break.",
       "proposed_change": "Fix the other thing.",
-      "validation_criteria": "Other thing works."
+      "validation_criteria": "Other thing works.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -394,7 +464,14 @@ FIXTURE_REPO_ALLOWLIST_TARGET='{
       "what_happened": "Something needs fixing in allowed-repo.",
       "what_could_go_better": "It should be fixed.",
       "proposed_change": "Fix it.",
-      "validation_criteria": "It is fixed."
+      "validation_criteria": "It is fixed.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -411,7 +488,14 @@ FIXTURE_ORIGINATING_REPO_TARGET='{
       "what_happened": "The originating repo had a gap.",
       "what_could_go_better": "Should be handled.",
       "proposed_change": "Add handling.",
-      "validation_criteria": "Handling works."
+      "validation_criteria": "Handling works.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -420,6 +504,66 @@ FIXTURE_ORIGINATING_REPO_TARGET='{
 FIXTURE_NO_PROPOSALS='{
   "summary": "The retro analysis found no actionable improvements.",
   "proposals": []
+}'
+
+# Fixture: a proposal with a populated dedup receipt (candidates considered).
+FIXTURE_RECEIPT_FOUND='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed on empty input.",
+      "what_could_go_better": "Input validation should reject empty payloads.",
+      "proposed_change": "Add a nil check at the entry point.",
+      "validation_criteria": "Widget service returns 400 on empty input.",
+      "related_issues": {
+        "searched": [
+          "error handling empty input",
+          "widget service input validation"
+        ],
+        "found": [2476],
+        "note": "#2476 covers the parser path only; this proposal adds the entry-point gate."
+      }
+    }
+  ]
+}'
+
+# Fixture: a proposal whose receipt found no overlapping issues.
+FIXTURE_RECEIPT_EMPTY='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed on empty input.",
+      "what_could_go_better": "Input validation should reject empty payloads.",
+      "proposed_change": "Add a nil check at the entry point.",
+      "validation_criteria": "Widget service returns 400 on empty input.",
+      "related_issues": {
+        "searched": [
+          "error handling empty input",
+          "widget service input validation"
+        ],
+        "found": []
+      }
+    }
+  ]
+}'
+
+# Fixture: a legacy six-field proposal without a dedup receipt.
+FIXTURE_NO_RECEIPT='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed on empty input.",
+      "what_could_go_better": "Input validation should reject empty payloads.",
+      "proposed_change": "Add a nil check at the entry point.",
+      "validation_criteria": "Widget service returns 400 on empty input."
+    }
+  ]
 }'
 
 run_test() {
@@ -719,6 +863,38 @@ run_test_stdout "complete-message" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "Post-retro complete."
 
+# ---------------------------------------------------------------------------
+# Dedup receipt tests
+# Verify that related_issues renders into the filed issue body and that the
+# receipt gate rejects legacy proposals without one.
+# ---------------------------------------------------------------------------
+
+# Receipt with candidates: rendered into the filed issue body.
+run_test "receipt-rendered-in-issue-body" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Related issues checked"
+
+# Receipt with candidates: considered list and note rendered.
+run_test "receipt-considered-rendered" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Considered: #2476"
+
+# Receipt with empty found: no-overlap line rendered.
+run_test "receipt-empty-found" \
+  "${FIXTURE_RECEIPT_EMPTY}" \
+  "No overlapping issues found."
+
+# Receipt gate: legacy proposal without a receipt is not filed.
+run_test_no_gh_call "receipt-gate-skips-filing" \
+  "${FIXTURE_NO_RECEIPT}" \
+  "gh issue create" \
+  "::warning::proposal[0] rejected"
+
+# Receipt gate: skipped proposal appears in the summary comment.
+run_test_stdin "receipt-gate-skipped-in-summary" \
+  "${FIXTURE_NO_RECEIPT}" \
+  "Proposals skipped (no dedup receipt)"
+
 # Evidence-for gate: proposal titled "Evidence for #1234" is rejected.
 run_test_no_gh_call "evidence-for-rejected" \
   "${FIXTURE_EVIDENCE_FOR}" \
@@ -982,7 +1158,14 @@ GL_FIXTURE_ONE_PROPOSAL='{
       "what_happened": "The widget service crashed on empty input.",
       "what_could_go_better": "Input validation should reject empty payloads.",
       "proposed_change": "Add a nil check at the entry point.",
-      "validation_criteria": "Widget service returns 400 on empty input."
+      "validation_criteria": "Widget service returns 400 on empty input.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -1017,7 +1200,14 @@ GL_FIXTURE_SUBGROUP='{
       "what_happened": "Something broke in a subgroup project.",
       "what_could_go_better": "It should not break.",
       "proposed_change": "Fix the thing.",
-      "validation_criteria": "Thing works."
+      "validation_criteria": "Thing works.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
     }
   ]
 }'
@@ -1034,7 +1224,29 @@ GL_FIXTURE_ORIGINATING_REPO_TARGET='{
       "what_happened": "The originating repo had a gap.",
       "what_could_go_better": "Should be handled.",
       "proposed_change": "Add handling.",
-      "validation_criteria": "Handling works."
+      "validation_criteria": "Handling works.",
+      "related_issues": {
+        "searched": [
+          "skip review dispatch zero files",
+          "review dispatch routing"
+        ],
+        "found": []
+      }
+    }
+  ]
+}'
+
+# GitLab fixture: a legacy six-field proposal without a dedup receipt.
+GL_FIXTURE_NO_RECEIPT='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-group/target-project",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed on empty input.",
+      "what_could_go_better": "Input validation should reject empty payloads.",
+      "proposed_change": "Add a nil check at the entry point.",
+      "validation_criteria": "Widget service returns 400 on empty input."
     }
   ]
 }'
@@ -1247,6 +1459,13 @@ ORIGINATING_URL="https://gitlab.com/unlisted-group/originating-project/-/merge_r
 run_gl_test_no_gh_call "gl-originating-repo-always-allowed" \
   "${GL_FIXTURE_ORIGINATING_REPO_TARGET}" \
   "Post-retro complete."
+
+# GitLab receipt gate: legacy proposal without a receipt is not filed.
+# The receipt rendering itself is shared jq (BODY) already covered by the
+# GitHub receipt tests; here we verify the gate fires on the GitLab path.
+run_gl_test "gl-receipt-gate-skips-filing" \
+  "${GL_FIXTURE_NO_RECEIPT}" \
+  "::warning::proposal[0] rejected"
 # shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
 
