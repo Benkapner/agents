@@ -74,35 +74,54 @@ gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
 Run both passes for every proposal — fix-keyed and root-cause-keyed (see the
 retro-analysis skill's "Before proposing" section).
 
+**Search scope.** The fix-keyed pass searches the proposal's `target_repo`. The
+root-cause pass must search **every repo the localization rules can route a
+proposal to** — platform (`fullsend-ai/fullsend`), the discovered agents repo,
+and the source repo (`$REPO_FULL_NAME`) — because a symptom fix and its root
+cause can land in different layers (the #1931-workaround vs #1887-root-cause
+case). Combine them with repeated `repo:` qualifiers, which GitHub OR-joins. Do
+**not** use `org:` — it reaches private/unrelated sibling repos and risks leaking
+private content into a public proposal.
+
 ```bash
-# Fix-keyed: broad keyword search across title and body, open issues
+# Fix-keyed: keyword search across title and body, open issues, in target_repo
 gh api \
   "search/issues?q=<fix+keywords>+repo:<target_repo>+is:issue+is:open&per_page=20" \
-  --jq '.items[] | {number: .number, title: .title, url: .html_url, body: .body}'
+  --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, url: .html_url, body: .body}'
 
-# Root-cause-keyed: search by the affected subsystem/component instead of the fix
+# Root-cause-keyed: subsystem/component keywords across the layer repos the
+# routing rules name (repeat repo: for each — do NOT use org:).
 gh api \
-  "search/issues?q=<subsystem+or+root-cause+keywords>+repo:<target_repo>+is:issue+is:open&per_page=20" \
-  --jq '.items[] | {number: .number, title: .title, url: .html_url, body: .body}'
+  "search/issues?q=<subsystem+or+root-cause+keywords>+repo:fullsend-ai/fullsend+repo:<agents-repo>+repo:<target_repo>+is:issue+is:open&per_page=20" \
+  --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, url: .html_url, body: .body}'
 
 # Include closed issues to apply the close-reason rules (duplicate / not
 # planned / completed). state_reason carries the close reason; closed_at is
 # required by the 30-day not-planned rule.
 gh api \
   "search/issues?q=<keywords>+repo:<target_repo>+is:issue&per_page=20" \
-  --jq '.items[] | {number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
+  --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
 
-# Follow a duplicate chain to its canonical: read the duplicate candidate's own
-# body and comments for the "duplicate of #X" reference, then fetch #X directly.
-# (The duplicate points to the canonical, not the reverse — so searching for
-# issues that mention the candidate's number does not find its canonical.)
-gh issue view <candidate-number> --repo <target_repo> \
+# Follow a duplicate chain to its canonical. GitHub's native "close as duplicate"
+# stores the canonical as structured data (GraphQL Issue.duplicateOf), NOT as
+# text — gh issue view --json has no field for it, so query it first:
+gh api graphql -f query='
+  query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        stateReason
+        duplicateOf { number state stateReason url }
+      }
+    }
+  }' -f owner=<owner> -f name=<repo> -F number=<candidate-number> \
+  --jq '.data.repository.issue'
+# When duplicateOf is null (duplicate recorded only in prose), fall back to the
+# candidate's own body and comments for a "duplicate of #X" reference:
+gh issue view <candidate-number> --repo <candidate-repo> \
   --json number,title,state,stateReason,body,comments \
   --jq '{number, title, state, stateReason, body, comments: [.comments[].body]}'
 # Then fetch the referenced canonical directly (follow further links if it is
-# itself a duplicate):
-gh issue view <canonical-number> --repo <target_repo> \
-  --json number,title,state,stateReason,url
+# itself a duplicate). Note its repo: the canonical may live in another layer.
 
 # Reverse-reference search (distinct use): find issues/PRs that mention a
 # candidate, e.g. a later issue that supersedes it.
@@ -110,5 +129,10 @@ gh api \
   "search/issues?q=<candidate-number>+repo:<target_repo>+is:issue&per_page=20" \
   --jq '.items[] | {number: .number, title: .title, state: .state, url: .html_url, body: .body}'
 ```
+
+Record each considered candidate in `related_issues.found` using its
+fully-qualified `owner/repo#N` form whenever it is not in the proposal's
+`target_repo` — a bare `#N` renders as a link to `target_repo` and would point
+at the wrong issue. Same-repo candidates may stay as the bare integer.
 
 Use multiple searches with different keyword combinations if the first returns no results — the same idea can be filed under different titles.

@@ -75,8 +75,13 @@
             "found": {
               "type": "array",
               "maxItems": 10,
-              "items": { "type": "integer" },
-              "description": "Issue numbers of candidate issues considered and judged not to cover (or to be refined by) this proposal."
+              "items": {
+                "oneOf": [
+                  { "type": "integer" },
+                  { "type": "string", "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+#[0-9]+$" }
+                ]
+              },
+              "description": "Candidate issues considered and judged not to cover (or to be refined by) this proposal. A bare integer is an issue in the proposal's target_repo; a cross-repo candidate (e.g. a root cause tracked in another layer) must be the fully-qualified string 'owner/repo#N' so it renders as a correct link rather than a bare #N pointing at the wrong repo."
             },
             "note": {
               "type": "string",

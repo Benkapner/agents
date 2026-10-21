@@ -883,6 +883,17 @@ run_test "retro-valid-receipt-empty-found" \
   '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[]}}]}' \
   "true"
 
+# found may mix a bare integer (target_repo) with a qualified owner/repo#N
+# string (cross-repo canonical).
+run_test "retro-valid-found-qualified-cross-repo-ref" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[1234,"fullsend-ai/fullsend#1887"]}}]}' \
+  "true"
+
+# A malformed found entry (bare #N string, not owner/repo#N) is rejected.
+run_test "retro-found-bare-hash-string-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"found":["#1887"]}}]}' \
+  "false"
+
 # Missing receipt passes the schema (optional) — the post-retro gate skips it.
 run_test "retro-missing-related-issues-passes-schema" \
   '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v"}]}' \

@@ -513,7 +513,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       \"\n\n## Related issues checked\n\nSearched: \" +
       (.related_issues.searched | join(\"; \")) +
       (if (.related_issues.found // []) | length > 0 then
-        \"\nConsidered: \" + (.related_issues.found | map(\"#\" + tostring) | join(\", \")) +
+        \"\nConsidered: \" + (.related_issues.found | map(if type == \"number\" then \"#\" + tostring else tostring end) | join(\", \")) +
         (if .related_issues.note then \"\n\" + .related_issues.note else \"\" end)
       else
         \"\nNo overlapping issues found.\"

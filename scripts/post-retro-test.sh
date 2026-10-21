@@ -557,6 +557,30 @@ FIXTURE_RECEIPT_FOUND='{
   ]
 }'
 
+# Fixture: a receipt mixing a bare target_repo integer with a cross-repo
+# owner/repo#N reference — each must render in its own form.
+FIXTURE_RECEIPT_CROSS_REPO='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed on empty input.",
+      "what_could_go_better": "Input validation should reject empty payloads.",
+      "proposed_change": "Add a nil check at the entry point.",
+      "validation_criteria": "Widget service returns 400 on empty input.",
+      "related_issues": {
+        "searched": [
+          "error handling empty input",
+          "widget service input validation"
+        ],
+        "found": [2476, "fullsend-ai/fullsend#1887"],
+        "note": "Root cause tracked cross-layer in fullsend-ai/fullsend#1887."
+      }
+    }
+  ]
+}'
+
 # Fixture: a proposal whose receipt found no overlapping issues.
 FIXTURE_RECEIPT_EMPTY='{
   "summary": "The retro analysis found one improvement opportunity.",
@@ -1104,6 +1128,11 @@ run_test "receipt-considered-rendered" \
 run_test "receipt-empty-found" \
   "${FIXTURE_RECEIPT_EMPTY}" \
   "No overlapping issues found."
+
+# Cross-repo found: bare integer renders as #N, qualified ref renders as-is.
+run_test "receipt-cross-repo-ref-rendered" \
+  "${FIXTURE_RECEIPT_CROSS_REPO}" \
+  "Considered: #2476, fullsend-ai/fullsend#1887"
 
 # Receipt gate: legacy proposal without a receipt is not filed.
 run_test_no_gh_call "receipt-gate-skips-filing" \
