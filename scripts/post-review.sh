@@ -958,17 +958,25 @@ echo "Using result: ${RESULT_FILE}"
 # runner authoritative too: remove any UX findings before severity filtering,
 # ledger accounting, or posting if a model dispatched the dimension anyway.
 REREVIEW_UX_ORIGINAL_ACTION=""
+UX_DISABLED=false
 if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" ]]; then
+  UX_DISABLED=true
   UX_DISABLED_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${UX_DISABLED_RESULT}")
   UX_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
   UX_FINDINGS_BEFORE="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${RESULT_FILE}")"
-  jq '
+  jq --argjson removed "${UX_FINDINGS_BEFORE}" '
     if (.findings | type) == "array" then
       .findings |= map(select(.category != "uxd-evaluate-code-heuristics"))
-      | if ([.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length) == 0
-          and (.action == "request-changes" or .action == "reject")
-        then .action = "comment"
+      | if $removed > 0 and (.action == "request-changes" or .action == "reject") then
+          if .action == "reject" then
+            if ((.findings // []) | length) == 0 then .action = "comment" else . end
+          elif ([.findings[]?
+                 | select((.severity | IN("medium", "high", "critical"))
+                          or (.actionable // false))] | length) == 0 then
+            .action = "comment"
+          else .
+          end
         else .
         end
       | if (.findings | length) == 0 then del(.findings) else . end
@@ -1013,11 +1021,6 @@ if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
     PRIOR_ACTION="$(jq -r '.action // empty' <<< "${PRIOR_JSON}")"
   fi
 fi
-if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" && "${HAS_VALID_PRIOR_REVIEW}" == "true" ]]; then
-  # Do not carry opted-out UX findings into the re-review ledger. Otherwise
-  # their open ids remain blocking even though this dimension is disabled.
-  PRIOR_JSON="$(jq -c '.findings |= map(select(.category != "uxd-evaluate-code-heuristics"))' <<< "${PRIOR_JSON}")"
-fi
 # Mint one 16-hex-char id per current and prior finding (at least 128) from
 # /dev/urandom so the pool can never run dry and abort the post.
 FINDING_COUNT="$(jq '.findings | if type == "array" then length else 0 end' "${RESULT_FILE}" 2>/dev/null || echo 0)"
@@ -1034,7 +1037,7 @@ MINT_IDS="$(
 # Prior ledger: give legacy prior findings (written before ids existed) an id
 # so they enter the ledger instead of vanishing, and split prior ids into
 # open and closed. Minted ids used here are removed from the pool below.
-PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
+PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" --argjson ux_disabled "${UX_DISABLED}" '
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
   def closed_status: IN("resolved_by_change", "dismissed_by_human");
   ([ (.dispositions // [])[] | select(type == "object" and (.id | valid_id) and (.status | type == "string")) ]) as $disp
@@ -1049,7 +1052,9 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
       closed: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
                 | select($d != null and ($d.status | closed_status)) | . + {status: $d.status} ],
       open_ids: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
-                  | select($d == null or ($d.status | closed_status | not)) | .id ],
+                  | select($d == null or ($d.status | closed_status | not))
+                  | select(($ux_disabled | not) or .category != "uxd-evaluate-code-heuristics")
+                  | .id ],
       used_mints: $r.mint_i
     }
 ' <<< "${PRIOR_JSON}")"
