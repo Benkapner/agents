@@ -242,8 +242,8 @@ dimensions are relevant:
   `intent-coherence`
 - Repository has documentation files → `docs-currency`
 - UI signals (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.html`, `.css`, `.scss`, or
-  JSX/ARIA/UI-framework imports in diff) and `REVIEW_UX_ENABLED` is not
-  `false` → `user-experience`
+  JSX/ARIA/UI-framework imports in diff) and `REVIEW_UX_ENABLED=true` →
+  `user-experience`
 - Always included → `style-conventions`
 
 #### 3c. Select sub-agents

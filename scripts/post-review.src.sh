@@ -48,6 +48,8 @@ case "${REVIEW_UX_ENABLED_RAW}" in
   true|false) ;;
   *)
     echo "::error::REVIEW_UX_ENABLED='$(_gha_sanitize "${REVIEW_UX_ENABLED_RAW}")' is invalid (expected 'true' or 'false')"
+    echo '{"action":"failure","reason":"tool-failure"}' | \
+      forge_post_review -
     exit 1
     ;;
 esac
@@ -116,19 +118,29 @@ echo "Using result: ${RESULT_FILE}"
 # The sandbox prompt skips this dimension when the flag is false. Keep the
 # runner authoritative too: remove any UX findings before severity filtering,
 # ledger accounting, or posting if a model dispatched the dimension anyway.
+REREVIEW_UX_ORIGINAL_ACTION=""
 if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" ]]; then
   UX_DISABLED_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${UX_DISABLED_RESULT}")
+  UX_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
+  UX_FINDINGS_BEFORE="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${RESULT_FILE}")"
   jq '
     if (.findings | type) == "array" then
       .findings |= map(select(.category != "uxd-evaluate-code-heuristics"))
-      | if (.findings | length) == 0 then
-          del(.findings)
-          | if .action == "request-changes" or .action == "reject" then .action = "comment" else . end
-        else . end
+      | if ([.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length) == 0
+          and (.action == "request-changes" or .action == "reject")
+        then .action = "comment"
+        else .
+        end
+      | if (.findings | length) == 0 then del(.findings) else . end
     else . end
   ' "${RESULT_FILE}" > "${UX_DISABLED_RESULT}"
   RESULT_FILE="${UX_DISABLED_RESULT}"
+  if [[ "${UX_FINDINGS_BEFORE}" -gt 0 ]] \
+      && [[ "${UX_ORIGINAL_ACTION}" = "request-changes" || "${UX_ORIGINAL_ACTION}" = "reject" ]] \
+      && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
+    REREVIEW_UX_ORIGINAL_ACTION="${UX_ORIGINAL_ACTION}"
+  fi
   echo "User-experience findings suppressed (REVIEW_UX_ENABLED=false)"
 fi
 # The severity filter below can drop an info-level sub-agent-failure. Keep the
@@ -161,6 +173,11 @@ if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
     HAS_VALID_PRIOR_REVIEW=true
     PRIOR_ACTION="$(jq -r '.action // empty' <<< "${PRIOR_JSON}")"
   fi
+fi
+if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" && "${HAS_VALID_PRIOR_REVIEW}" == "true" ]]; then
+  # Do not carry opted-out UX findings into the re-review ledger. Otherwise
+  # their open ids remain blocking even though this dimension is disabled.
+  PRIOR_JSON="$(jq -c '.findings |= map(select(.category != "uxd-evaluate-code-heuristics"))' <<< "${PRIOR_JSON}")"
 fi
 # Mint one 16-hex-char id per current and prior finding (at least 128) from
 # /dev/urandom so the pool can never run dry and abort the post.
@@ -410,14 +427,25 @@ if [[ "${REREVIEW_BLOCKING_RANK}" -lt "$(severity_rank medium)" ]]; then
   REREVIEW_BLOCKING_RANK="$(severity_rank medium)"
 fi
 REREVIEW_CURRENT_MEDIUM_PLUS_COUNT="$(jq -r '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${UNFILTERED_RESULT_FILE}")"
+rereview_action_can_promote() {
+  [[ "$1" = "request-changes" ]] && return 0
+  [[ "$1" = "comment" ]] || return 1
+  if [[ "${REREVIEW_FILTERED_TO_ZERO}" = "true" ]] \
+      && [[ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" || \
+           "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
+    return 0
+  fi
+  if [[ "${REREVIEW_UX_ORIGINAL_ACTION}" = "request-changes" || \
+        "${REREVIEW_UX_ORIGINAL_ACTION}" = "reject" ]]; then
+    return 0
+  fi
+  return 1
+}
 if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]] \
     && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
     && [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
     && [[ "${PRIOR_REJECT_HOLD}" != "true" ]] \
-    && [[ "${ACTION}" = "request-changes" || \
-         ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
-           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
-                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) ) ]]; then
+    && rereview_action_can_promote "${ACTION}"; then
   REREVIEW_SAFETY_CANDIDATE=true
   ACTION="approve"
 fi
@@ -1160,14 +1188,10 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
     RESULT_FILE="${HOLD_RESULT}"
     ACTION="comment"
     DOWNGRADED=true
-  elif [[ "${ACTION}" = "request-changes" \
-      || ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
-           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
-                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) \
-           && "${DOWNGRADED}" = "false" ) ]] \
+  elif rereview_action_can_promote "${ACTION}" \
+      && [[ "${DOWNGRADED}" = "false" ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
-      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
-      && [[ "${DOWNGRADED}" = "false" ]]; then
+      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]]; then
     echo "New findings on a re-review are low/info only — changing '${ACTION}' to 'approve'"
     REREVIEW_RESULT=$(mktemp)
     CLEANUP_FILES+=("${REREVIEW_RESULT}")

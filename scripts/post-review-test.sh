@@ -1845,6 +1845,7 @@ run_rereview_gate_case() {
   local expected_exit="${12:-0}"
   local mock_files_fail="${13:-}"
   local result_check="${14:-}"
+  local ux_enabled="${15:-true}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   local prior_file="${run_dir}/prior.json"
@@ -1867,6 +1868,7 @@ run_rereview_gate_case() {
     export MOCK_PR_FILES="${mock_files}"
     export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
     export REVIEW_RISK_VERDICT_THRESHOLD="${risk_threshold}"
+    export REVIEW_UX_ENABLED="${ux_enabled}"
     if [[ -n "${mock_files_fail}" ]]; then
       export MOCK_PR_FILES_FAIL="${mock_files_fail}"
     fi
@@ -4808,13 +4810,18 @@ run_ux_flag_test() {
   local expected_logic_count="$4"
   local expected_action="$5"
   local expected_exit="${6:-0}"
+  local json_content="${7:-}"
   local run_dir="${TMPDIR}/run-ux-${test_name}"
   local exit_code=0
 
   mkdir -p "${run_dir}/iteration-1/output"
-  cat > "${run_dir}/iteration-1/output/agent-result.json" <<'EOF'
+  if [[ -n "${json_content}" ]]; then
+    printf '%s' "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  else
+    cat > "${run_dir}/iteration-1/output/agent-result.json" <<'EOF'
 {"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"medium","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}
 EOF
+  fi
   rm -f "${TMPDIR}/last-result.json"
 
   (
@@ -4842,6 +4849,13 @@ EOF
     return
   fi
   if [[ "${expected_exit}" -ne 0 ]]; then
+    if [[ ! -f "${TMPDIR}/last-result.json" ]] || \
+       ! jq -e '.action == "failure" and .reason == "tool-failure"' "${TMPDIR}/last-result.json" >/dev/null 2>&1; then
+      echo "FAIL: ${test_name} — expected a posted tool-failure result"
+      [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
     echo "PASS: ${test_name}"
     return
   fi
@@ -4863,6 +4877,15 @@ run_ux_flag_test "default-on" "unset" "1" "1" "request-changes"
 run_ux_flag_test "explicit-on" "true" "1" "1" "request-changes"
 run_ux_flag_test "explicit-off" "false" "0" "1" "request-changes"
 run_ux_flag_test "invalid-value" "yes" "0" "0" "" 1
+
+run_rereview_gate_case "ux-optout-clears-prior-blocker" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_ux1"}]}' \
+  "approve" "Review" "No disposition recorded" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length == 0' "false"
+
+run_ux_flag_test "opt-out-recomputes-verdict" "false" "0" "1" "comment" 0 \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
 
 # --- Summary ---
 
