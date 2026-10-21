@@ -111,7 +111,9 @@ context (closed issues, open PRs, doc index). The Jira project provides
 the backlog the agent matches against and receives new issues.
 
 Set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by
-extending the harness with `base:` composition:
+extending the harness with `base:` composition. Then update the agent's
+registered source to point to your local harness so fullsend resolves it
+instead of the remote pinned source:
 
 ```yaml
 # .fullsend/scribe.yaml
@@ -124,6 +126,12 @@ env:
     JIRA_BASE_URL: ${JIRA_BASE_URL}
     JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
     JIRA_TOKEN: ${JIRA_TOKEN}
+```
+
+After creating the local harness, re-register the agent to use it:
+
+```bash
+fullsend agent add .fullsend/scribe.yaml --name scribe --fullsend-dir .
 ```
 
 | Variable | Required | Description |

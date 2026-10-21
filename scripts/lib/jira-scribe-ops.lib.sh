@@ -68,6 +68,41 @@ _scribe_jira_api() {
     "$@"
 }
 
+# Like _scribe_jira_api but captures the HTTP status code and returns the
+# response body even on error, so callers can log field-level rejection
+# reasons instead of a generic "failed" message.
+_scribe_jira_api_with_status() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  local err_file raw http_code body
+  err_file=$(mktemp)
+  raw=$(curl --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --header "Accept: application/json" \
+    --request "${method}" \
+    --write-out '\n%{http_code}' \
+    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "$@" 2>"${err_file}") || {
+    echo "Jira API error: curl failed — $(_gha_sanitize "$(cat "${err_file}")")" >&2
+    rm -f "${err_file}"
+    return 1
+  }
+  rm -f "${err_file}"
+  http_code=$(printf '%s' "${raw}" | tail -1)
+  body=$(printf '%s' "${raw}" | sed '$d')
+  if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
+    local errors
+    errors=$(printf '%s' "${body}" | jq -r '(.errorMessages // []) + [(.errors // {} | to_entries[] | "\(.key): \(.value)")] | join("; ")' 2>/dev/null || echo "")
+    echo "Jira API error (HTTP ${http_code}): $(_gha_sanitize "${errors:-${body}}")" >&2
+    return 1
+  fi
+  printf '%s' "${body}"
+}
+
 # Escape a value for use inside a double-quoted JQL string literal.
 _scribe_jql_quote() {
   local val="$1"
@@ -180,30 +215,42 @@ _scribe_jira_add_labels() {
     return 0
   fi
   ops=$(printf '%s' "${labels_json}" | jq '{update:{labels:[.[] | {add:.}]}}')
-  _scribe_jira_api PUT "/issue/${key}" --data "${ops}" > /dev/null
+  _scribe_jira_api_with_status PUT "/issue/${key}" --data "${ops}" > /dev/null
 }
 
 # Fetch every item of a paginated createmeta endpoint (startAt paging) and
 # print them as one JSON array. Fails if a page cannot be read or the page
 # cap is hit before the last page, so callers never validate on partial data.
 _scribe_jira_createmeta_all() {
-  local endpoint="$1" items='[]' start=0 page resp count total last
+  local endpoint="$1" start=0 page resp count total last
+  local items_file
+  items_file=$(mktemp)
+  printf '[]' > "${items_file}"
   for ((page = 1; page <= SCRIBE_JIRA_MAX_PAGES; page++)); do
-    resp=$(_scribe_jira_api GET "${endpoint}?maxResults=200&startAt=${start}") || return 1
-    count=$(printf '%s' "${resp}" | jq -r '(.issueTypes // .values // .fields // []) | length') || return 1
-    items=$(jq -cn --argjson cur "${items}" --argjson page "${resp}" \
-      '$cur + ($page.issueTypes // $page.values // $page.fields // [])') || return 1
+    resp=$(_scribe_jira_api GET "${endpoint}?maxResults=200&startAt=${start}") || { rm -f "${items_file}"; return 1; }
+    count=$(printf '%s' "${resp}" | jq -r '(.issueTypes // .values // .fields // []) | length') || { rm -f "${items_file}"; return 1; }
+    # Merge page items via stdin/file to avoid --argjson argument-size limits
+    # on projects with large allowedValues lists. Strip allowedValues to
+    # reduce accumulated size since it is not needed for validation.
+    printf '%s' "${resp}" | jq -c '(.issueTypes // .values // .fields // []) | map(del(.allowedValues))' \
+      | jq -sc '.[0] + .[1]' "${items_file}" - > "${items_file}.tmp" \
+      && mv "${items_file}.tmp" "${items_file}" \
+      || { rm -f "${items_file}" "${items_file}.tmp"; return 1; }
     total=$(printf '%s' "${resp}" | jq -r '.total // empty')
-    last=$(printf '%s' "${resp}" | jq -r '.isLast // empty')
+    # Distinguish absent isLast from explicit false: jq's `// empty`
+    # converts false to empty, so use has() to detect absence.
+    last=$(printf '%s' "${resp}" | jq -r 'if has("isLast") then (.isLast | tostring) else "absent" end')
     start=$((start + count))
     # Without a total or isLast marker the response is a single page.
     if [[ "${count}" -eq 0 || "${last}" == "true" ]] \
-      || [[ -z "${total}" && -z "${last}" ]] \
+      || [[ -z "${total}" && "${last}" == "absent" ]] \
       || [[ -n "${total}" && "${start}" -ge "${total}" ]]; then
-      printf '%s' "${items}"
+      cat "${items_file}"
+      rm -f "${items_file}"
       return 0
     fi
   done
+  rm -f "${items_file}"
   echo "ERROR: Jira create metadata exceeds ${SCRIBE_JIRA_MAX_PAGES} pages" >&2
   return 1
 }
@@ -230,7 +277,7 @@ tracker_validate_create() {
   missing=$(printf '%s' "${meta}" | jq -r '
     [.[]
       | select(.required == true and (.hasDefaultValue // false) == false)
-      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description","labels","reporter"] | index($f) | not)
+      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description","labels"] | index($f) | not)
       | (.fieldId // .key)] | join(", ")')
   if [[ -n "${missing}" ]]; then
     echo "ERROR: Jira project ${SCRIBE_JIRA_PROJECT} requires fields scribe does not set: $(_gha_sanitize "${missing}")" >&2
@@ -244,9 +291,12 @@ tracker_validate_create() {
     return 1
   fi
   SCRIBE_JIRA_LABELS_AVAILABLE=true
+  SCRIBE_JIRA_LABELS_REQUIRED=false
   if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "labels")' >/dev/null; then
     SCRIBE_JIRA_LABELS_AVAILABLE=false
     echo "WARNING: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT} has no Labels field on its create screen; labels will be omitted" >&2
+  elif printf '%s' "${meta}" | jq -e '[.[] | select((.fieldId // .key) == "labels" and .required == true and (.hasDefaultValue // false) == false)] | length > 0' >/dev/null; then
+    SCRIBE_JIRA_LABELS_REQUIRED=true
   fi
 }
 

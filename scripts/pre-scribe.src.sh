@@ -38,7 +38,9 @@ if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
 fi
 if [[ -n "${JIRA_TOKEN:-}" ]]; then
-  echo "::add-mask::${JIRA_TOKEN}"
+  # Sanitize workflow-command delimiters before interpolating into ::add-mask::
+  # so a crafted token cannot inject additional workflow commands.
+  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
 fi
 
 WORK_DIR="${RUNNER_TEMP:-/tmp}/scribe-workspace"
