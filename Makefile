@@ -100,6 +100,7 @@ script-test:
 	$(call run-timed,bash eval/scripts/scrub-eval-results-test.sh)
 	$(call run-timed,bash eval/scripts/write-fixture-file-test.sh)
 	$(call run-timed,bash eval/scripts/setup-fixture-test.sh)
+	$(call run-timed,bash eval/scripts/teardown-fixture-test.sh)
 	$(call run-timed,bash eval/scripts/aggregate-nightly-test.sh)
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
