@@ -96,10 +96,10 @@ curl --fail --silent --show-error \
   "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<keywords>&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, web_url: .web_url, description: .description}'
 
-# Follow a duplicate chain to its canonical: read the DUPLICATE candidate's own
+# Follow a duplicate chain to its canonical: read the duplicate candidate's own
 # description and notes for the "duplicate of #X" reference, then fetch #X
 # directly. (The duplicate points to the canonical, not the reverse — so a
-# search mentioning the candidate's number does NOT find its canonical.)
+# search mentioning the candidate's number does not find its canonical.)
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>" \

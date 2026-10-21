@@ -92,10 +92,10 @@ gh api \
   "search/issues?q=<keywords>+repo:<target_repo>+is:issue&per_page=20" \
   --jq '.items[] | {number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
 
-# Follow a duplicate chain to its canonical: read the DUPLICATE candidate's own
+# Follow a duplicate chain to its canonical: read the duplicate candidate's own
 # body and comments for the "duplicate of #X" reference, then fetch #X directly.
 # (The duplicate points to the canonical, not the reverse — so searching for
-# issues that mention the candidate's number does NOT find its canonical.)
+# issues that mention the candidate's number does not find its canonical.)
 gh issue view <candidate-number> --repo <target_repo> \
   --json number,title,state,stateReason,body,comments \
   --jq '{number, title, state, stateReason, body, comments: [.comments[].body]}'
@@ -104,7 +104,7 @@ gh issue view <candidate-number> --repo <target_repo> \
 gh issue view <canonical-number> --repo <target_repo> \
   --json number,title,state,stateReason,url
 
-# Reverse-reference search (distinct use): find issues/PRs that MENTION a
+# Reverse-reference search (distinct use): find issues/PRs that mention a
 # candidate, e.g. a later issue that supersedes it.
 gh api \
   "search/issues?q=<candidate-number>+repo:<target_repo>+is:issue&per_page=20" \
