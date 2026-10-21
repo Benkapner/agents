@@ -43,6 +43,15 @@ forge_parse_pr_url
 
 echo "::add-mask::${REVIEW_TOKEN}"
 
+REVIEW_UX_ENABLED_RAW="${REVIEW_UX_ENABLED:-true}"
+case "${REVIEW_UX_ENABLED_RAW}" in
+  true|false) ;;
+  *)
+    echo "::error::REVIEW_UX_ENABLED='$(_gha_sanitize "${REVIEW_UX_ENABLED_RAW}")' is invalid (expected 'true' or 'false')"
+    exit 1
+    ;;
+esac
+
 # Temp file cleanup: accumulate files to remove on exit so later traps
 # don't overwrite earlier ones.
 CLEANUP_FILES=()
@@ -104,6 +113,24 @@ if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
 fi
 
 echo "Using result: ${RESULT_FILE}"
+# The sandbox prompt skips this dimension when the flag is false. Keep the
+# runner authoritative too: remove any UX findings before severity filtering,
+# ledger accounting, or posting if a model dispatched the dimension anyway.
+if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" ]]; then
+  UX_DISABLED_RESULT="$(mktemp)"
+  CLEANUP_FILES+=("${UX_DISABLED_RESULT}")
+  jq '
+    if (.findings | type) == "array" then
+      .findings |= map(select(.category != "uxd-evaluate-code-heuristics"))
+      | if (.findings | length) == 0 then
+          del(.findings)
+          | if .action == "request-changes" or .action == "reject" then .action = "comment" else . end
+        else . end
+    else . end
+  ' "${RESULT_FILE}" > "${UX_DISABLED_RESULT}"
+  RESULT_FILE="${UX_DISABLED_RESULT}"
+  echo "User-experience findings suppressed (REVIEW_UX_ENABLED=false)"
+fi
 # The severity filter below can drop an info-level sub-agent-failure. Keep the
 # unfiltered result so the projection still sees every failed dimension.
 UNFILTERED_RESULT_FILE="${RESULT_FILE}"

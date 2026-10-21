@@ -4797,6 +4797,73 @@ run_risk_verdict_tier2_body_test() {
 }
 run_risk_verdict_tier2_body_test
 
+# ---------------------------------------------------------------------------
+# UX feature-flag tests. The post-script is the executable enforcement point;
+# the sandbox skill uses the same env value to avoid dispatching UX at all.
+# ---------------------------------------------------------------------------
+run_ux_flag_test() {
+  local test_name="$1"
+  local flag_value="$2"
+  local expected_ux_count="$3"
+  local expected_logic_count="$4"
+  local expected_action="$5"
+  local expected_exit="${6:-0}"
+  local run_dir="${TMPDIR}/run-ux-${test_name}"
+  local exit_code=0
+
+  mkdir -p "${run_dir}/iteration-1/output"
+  cat > "${run_dir}/iteration-1/output/agent-result.json" <<'EOF'
+{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"medium","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}
+EOF
+  rm -f "${TMPDIR}/last-result.json"
+
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    if [[ "${flag_value}" == "unset" ]]; then
+      unset REVIEW_UX_ENABLED
+    else
+      export REVIEW_UX_ENABLED="${flag_value}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-ux-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${exit_code}" -ne "${expected_exit}" ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expected_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout-ux-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${expected_exit}" -ne 0 ]]; then
+    echo "PASS: ${test_name}"
+    return
+  fi
+
+  local actual_ux_count actual_logic_count actual_action
+  actual_ux_count="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${TMPDIR}/last-result.json")"
+  actual_logic_count="$(jq '[.findings[]? | select(.category == "logic-error")] | length' "${TMPDIR}/last-result.json")"
+  actual_action="$(jq -r '.action' "${TMPDIR}/last-result.json")"
+  if [[ "${actual_ux_count}" != "${expected_ux_count}" || "${actual_logic_count}" != "${expected_logic_count}" || "${actual_action}" != "${expected_action}" ]]; then
+    echo "FAIL: ${test_name} — UX flag filtering mismatch"
+    jq . "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_ux_flag_test "default-on" "unset" "1" "1" "request-changes"
+run_ux_flag_test "explicit-on" "true" "1" "1" "request-changes"
+run_ux_flag_test "explicit-off" "false" "0" "1" "request-changes"
+run_ux_flag_test "invalid-value" "yes" "0" "0" "" 1
+
 # --- Summary ---
 
 echo ""

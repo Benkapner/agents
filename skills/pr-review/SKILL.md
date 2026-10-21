@@ -242,8 +242,8 @@ dimensions are relevant:
   `intent-coherence`
 - Repository has documentation files → `docs-currency`
 - UI signals (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.html`, `.css`, `.scss`, or
-  JSX/ARIA/UI-framework imports in diff) and `REVIEW_UX_ENABLED=true` →
-  `user-experience`
+  JSX/ARIA/UI-framework imports in diff) and `REVIEW_UX_ENABLED` is not
+  `false` → `user-experience`
 - Always included → `style-conventions`
 
 #### 3c. Select sub-agents
@@ -268,7 +268,7 @@ Dispatch only relevant sub-agents; a complex PR may legitimately need all 7.
 - `cross-repo-contracts` — when public APIs, exported interfaces,
   schemas, or CLI args are modified. Skip entirely for PRs that don't
   touch public API surface.
-- `user-experience` — when enabled and 3b signals match; skip backend changes.
+- `user-experience` — when 3b signals match.
 
 **Re-review dispatch (prior-finding-aware):** When
 `PRIOR_REVIEW_PROVENANCE` is `app-verified` and prior findings exist
