@@ -220,11 +220,27 @@ done
 harness_version() { # file: prints the version in a pyproject.toml, or nothing
   sed -n 's/^version = "\([^"]*\)"/\1/p' "$1" 2>/dev/null | head -1 || true
 }
-pinned_ver="$(harness_version "${EVAL_DIR}/.agent-eval-harness/pyproject.toml")"
-if [[ -z "$pinned_ver" ]]; then
-  echo "ERROR: cannot read the pinned agent-eval-harness version from ${EVAL_DIR}/.agent-eval-harness/pyproject.toml" >&2
-  echo "       Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness" >&2
-  exit 1
+# The pin is the submodule commit this checkout records (the gitlink), not
+# whatever is on disk under eval/.agent-eval-harness: that directory keeps its
+# old contents until `git submodule update`, and reading the pin from it would
+# let a stale directory pass as a stale pin. Outside a git checkout (an
+# exported tree) nothing records a commit, and the directory is all there is.
+submodule_dir="${EVAL_DIR}/.agent-eval-harness"
+submodule_hint="Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness"
+if pin_sha="$(git -C "$REPO_ROOT" rev-parse --verify -q "HEAD:eval/.agent-eval-harness" 2>/dev/null)"; then
+  pinned_ver="$(harness_version <(git -C "$submodule_dir" show "${pin_sha}:pyproject.toml" 2>/dev/null))"
+  if [[ -z "$pinned_ver" ]]; then
+    echo "ERROR: cannot read the pinned agent-eval-harness version: this checkout pins commit ${pin_sha:0:8} of eval/.agent-eval-harness, which is not initialised" >&2
+    echo "       ${submodule_hint}" >&2
+    exit 1
+  fi
+else
+  pinned_ver="$(harness_version "${submodule_dir}/pyproject.toml")"
+  if [[ -z "$pinned_ver" ]]; then
+    echo "ERROR: cannot read the pinned agent-eval-harness version from ${submodule_dir}/pyproject.toml" >&2
+    echo "       ${submodule_hint}" >&2
+    exit 1
+  fi
 fi
 # require_at_least_pin <what> <version> <hint>: exits 1 unless <version> is a
 # plain release version (N.N.N) at or above the pinned one. sort -V orders any

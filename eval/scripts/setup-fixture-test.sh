@@ -104,7 +104,7 @@ run_sf() { # root [VAR=value ...]
     CASE_WORKSPACE="${root}/ws" \
     EVAL_ORG="testorg" \
     "$@" \
-    "$BASH" "$SCRIPT"
+    "${SF_BASH:-$BASH}" "$SCRIPT"
 }
 
 gh_calls() { cat "$1/capture/gh-calls.log" 2>/dev/null || true; }
@@ -236,6 +236,35 @@ else
   fail "three failed pushes give up with no sleep after the last and nothing created afterwards (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
 fi
 rm -rf "$ROOT"
+
+# --- The public path survives a bash whose set -u treats an empty array as
+# unbound (before 4.4). Run it under the system bash when that is one; a PR
+# fixture, since the issue path needs mapfile, which bash 3.2 lacks. ---
+if [[ -x /bin/bash ]] && /bin/bash -c '(( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))'; then
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+  cat > "${ROOT}/case/input.yaml" <<'YAML'
+fixture:
+  type: pull_request
+  title: Test PR
+  body: Test body
+  files:
+    - path: a.txt
+      content: hello
+YAML
+  RC=0
+  OUT=$(SF_BASH=/bin/bash run_sf "$ROOT" EVAL_REPO_VISIBILITY=public 2>&1) || RC=$?
+  if [[ $RC -eq 0 ]] \
+    && git_calls "$ROOT" | grep -q -- " push origin HEAD" \
+    && ! git_calls "$ROOT" | grep -qE "hooksPath|no-verify" \
+    && ! echo "$OUT" | grep -q "unbound variable"; then
+    pass "EVAL_REPO_VISIBILITY=public pushes under $(/bin/bash -c 'echo $BASH_VERSION') with the empty hook option list"
+  else
+    fail "EVAL_REPO_VISIBILITY=public pushes under $(/bin/bash -c 'echo $BASH_VERSION') with the empty hook option list (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+else
+  echo "SKIP: /bin/bash is not older than 4.4; empty-array expansion case not run"
+fi
 
 echo
 echo "=== ${TESTS} tests, ${FAILURES} failures ==="

@@ -599,6 +599,65 @@ else
 fi
 rm -rf "$ROOT"
 
+# In a git checkout the pin is the submodule commit the superproject records,
+# not the directory's contents. git_fixture turns the fixture into one: a
+# harness repo with a 1.37.4 commit then a 1.56.3 commit, pinned at 1.56.3.
+git_fixture() { # root
+  local root="$1" g="git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null"
+  mkdir -p "${root}/harness-src/skills/eval-run/scripts"
+  : > "${root}/harness-src/skills/eval-run/scripts/workspace.py"
+  : > "${root}/harness-src/skills/eval-run/scripts/execute.py"
+  : > "${root}/harness-src/skills/eval-run/scripts/score.py"
+  $g -C "${root}/harness-src" init -q
+  echo 'version = "1.37.4"' > "${root}/harness-src/pyproject.toml"
+  $g -C "${root}/harness-src" add -A && $g -C "${root}/harness-src" commit -qm old
+  echo 'version = "1.56.3"' > "${root}/harness-src/pyproject.toml"
+  $g -C "${root}/harness-src" add -A && $g -C "${root}/harness-src" commit -qm pin
+  rm -rf "${root}/eval/.agent-eval-harness"
+  $g -C "$root" init -q
+  $g -C "$root" -c protocol.file.allow=always submodule add -q "${root}/harness-src" eval/.agent-eval-harness
+  $g -C "$root" add -A && $g -C "$root" commit -qm super
+}
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; git_fixture "$ROOT"
+git -C "${ROOT}/eval/.agent-eval-harness" checkout -q HEAD~1   # directory behind the pin
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" STUB_AGENT_EVAL_VERSION=1.56.3 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "checkout at ${ROOT}/eval/.agent-eval-harness is version 1.37.4, older than the agent-eval-harness 1.56.3 this repo pins" \
+  && no_execute "$ROOT"; then
+  pass "a submodule directory behind the recorded pin is refused (the pin is read from the gitlink)"
+else
+  fail "a submodule directory behind the recorded pin is refused (the pin is read from the gitlink) (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; git_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "this repo pins"; then
+  pass "a submodule directory at the recorded pin runs normally"
+else
+  fail "a submodule directory at the recorded pin runs normally (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; git_fixture "$ROOT"; other_harness "$ROOT" 1.57.0
+git -C "$ROOT" submodule deinit -q -f eval/.agent-eval-harness   # never initialised, another checkout in use
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" STUB_AGENT_EVAL_VERSION=1.57.0 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the pinned agent-eval-harness version: this checkout pins commit .* of eval/.agent-eval-harness, which is not initialised" \
+  && no_execute "$ROOT"; then
+  pass "an uninitialised submodule with another checkout in use is refused: the pin cannot be read"
+else
+  fail "an uninitialised submodule with another checkout in use is refused: the pin cannot be read (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
 # The library python3 imports is checked on the same terms; which checkout or
 # install it comes from is not.
 run_test

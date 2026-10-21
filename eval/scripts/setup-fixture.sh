@@ -147,7 +147,7 @@ if ! git -C "$TARGET_DIR" diff --cached --quiet; then
   hook_opts=()
   if [[ "$EVAL_REPO_VISIBILITY" == "private" ]]; then
     hook_opts=(-c core.hooksPath=/dev/null)
-    git -C "$TARGET_DIR" "${hook_opts[@]}" commit --no-verify -m "eval: initial content"
+    git -C "$TARGET_DIR" ${hook_opts[@]+"${hook_opts[@]}"} commit --no-verify -m "eval: initial content"
   else
     echo "WARNING: EVAL_REPO_VISIBILITY=${EVAL_REPO_VISIBILITY}: the snapshot will be published under the eval account; local git hooks run on this commit and its push" >&2
     git -C "$TARGET_DIR" commit -m "eval: initial content"
@@ -158,7 +158,9 @@ if ! git -C "$TARGET_DIR" diff --cached --quiet; then
   # and git's docs say raising http.postBuffer is not a fix for push failures.
   push_ok=0
   for attempt in 1 2 3; do
-    if git -C "$TARGET_DIR" "${hook_opts[@]}" push origin HEAD; then
+    # ${arr[@]+"${arr[@]}"}: an empty array is "unbound" under set -u on bash
+    # before 4.4, so a plain "${hook_opts[@]}" would abort the public push.
+    if git -C "$TARGET_DIR" ${hook_opts[@]+"${hook_opts[@]}"} push origin HEAD; then
       push_ok=1; break
     fi
     if [[ $attempt -lt 3 ]]; then
