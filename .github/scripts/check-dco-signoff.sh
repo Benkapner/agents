@@ -60,8 +60,12 @@ fi
 # Validate commit message content before the scissors cutoff line,
 # ignoring comment lines and CRLF line endings.
 # Uses a single awk process reading the file directly to avoid pipeline SIGPIPE issues.
-if ! awk -v signoff="${expected_signoff}" -v cchar="${comment_char}" '
+# Expected sign-off and comment char are passed via environment variables so
+# awk ENVIRON reads them verbatim without interpreting backslash escapes (unlike awk -v).
+if ! EXPECTED_SIGNOFF="${expected_signoff}" COMMENT_CHAR="${comment_char}" awk '
   BEGIN {
+    signoff = ENVIRON["EXPECTED_SIGNOFF"]
+    cchar = ENVIRON["COMMENT_CHAR"]
     found = 0
   }
   {
@@ -72,17 +76,12 @@ if ! awk -v signoff="${expected_signoff}" -v cchar="${comment_char}" '
     # Check if line begins with comment_char
     if (length(line) >= length(cchar) && substr(line, 1, length(cchar)) == cchar) {
       rem = substr(line, length(cchar) + 1)
-      sub(/^[ \t]+/, "", rem)
-      # Check scissors marker in comment: e.g. "# ------------------------ >8 ------------------------"
-      if (rem ~ /^-+.*(>8|8<).*-+/) {
+      # Git scissors line: commentChar + space + dashes + (>8 or 8<) + dashes
+      # e.g. "# ------------------------ >8 ------------------------"
+      if (rem ~ /^[ \t]+-+.*(>8|8<).*-+/) {
         exit
       }
       next
-    }
-
-    # Check scissors marker without comment_char (commit.cleanup=scissors)
-    if (line ~ /^-+.*(>8|8<).*-+/) {
-      exit
     }
 
     if ($0 == signoff) {
