@@ -170,9 +170,15 @@ Behavior:
 
 Issue creation delegates to `fullsend issues create --tracker jira`
 ([#7083](https://github.com/fullsend-ai/fullsend/issues/7083)), which
-handles Markdown-to-ADF conversion and the Jira REST call. Labels are
-added separately via the REST API because the CLI does not support a
-`--labels` flag. The surrounding validation (createmeta checks, duplicate
+handles Markdown-to-ADF conversion and the Jira REST call. **This
+requires a fullsend release that includes `issues create --tracker jira`
+([#8499](https://github.com/fullsend-ai/fullsend/pull/8499)).** The
+post-script validates CLI availability at preflight time (including
+dry-run) and fails with a clear error if the subcommand is missing.
+Labels are applied in a follow-up REST `PUT /issue/{key}` call because
+the CLI does not yet support a `--labels` flag; a label PUT failure is
+recorded in the run summary and Slack notification so operators can fix
+labels manually. The surrounding validation (createmeta checks, duplicate
 detection, content gates) remains in the post-script. This is not an
 adoption or fork of
 [konflux-ci/scribe4jira](https://github.com/konflux-ci/scribe4jira). It

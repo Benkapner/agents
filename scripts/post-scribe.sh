@@ -485,6 +485,10 @@ case "${FULLSEND_TRACKER}" in
 #
 # Jira Cloud only: JIRA_BASE_URL must be https://<site>.atlassian.net.
 #
+# Requires fullsend >= the release that ships `fullsend issues create
+# --tracker jira` (fullsend#7083 / fullsend#8499). The post-script
+# validates this at preflight time via tracker_validate_create.
+#
 # Expected env vars:
 #   JIRA_BASE_URL          — Jira Cloud base URL (https://<site>.atlassian.net)
 #   JIRA_USER_EMAIL        — Jira account email for Basic auth
@@ -726,6 +730,15 @@ _scribe_jira_createmeta_all() {
 # before any create call when the project needs extra fields.
 tracker_validate_create() {
   local types type_id meta missing
+  # Preflight: verify that the fullsend CLI ships `issues create`.
+  # This subcommand was introduced in fullsend#8499 and may not be
+  # present in older binaries. Failing here surfaces the problem on
+  # dry-run instead of silently passing validation and then exploding
+  # on the first live create.
+  if ! fullsend issues create --help >/dev/null 2>&1; then
+    echo "ERROR: 'fullsend issues create' is not available — upgrade fullsend to a version that includes issues create (fullsend#8499)" >&2
+    return 1
+  fi
   types=$(_scribe_jira_createmeta_all "/issue/createmeta/${SCRIBE_JIRA_PROJECT}/issuetypes") || {
     echo "ERROR: cannot read create metadata for Jira project ${SCRIBE_JIRA_PROJECT} (missing project or no create permission)" >&2
     return 1
@@ -834,9 +847,16 @@ forge_create_issue() {
   fi
   # tracker_validate_create sets SCRIBE_JIRA_LABELS_AVAILABLE=false when the
   # create screen has no Labels field; sending it would fail every create.
+  # Note: SCRIBE_JIRA_LABELS_AVAILABLE is validated against createmeta (create
+  # screen). The label PUT uses the edit screen, which usually agrees with the
+  # create screen for the Labels field but is not separately validated. If the
+  # edit screen differs, the PUT will fail and the issue is created without
+  # labels — surfaced in the step summary and Slack output below.
+  local label_failed=false
   if [[ "${SCRIBE_JIRA_LABELS_AVAILABLE:-true}" == "true" ]] && [[ -n "${labels}" ]]; then
     if ! _scribe_jira_add_labels "${key}" "${labels}"; then
-      echo "WARNING: forge_create_issue: failed to add labels to ${key} (issue created)" >&2
+      echo "WARNING: forge_create_issue: failed to add labels to ${key} (issue created without labels)" >&2
+      label_failed=true
     fi
   fi
   if [[ -n "${url}" ]]; then
@@ -844,6 +864,10 @@ forge_create_issue() {
   else
     echo "${JIRA_BASE_URL}/browse/${key}"
   fi
+  # Return 2 to signal "created successfully but labels failed" so the
+  # caller (post-scribe) can surface the failure in the run summary.
+  [[ "${label_failed}" == "true" ]] && return 2
+  return 0
 }
 
 forge_issue_url_base() {
@@ -1091,6 +1115,8 @@ NEW_ISSUE_TITLES=()
 NEW_ISSUE_URLS=()
 SKIPPED_NEW_ISSUES=0
 JIRA_DEDUP_FAILURES=0
+JIRA_LABEL_FAILURES=0
+JIRA_LABEL_FAILURE_KEYS=()  # issue keys whose label PUT failed
 
 # ============================================================
 # Process comment topics (existing issues)
@@ -1333,9 +1359,20 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
         continue
       fi
     fi
-    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}")
+    CREATE_RC=0
+    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
+    if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
+      echo "    ERROR: forge_create_issue failed (exit ${CREATE_RC})"
+      continue
+    fi
     echo "    Created: ${ISSUE_URL}"
     NEW_ISSUE_URLS+=("${ISSUE_URL}")
+    # Exit code 2 means the issue was created but the label PUT failed.
+    if [[ ${CREATE_RC} -eq 2 ]]; then
+      JIRA_LABEL_FAILURES=$((JIRA_LABEL_FAILURES + 1))
+      # Extract issue key from URL (e.g. PROJ-100 from .../browse/PROJ-100)
+      JIRA_LABEL_FAILURE_KEYS+=("${ISSUE_URL##*/}")
+    fi
   fi
 done
 
@@ -1356,6 +1393,9 @@ echo "  Gate rejections: ${REJECTED}"
 echo "    Content gate: ${CONTENT_GATE_REJECTIONS}"
 echo "  New proposals reviewed: ${NEW_COUNT}"
 [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]] && echo "  Skipped new issues (mode): ${SKIPPED_NEW_ISSUES}"
+if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+  echo "  Label failures: ${JIRA_LABEL_FAILURES} issue(s) created without labels: ${JIRA_LABEL_FAILURE_KEYS[*]}"
+fi
 echo "=================================="
 
 # ============================================================
@@ -1398,6 +1438,11 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo ""
   fi
 
+  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+    echo "> :warning: **${JIRA_LABEL_FAILURES}** issue(s) created without labels (label PUT failed): ${JIRA_LABEL_FAILURE_KEYS[*]}"
+    echo ""
+  fi
+
   if [[ "${REJECTED}" -gt 0 ]]; then
     echo "> **${REJECTED}** topic(s) rejected by the security gate."
     if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
@@ -1430,6 +1475,9 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   fi
   if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
     SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
+  fi
+  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+    SLACK_TEXT+="\n• :warning: Label failures: *${JIRA_LABEL_FAILURES}* (${JIRA_LABEL_FAILURE_KEYS[*]})"
   fi
 
   if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then

@@ -19,6 +19,10 @@
 #
 # Jira Cloud only: JIRA_BASE_URL must be https://<site>.atlassian.net.
 #
+# Requires fullsend >= the release that ships `fullsend issues create
+# --tracker jira` (fullsend#7083 / fullsend#8499). The post-script
+# validates this at preflight time via tracker_validate_create.
+#
 # Expected env vars:
 #   JIRA_BASE_URL          — Jira Cloud base URL (https://<site>.atlassian.net)
 #   JIRA_USER_EMAIL        — Jira account email for Basic auth
@@ -260,6 +264,15 @@ _scribe_jira_createmeta_all() {
 # before any create call when the project needs extra fields.
 tracker_validate_create() {
   local types type_id meta missing
+  # Preflight: verify that the fullsend CLI ships `issues create`.
+  # This subcommand was introduced in fullsend#8499 and may not be
+  # present in older binaries. Failing here surfaces the problem on
+  # dry-run instead of silently passing validation and then exploding
+  # on the first live create.
+  if ! fullsend issues create --help >/dev/null 2>&1; then
+    echo "ERROR: 'fullsend issues create' is not available — upgrade fullsend to a version that includes issues create (fullsend#8499)" >&2
+    return 1
+  fi
   types=$(_scribe_jira_createmeta_all "/issue/createmeta/${SCRIBE_JIRA_PROJECT}/issuetypes") || {
     echo "ERROR: cannot read create metadata for Jira project ${SCRIBE_JIRA_PROJECT} (missing project or no create permission)" >&2
     return 1
@@ -368,9 +381,16 @@ forge_create_issue() {
   fi
   # tracker_validate_create sets SCRIBE_JIRA_LABELS_AVAILABLE=false when the
   # create screen has no Labels field; sending it would fail every create.
+  # Note: SCRIBE_JIRA_LABELS_AVAILABLE is validated against createmeta (create
+  # screen). The label PUT uses the edit screen, which usually agrees with the
+  # create screen for the Labels field but is not separately validated. If the
+  # edit screen differs, the PUT will fail and the issue is created without
+  # labels — surfaced in the step summary and Slack output below.
+  local label_failed=false
   if [[ "${SCRIBE_JIRA_LABELS_AVAILABLE:-true}" == "true" ]] && [[ -n "${labels}" ]]; then
     if ! _scribe_jira_add_labels "${key}" "${labels}"; then
-      echo "WARNING: forge_create_issue: failed to add labels to ${key} (issue created)" >&2
+      echo "WARNING: forge_create_issue: failed to add labels to ${key} (issue created without labels)" >&2
+      label_failed=true
     fi
   fi
   if [[ -n "${url}" ]]; then
@@ -378,6 +398,10 @@ forge_create_issue() {
   else
     echo "${JIRA_BASE_URL}/browse/${key}"
   fi
+  # Return 2 to signal "created successfully but labels failed" so the
+  # caller (post-scribe) can surface the failure in the run summary.
+  [[ "${label_failed}" == "true" ]] && return 2
+  return 0
 }
 
 forge_issue_url_base() {

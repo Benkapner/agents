@@ -27,6 +27,10 @@ cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 echo "fullsend \$*" >> "${FULLSEND_LOG}"
 if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
+  if [[ "\$3" == "--help" ]]; then
+    echo "Usage: fullsend issues create [flags]"
+    exit 0
+  fi
   # Read --body from stdin if present (consume it so pipe doesn't break)
   cat > /dev/null
   echo '{"number":100,"key":"PROJ-100","title":"mock title","url":"https://mock.atlassian.net/browse/PROJ-100"}'
@@ -129,7 +133,20 @@ if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
       fi
       ;;
     */issue/PROJ-*)
-      # Label PUT on a created issue — succeed silently
+      # Label PUT on a created issue — log the payload for assertion.
+      # DATA may be multi-line (jq pretty-prints), so compact it for grep.
+      printf 'LABEL_PUT_DATA=%s\n' "\$(printf '%s' "\${DATA}" | tr -d '[:space:]')" >> "${CURL_LOG}"
+      if [[ "\${JIRA_MOCK_LABEL_FAIL:-}" == "1" ]]; then
+        # _scribe_jira_add_labels calls _scribe_jira_api_with_status, which
+        # calls curl without --fail. Simulate a failure by exiting non-zero
+        # so _scribe_jira_api_with_status enters its "curl failed" branch.
+        echo "Field labels does not exist" >&2
+        exit 1
+      fi
+      # _scribe_jira_api_with_status uses --write-out '\n%{http_code}' and
+      # parses the last line as the HTTP status code. The mock must emit a
+      # response body followed by the status code on the last line.
+      printf '\n204'
       ;;
     *)
       exit 22
@@ -547,9 +564,10 @@ export SCRIBE_JIRA_PROJECT="PROJ"
 export SCRIBE_MODE="all"
 
 # Fails if any Jira create (fullsend issues create) or forge write happened.
+# The preflight `fullsend issues create --help` is not a write and is excluded.
 assert_no_writes() {
   local test_name="$1"
-  if grep -qF 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null \
+  if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qvF -- '--help' \
     || grep -qE '^gh issue (create|comment)' "${GH_LOG}" 2>/dev/null; then
     echo "FAIL: ${test_name} — unexpected write call"
     cat "${FULLSEND_LOG}" "${CURL_LOG}" "${GH_LOG}" 2>/dev/null || true
@@ -693,6 +711,79 @@ assert_no_writes "jira/sensitive-label-no-writes"
 JIRA_UNICODE_LABEL_ISSUE="${JIRA_NEW_ISSUE//\"meeting-notes\"/\"notes\\u200bx\"}"
 run_test_stdout "jira/live-suspicious-unicode-label-rejected" "${JIRA_UNICODE_LABEL_ISSUE}" "GATE REJECTED"
 assert_no_writes "jira/suspicious-unicode-label-no-writes"
+export SCRIBE_DRY_RUN="true"
+
+# Label PUT payload shape: verify that the PUT sends the correct
+# {update:{labels:[{add:"meeting-notes"}]}} structure.
+export SCRIBE_DRY_RUN="false"
+: > "${CURL_LOG}"
+run_test_stdout "jira/live-label-put-payload-shape" "${JIRA_NEW_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF 'LABEL_PUT_DATA=' "${CURL_LOG}" 2>/dev/null; then
+  # The DATA variable captured by the mock may contain multiline jq output.
+  # Extract everything after LABEL_PUT_DATA= on that line.
+  LABEL_DATA=$(sed -n 's/^LABEL_PUT_DATA=//p' "${CURL_LOG}" | head -1)
+  if echo "${LABEL_DATA}" | jq -e '.update.labels | length > 0' >/dev/null 2>&1 \
+    && echo "${LABEL_DATA}" | jq -e '.update.labels[0].add == "meeting-notes"' >/dev/null 2>&1; then
+    echo "PASS: jira/label-put-payload-has-update-labels-add"
+  else
+    echo "FAIL: jira/label-put-payload-has-update-labels-add — unexpected payload: ${LABEL_DATA}"
+    FAILURES=$((FAILURES + 1))
+  fi
+else
+  echo "FAIL: jira/label-put-payload-shape — no label PUT recorded"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Label PUT failure: verify the issue is still created but the failure
+# is surfaced in the console summary.
+export JIRA_MOCK_LABEL_FAIL="1"
+run_test_stdout "jira/live-label-put-failure-surfaced" "${JIRA_NEW_ISSUE}" \
+  "Label failures: 1 issue(s) created without labels"
+if grep -qF "Created: https://mock.atlassian.net/browse/PROJ-100" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/label-put-failure-issue-still-created"
+else
+  echo "FAIL: jira/label-put-failure-issue-still-created — issue not created"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_MOCK_LABEL_FAIL
+
+# Missing fullsend CLI: verify preflight check catches it.
+# Replace the mock fullsend with one that rejects `issues create --help`.
+cat > "${MOCK_BIN}/fullsend" <<'NOCLIMOCK'
+#!/usr/bin/env bash
+# Simulate an old fullsend that does not have `issues create`
+echo "fullsend: unknown command \"issues\"" >&2
+exit 1
+NOCLIMOCK
+chmod +x "${MOCK_BIN}/fullsend"
+run_test_stdout "jira/missing-cli-subcommand-fails-preflight" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "fullsend issues create" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/missing-cli-error-message"
+else
+  echo "FAIL: jira/missing-cli-error-message — expected error about missing CLI"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_no_writes "jira/missing-cli-no-jira-writes"
+# Restore the working mock.
+cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
+#!/usr/bin/env bash
+echo "fullsend \$*" >> "${FULLSEND_LOG}"
+if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
+  if [[ "\$3" == "--help" ]]; then
+    echo "Usage: fullsend issues create [flags]"
+    exit 0
+  fi
+  cat > /dev/null
+  echo '{"number":100,"key":"PROJ-100","title":"mock title","url":"https://mock.atlassian.net/browse/PROJ-100"}'
+  exit 0
+fi
+exit 1
+MOCKEOF
+chmod +x "${MOCK_BIN}/fullsend"
 export SCRIBE_DRY_RUN="true"
 
 export SCRIBE_JIRA_PROJECT="bad key"

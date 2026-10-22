@@ -266,6 +266,8 @@ NEW_ISSUE_TITLES=()
 NEW_ISSUE_URLS=()
 SKIPPED_NEW_ISSUES=0
 JIRA_DEDUP_FAILURES=0
+JIRA_LABEL_FAILURES=0
+JIRA_LABEL_FAILURE_KEYS=()  # issue keys whose label PUT failed
 
 # ============================================================
 # Process comment topics (existing issues)
@@ -508,9 +510,20 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
         continue
       fi
     fi
-    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}")
+    CREATE_RC=0
+    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
+    if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
+      echo "    ERROR: forge_create_issue failed (exit ${CREATE_RC})"
+      continue
+    fi
     echo "    Created: ${ISSUE_URL}"
     NEW_ISSUE_URLS+=("${ISSUE_URL}")
+    # Exit code 2 means the issue was created but the label PUT failed.
+    if [[ ${CREATE_RC} -eq 2 ]]; then
+      JIRA_LABEL_FAILURES=$((JIRA_LABEL_FAILURES + 1))
+      # Extract issue key from URL (e.g. PROJ-100 from .../browse/PROJ-100)
+      JIRA_LABEL_FAILURE_KEYS+=("${ISSUE_URL##*/}")
+    fi
   fi
 done
 
@@ -531,6 +544,9 @@ echo "  Gate rejections: ${REJECTED}"
 echo "    Content gate: ${CONTENT_GATE_REJECTIONS}"
 echo "  New proposals reviewed: ${NEW_COUNT}"
 [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]] && echo "  Skipped new issues (mode): ${SKIPPED_NEW_ISSUES}"
+if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+  echo "  Label failures: ${JIRA_LABEL_FAILURES} issue(s) created without labels: ${JIRA_LABEL_FAILURE_KEYS[*]}"
+fi
 echo "=================================="
 
 # ============================================================
@@ -573,6 +589,11 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo ""
   fi
 
+  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+    echo "> :warning: **${JIRA_LABEL_FAILURES}** issue(s) created without labels (label PUT failed): ${JIRA_LABEL_FAILURE_KEYS[*]}"
+    echo ""
+  fi
+
   if [[ "${REJECTED}" -gt 0 ]]; then
     echo "> **${REJECTED}** topic(s) rejected by the security gate."
     if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
@@ -605,6 +626,9 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   fi
   if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
     SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
+  fi
+  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+    SLACK_TEXT+="\n• :warning: Label failures: *${JIRA_LABEL_FAILURES}* (${JIRA_LABEL_FAILURE_KEYS[*]})"
   fi
 
   if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
