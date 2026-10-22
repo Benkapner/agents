@@ -70,7 +70,12 @@ REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
 # response includes PRs (filtered out below); on GitLab it does not.
 echo "Fetching open issues from ${SCRIBE_REPO}..."
 RAW_PAGINATED_FILE="${WORK_DIR}/raw-paginated-issues.json"
-forge_fetch_open_issues_raw "${SCRIBE_REPO}" "${RAW_PAGINATED_FILE}"
+PAGINATION_RC=0
+forge_fetch_open_issues_raw "${SCRIBE_REPO}" "${RAW_PAGINATED_FILE}" || PAGINATION_RC=$?
+if [[ ${PAGINATION_RC} -ne 0 && ${PAGINATION_RC} -ne 2 ]]; then
+  echo "ERROR: failed to fetch open issues from ${SCRIBE_REPO}" >&2
+  exit 1
+fi
 
 # Count total items from paginated response before filtering.
 # Used later for truncation detection.
@@ -109,7 +114,16 @@ echo "Fetched ${PR_COUNT} open pull requests."
 # prevents false-positive backlog_truncated=true from API timing.
 REPO_OPEN_COUNT=$(forge_get_issue_count "${SCRIBE_REPO}")
 TRUNCATION_TOLERANCE=5
-if [[ -n "${REPO_OPEN_COUNT}" ]]; then
+if [[ "${PAGINATION_RC}" -eq 2 || "${SCRIBE_BACKLOG_PAGE_CAPPED:-false}" == "true" ]]; then
+  BACKLOG_TRUNCATED=true
+  OBSERVED_PR_COUNT=$((PAGINATED_TOTAL - ISSUE_COUNT))
+  if [[ -n "${REPO_OPEN_COUNT}" ]]; then
+    OPEN_ISSUE_TOTAL=$((REPO_OPEN_COUNT - OBSERVED_PR_COUNT))
+    [[ "${OPEN_ISSUE_TOTAL}" -lt 0 ]] && OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  else
+    OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  fi
+elif [[ -n "${REPO_OPEN_COUNT}" ]]; then
   SHORTFALL=$((REPO_OPEN_COUNT - PAGINATED_TOTAL))
   [[ "${SHORTFALL}" -gt "${TRUNCATION_TOLERANCE}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
   # Derive issue-only total: subtract observed PR count from API total

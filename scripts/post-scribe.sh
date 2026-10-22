@@ -628,8 +628,11 @@ forge_fetch_open_issues_raw() {
   local _repo="$1" output_file="$2" rc=0
   _scribe_jira_search_paginated "$(_scribe_jira_backlog_jql)" \
     '["summary","description","labels","status"]' "${output_file}" || rc=$?
-  # rc 2 (page cap) is reported by forge_get_issue_count's comparison.
-  [[ ${rc} -eq 0 || ${rc} -eq 2 ]]
+  if [[ ${rc} -eq 2 ]]; then
+    SCRIBE_BACKLOG_PAGE_CAPPED=true
+    return 2
+  fi
+  return ${rc}
 }
 
 # Convert raw Jira issues to the backlog format. Jira issues carry a string
