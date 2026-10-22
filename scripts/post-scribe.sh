@@ -756,7 +756,7 @@ tracker_validate_create() {
   missing=$(printf '%s' "${meta}" | jq -r '
     [.[]
       | select(.required == true and (.hasDefaultValue // false) == false)
-      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description","labels"] | index($f) | not)
+      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description"] | index($f) | not)
       | (.fieldId // .key)] | join(", ")')
   if [[ -n "${missing}" ]]; then
     echo "ERROR: Jira project ${SCRIBE_JIRA_PROJECT} requires fields scribe does not set: $(_gha_sanitize "${missing}")" >&2
@@ -770,12 +770,9 @@ tracker_validate_create() {
     return 1
   fi
   SCRIBE_JIRA_LABELS_AVAILABLE=true
-  SCRIBE_JIRA_LABELS_REQUIRED=false
   if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "labels")' >/dev/null; then
     SCRIBE_JIRA_LABELS_AVAILABLE=false
     echo "WARNING: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT} has no Labels field on its create screen; labels will be omitted" >&2
-  elif printf '%s' "${meta}" | jq -e '[.[] | select((.fieldId // .key) == "labels" and .required == true and (.hasDefaultValue // false) == false)] | length > 0' >/dev/null; then
-    SCRIBE_JIRA_LABELS_REQUIRED=true
   fi
 }
 
@@ -1115,6 +1112,7 @@ NEW_ISSUE_TITLES=()
 NEW_ISSUE_URLS=()
 SKIPPED_NEW_ISSUES=0
 JIRA_DEDUP_FAILURES=0
+CREATE_FAILURES=0
 JIRA_LABEL_FAILURES=0
 JIRA_LABEL_FAILURE_KEYS=()  # issue keys whose label PUT failed
 
@@ -1320,12 +1318,6 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
     continue
   fi
 
-  # Gate: required Labels field with empty labels (Jira only)
-  if [[ "${SCRIBE_JIRA_LABELS_REQUIRED:-false}" == "true" ]] && [[ -z "${LABELS}" ]]; then
-    gate_reject "${TITLE}" "Jira project requires labels but proposal has none"
-    continue
-  fi
-
   SAFE_TITLE=$(_gha_sanitize "${TITLE}")
   SAFE_CONFIDENCE=$(_gha_sanitize "${CONFIDENCE}")
   echo "  PASS: [${SAFE_TITLE}] → new issue (confidence: ${SAFE_CONFIDENCE})"
@@ -1350,12 +1342,12 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
       if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then
         echo "  ERROR: Jira duplicate check failed — refusing to create issue: ${SAFE_TITLE}"
         JIRA_DEDUP_FAILURES=$((JIRA_DEDUP_FAILURES + 1))
-        unset 'NEW_ISSUE_TITLES[-1]'
+        unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
         continue
       fi
       if [[ -n "${EXISTING_URL}" ]]; then
         echo "    SKIP: duplicate issue (already exists: ${EXISTING_URL})"
-        unset 'NEW_ISSUE_TITLES[-1]'
+        unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
         continue
       fi
     fi
@@ -1363,6 +1355,8 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
     ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
     if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
       echo "    ERROR: forge_create_issue failed (exit ${CREATE_RC})"
+      unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
+      CREATE_FAILURES=$((CREATE_FAILURES + 1))
       continue
     fi
     echo "    Created: ${ISSUE_URL}"
@@ -1515,9 +1509,9 @@ else
   echo "No SCRIBE_SLACK_WEBHOOK_URL set — skipping Slack notification"
 fi
 
-# Deferred failure: if any Jira duplicate checks failed, exit non-zero after
-# finalization so already-created issues are reported in the summary.
-if [[ "${JIRA_DEDUP_FAILURES}" -gt 0 ]]; then
-  echo "ERROR: ${JIRA_DEDUP_FAILURES} Jira duplicate check(s) failed — exiting with error"
+# Deferred failure: if any Jira duplicate checks or issue creates failed, exit
+# non-zero after finalization so already-created issues are reported in the summary.
+if [[ "${JIRA_DEDUP_FAILURES}" -gt 0 || "${CREATE_FAILURES}" -gt 0 ]]; then
+  echo "ERROR: ${JIRA_DEDUP_FAILURES} Jira duplicate check(s) and/or ${CREATE_FAILURES} issue creation(s) failed — exiting with error"
   exit 1
 fi

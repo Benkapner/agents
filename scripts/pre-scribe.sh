@@ -754,7 +754,7 @@ tracker_validate_create() {
   missing=$(printf '%s' "${meta}" | jq -r '
     [.[]
       | select(.required == true and (.hasDefaultValue // false) == false)
-      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description","labels"] | index($f) | not)
+      | select((.fieldId // .key) as $f | ["project","issuetype","summary","description"] | index($f) | not)
       | (.fieldId // .key)] | join(", ")')
   if [[ -n "${missing}" ]]; then
     echo "ERROR: Jira project ${SCRIBE_JIRA_PROJECT} requires fields scribe does not set: $(_gha_sanitize "${missing}")" >&2
@@ -768,12 +768,9 @@ tracker_validate_create() {
     return 1
   fi
   SCRIBE_JIRA_LABELS_AVAILABLE=true
-  SCRIBE_JIRA_LABELS_REQUIRED=false
   if ! printf '%s' "${meta}" | jq -e 'any(.[]; (.fieldId // .key) == "labels")' >/dev/null; then
     SCRIBE_JIRA_LABELS_AVAILABLE=false
     echo "WARNING: issue type '$(_gha_sanitize "${SCRIBE_JIRA_ISSUE_TYPE}")' in Jira project ${SCRIBE_JIRA_PROJECT} has no Labels field on its create screen; labels will be omitted" >&2
-  elif printf '%s' "${meta}" | jq -e '[.[] | select((.fieldId // .key) == "labels" and .required == true and (.hasDefaultValue // false) == false)] | length > 0' >/dev/null; then
-    SCRIBE_JIRA_LABELS_REQUIRED=true
   fi
 }
 

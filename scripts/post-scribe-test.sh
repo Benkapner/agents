@@ -31,6 +31,10 @@ if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
     echo "Usage: fullsend issues create [flags]"
     exit 0
   fi
+  if [[ -n "\${FULLSEND_MOCK_FAIL_TITLE:-}" ]] && [[ "\$*" == *"--title \${FULLSEND_MOCK_FAIL_TITLE}"* ]]; then
+    echo "ERROR: mocked creation failure for \${FULLSEND_MOCK_FAIL_TITLE}" >&2
+    exit 1
+  fi
   # Read --body from stdin if present (consume it so pipe doesn't break)
   cat > /dev/null
   echo '{"number":100,"key":"PROJ-100","title":"mock title","url":"https://mock.atlassian.net/browse/PROJ-100"}'
@@ -101,6 +105,8 @@ if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
         fi
       elif [[ "\${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"customfield_10050","required":true,"hasDefaultValue":false}]}'
+      elif [[ "\${JIRA_MOCK_REQUIRED_LABELS:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":true,"hasDefaultValue":false}]}'
       elif [[ "\${JIRA_MOCK_NO_LABELS:-}" == "1" ]]; then
         echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false}]}'
       elif [[ "\${JIRA_MOCK_NO_DESCRIPTION:-}" == "1" ]]; then
@@ -661,6 +667,18 @@ fi
 assert_no_writes "jira/required-field-no-writes"
 unset JIRA_MOCK_REQUIRED_FIELD
 
+export JIRA_MOCK_REQUIRED_LABELS="1"
+run_test_stdout "jira/required-labels-fails-before-create" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "requires fields scribe does not set: labels" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/required-labels-error-message"
+else
+  echo "FAIL: jira/required-labels-error-message"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_no_writes "jira/required-labels-no-writes"
+unset JIRA_MOCK_REQUIRED_LABELS
+
 # A search response that is not JSON, or has no issues array, must not be
 # read as "no duplicate": refuse to create.
 for bad_search in html no-issues; do
@@ -777,6 +795,10 @@ if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
     echo "Usage: fullsend issues create [flags]"
     exit 0
   fi
+  if [[ -n "\${FULLSEND_MOCK_FAIL_TITLE:-}" ]] && [[ "\$*" == *"--title \${FULLSEND_MOCK_FAIL_TITLE}"* ]]; then
+    echo "ERROR: mocked creation failure for \${FULLSEND_MOCK_FAIL_TITLE}" >&2
+    exit 1
+  fi
   cat > /dev/null
   echo '{"number":100,"key":"PROJ-100","title":"mock title","url":"https://mock.atlassian.net/browse/PROJ-100"}'
   exit 0
@@ -784,6 +806,53 @@ fi
 exit 1
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
+
+# Single failed create: verify that a run with only one failing proposal exits nonzero
+export SCRIBE_DRY_RUN="false"
+export FULLSEND_MOCK_FAIL_TITLE="Add dark mode"
+run_test_stdout "jira/single-failed-create-exits-nonzero" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "New issues created: 0" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/single-failed-create-zero-created"
+else
+  echo "FAIL: jira/single-failed-create-zero-created"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+unset FULLSEND_MOCK_FAIL_TITLE
+
+# Failed create followed by a successful create: verify that the failed proposal's
+# title is removed from NEW_ISSUE_TITLES, subsequent successful proposals remain
+# properly aligned in the summary and step summary, and the run exits non-zero.
+JIRA_TWO_ISSUES='{"topics":[],"new_issues":[{"title":"First will fail","summary":"Summary 1","body":"Body 1","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]},{"title":"Second will succeed","summary":"Summary 2","body":"Body 2","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":2,"omitted":0}}'
+export FULLSEND_MOCK_FAIL_TITLE="First will fail"
+export GITHUB_STEP_SUMMARY="${TMPDIR}/step-summary-create-fail.md"
+: > "${GITHUB_STEP_SUMMARY}"
+run_test_stdout "jira/failed-create-removes-title-and-exits-nonzero" "${JIRA_TWO_ISSUES}" "" true
+
+if grep -qF "New issues created: 1" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/failed-create-title-removed-from-summary"
+else
+  echo "FAIL: jira/failed-create-title-removed-from-summary — unexpected summary count"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+if grep -qF -- "[Second will succeed](https://mock.atlassian.net/browse/PROJ-100)" "${GITHUB_STEP_SUMMARY}" 2>/dev/null; then
+  echo "PASS: jira/failed-create-subsequent-url-aligned-with-correct-title"
+else
+  echo "FAIL: jira/failed-create-subsequent-url-aligned-with-correct-title — wrong title-URL pair in step summary"
+  cat "${GITHUB_STEP_SUMMARY}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+if grep -qF "issue creation(s) failed" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/failed-create-error-message-on-exit"
+else
+  echo "FAIL: jira/failed-create-error-message-on-exit — expected exit error not found"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+unset FULLSEND_MOCK_FAIL_TITLE GITHUB_STEP_SUMMARY
 export SCRIBE_DRY_RUN="true"
 
 export SCRIBE_JIRA_PROJECT="bad key"
