@@ -140,6 +140,28 @@ func runTriggerCases(t *testing.T, harnessFile string, cases []triggerCase) {
 	}
 }
 
+func setCommand(t *testing.T, ev map[string]any, command string) {
+	t.Helper()
+	sub(t, sub(t, ev, "transition"), "comment")["command"] = command
+}
+
+func setLabel(ev map[string]any, name, action string) {
+	ev["transition"] = map[string]any{
+		"kind":  "label_changed",
+		"label": map[string]any{"name": name, "action": action},
+	}
+}
+
+// toMRNote turns a GitHub PR comment fixture into the GitLab MR-note shape:
+// a change_proposal entity without linked_change_proposal.
+func toMRNote(t *testing.T, ev map[string]any) {
+	t.Helper()
+	entity := sub(t, ev, "entity")
+	entity["kind"] = "change_proposal"
+	delete(entity, "linked_change_proposal")
+	sub(t, ev, "source")["system"] = "gitlab"
+}
+
 func TestReviewTrigger(t *testing.T) {
 	runTriggerCases(t, "review.yaml", []triggerCase{
 		{name: "PR opened", fixture: "pr-opened.json", want: true},
@@ -333,7 +355,7 @@ func TestRetroTrigger(t *testing.T) {
 			name:    "/fs-retro comment on a PR",
 			fixture: "fs-fix-comment.json",
 			edit: func(t *testing.T, ev map[string]any) {
-				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+				setCommand(t, ev, "/fs-retro")
 			},
 			want: true,
 		},
@@ -341,7 +363,7 @@ func TestRetroTrigger(t *testing.T) {
 			name:    "/fs-retro comment on an issue",
 			fixture: "fs-fix-comment.json",
 			edit: func(t *testing.T, ev map[string]any) {
-				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+				setCommand(t, ev, "/fs-retro")
 				delete(sub(t, ev, "entity"), "linked_change_proposal")
 				delete(sub(t, ev, "state"), "change_proposal")
 			},
@@ -362,7 +384,7 @@ func TestRetroTrigger(t *testing.T) {
 			name:    "/fs-retro comment by a bot",
 			fixture: "fs-fix-comment.json",
 			edit: func(t *testing.T, ev map[string]any) {
-				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+				setCommand(t, ev, "/fs-retro")
 				sub(t, ev, "actor")["kind"] = "bot"
 			},
 			want: false,
@@ -372,7 +394,7 @@ func TestRetroTrigger(t *testing.T) {
 			fixture: "fs-fix-comment.json",
 			edit: func(t *testing.T, ev map[string]any) {
 				sub(t, ev, "transition")["kind"] = "comment_edited"
-				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+				setCommand(t, ev, "/fs-retro")
 			},
 			want: false,
 		},
@@ -380,7 +402,7 @@ func TestRetroTrigger(t *testing.T) {
 			name:    "/fs-retro comment on a Jira issue",
 			fixture: "jira-fs-triage-comment.json",
 			edit: func(t *testing.T, ev map[string]any) {
-				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+				setCommand(t, ev, "/fs-retro")
 			},
 			want: false,
 		},
@@ -388,7 +410,7 @@ func TestRetroTrigger(t *testing.T) {
 			name:    "/fs-retro comment on a discussion",
 			fixture: "discussion-fs-vouch-comment.json",
 			edit: func(t *testing.T, ev map[string]any) {
-				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+				setCommand(t, ev, "/fs-retro")
 			},
 			want: false,
 		},
@@ -423,28 +445,6 @@ func TestRetroTrigger(t *testing.T) {
 		{name: "ready-to-code label added to an issue", fixture: "ready-to-code-labeled.json", want: false},
 		{name: "issue opened", fixture: "issue-opened.json", want: false},
 	})
-}
-
-func setCommand(t *testing.T, ev map[string]any, command string) {
-	t.Helper()
-	sub(t, sub(t, ev, "transition"), "comment")["command"] = command
-}
-
-func setLabel(ev map[string]any, name, action string) {
-	ev["transition"] = map[string]any{
-		"kind":  "label_changed",
-		"label": map[string]any{"name": name, "action": action},
-	}
-}
-
-// toMRNote turns a GitHub PR comment fixture into the GitLab MR-note shape:
-// a change_proposal entity without linked_change_proposal.
-func toMRNote(t *testing.T, ev map[string]any) {
-	t.Helper()
-	entity := sub(t, ev, "entity")
-	entity["kind"] = "change_proposal"
-	delete(entity, "linked_change_proposal")
-	sub(t, ev, "source")["system"] = "gitlab"
 }
 
 func TestTriageTrigger(t *testing.T) {
