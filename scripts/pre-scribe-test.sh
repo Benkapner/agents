@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/test-lib.sh"
 parse_script_test_args "$@"
 
+PRE_SCRIPT="$(resolve_agent_script pre-scribe)"
 FAILURES=0
 
 TMPDIR="$(mktemp -d)"
@@ -728,70 +729,105 @@ MOCKEOF
 
 test_jira_backlog_page_cap_truncation() {
   local test_name="jira/backlog-page-cap-truncation"
-  local raw="${TMPDIR}/jira-raw-cap.json"
+  local runner_temp="${TMPDIR}/runner-jira-cap"
   local jira_bin="${TMPDIR}/jira-bin-cap"
-  mkdir -p "${jira_bin}"
+  mkdir -p "${runner_temp}" "${jira_bin}"
 
-  # Page cap = 1. Page 1 returns nextPageToken "p2" and isLast: false.
-  # Calling approximate-count fails (simulating API failure).
+  # Generate a dummy RSA key for the Google SA key file
+  local sa_key="${TMPDIR}/sa-key-jira-cap.json"
+  local priv_key="${TMPDIR}/priv-jira-cap.key"
+  openssl genrsa 2048 > "${priv_key}" 2>/dev/null
+  local priv_key_json
+  priv_key_json=$(awk '{printf "%s\\n", $0}' "${priv_key}")
+  cat > "${sa_key}" <<EOF
+{
+  "client_email": "test-sa@example.iam.gserviceaccount.com",
+  "private_key": "${priv_key_json}"
+}
+EOF
+
+  # Mock curl: handles Jira, Google OAuth, and Drive API search
   cat > "${jira_bin}/curl" <<'MOCKEOF'
 #!/usr/bin/env bash
-URL="" DATA="" PREV=""
+URL=""
+OUT_FILE=""
+PREV=""
 for arg in "$@"; do
   [[ "${arg}" == https://* ]] && URL="${arg}"
-  [[ "${PREV}" == "--data" ]] && DATA="${arg}"
+  [[ "${PREV}" == "-o" ]] && OUT_FILE="${arg}"
   PREV="${arg}"
 done
-if [[ "${URL}" == */search/approximate-count ]]; then
+
+if [[ "${URL}" == *oauth2.googleapis.com/token* ]]; then
+  echo '{"access_token":"fake-token"}'
+  exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files* ]]; then
+  # Return zero documents so pre-scribe writes scribe-meta.json and exits 0
+  if [[ -n "${OUT_FILE}" ]]; then
+    echo '{"files":[]}' > "${OUT_FILE}"
+    echo "200"
+  else
+    echo '{"files":[]}'
+  fi
+  exit 0
+elif [[ "${URL}" == */search/approximate-count* ]]; then
+  # Simulate failed approximate-count request
   exit 1
-else
-  echo '{"issues":[{"key":"PROJ-1","fields":{"summary":"First","description":null,"labels":[]}}],"nextPageToken":"p2","isLast":false}'
+elif [[ "${URL}" == */search/jql* ]]; then
+  # Return page with more results remaining (isLast: false)
+  echo '{"issues":[{"key":"PROJ-1","fields":{"summary":"Task 1","description":null,"labels":[]}}],"nextPageToken":"p2","isLast":false}'
+  exit 0
 fi
+exit 0
 MOCKEOF
   chmod +x "${jira_bin}/curl"
+
+  # Mock gh: returns empty arrays for forge context (closed issues, PRs, repo tree)
+  cat > "${jira_bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/git/trees"* ]]; then
+  echo '{"tree":[]}'
+else
+  echo '[]'
+fi
+exit 0
+MOCKEOF
+  chmod +x "${jira_bin}/gh"
 
   local out
   if ! out=$(
     PATH="${jira_bin}:${PATH}" \
-    JIRA_BASE_URL="https://mock.atlassian.net" JIRA_USER_EMAIL="bot@mock.example" \
-    JIRA_TOKEN="fake" SCRIBE_JIRA_PROJECT="PROJ" SCRIBE_JIRA_MAX_PAGES="1" bash -c '
-      set -euo pipefail
-      _gha_sanitize() { printf "%s" "$1"; }
-      source "$1/lib/jira-scribe-ops.lib.sh"
-      raw_file="$2"
-      pagination_rc=0
-      forge_fetch_open_issues_raw "unused" "${raw_file}" || pagination_rc=$?
-      paginated_total=$(forge_count_paginated_total "${raw_file}")
-      repo_open_count=$(forge_get_issue_count unused)
-      issue_count=1
-
-      # Truncation logic from pre-scribe
-      if [[ "${pagination_rc}" -eq 2 || "${SCRIBE_BACKLOG_PAGE_CAPPED:-false}" == "true" ]]; then
-        backlog_truncated=true
-        if [[ -n "${repo_open_count}" ]]; then
-          open_issue_total="${repo_open_count}"
-        else
-          open_issue_total="${issue_count}"
-        fi
-      elif [[ -n "${repo_open_count}" ]]; then
-        backlog_truncated=false
-        open_issue_total="${repo_open_count}"
-      else
-        backlog_truncated=false
-        open_issue_total="${issue_count}"
-      fi
-
-      echo "rc=${pagination_rc} capped=${SCRIBE_BACKLOG_PAGE_CAPPED:-false} count=${repo_open_count:-empty} truncated=${backlog_truncated} total=${open_issue_total}"
-    ' _ "${SCRIPT_DIR}" "${raw}" 2>&1
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${sa_key}" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake-jira-token" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    SCRIBE_JIRA_MAX_PAGES="1" \
+    bash "${PRE_SCRIPT}" 2>&1
   ); then
     echo "FAIL: ${test_name} — script failed: ${out}"
     FAILURES=$((FAILURES + 1))
     return
   fi
 
-  local last_line
-  last_line=$(printf '%s' "${out}" | tail -1)
-  if ! assert_eq "${test_name}: truncation forced despite failed count" "rc=2 capped=true count=empty truncated=true total=1" "${last_line}"; then return; fi
+  local meta_file="${runner_temp}/scribe-workspace/scribe-meta.json"
+  if [[ ! -f "${meta_file}" ]]; then
+    echo "FAIL: ${test_name} — scribe-meta.json was not generated"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local is_truncated
+  is_truncated=$(jq -r '.backlog_truncated' "${meta_file}")
+  if ! assert_eq "${test_name}: backlog_truncated in scribe-meta.json" "true" "${is_truncated}"; then
+    return
+  fi
 
   echo "PASS: ${test_name}"
 }
