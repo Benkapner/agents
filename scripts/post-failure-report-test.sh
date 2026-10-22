@@ -474,7 +474,11 @@ run_transient_detector_test "transient-response-headers-timeout" \
   'Get "https://api.github.com/repos/o/r": net/http: timeout awaiting response headers' "yes"
 run_transient_detector_test "transient-curl-ssl-connection-timeout" \
   "curl: (28) SSL connection timeout" "yes"
-run_transient_detector_test "non-transient-bare-timeout-in-branch-name" \
+run_transient_detector_test "transient-curl-connection-timeout-after" \
+  "curl: (28) Connection timeout after 10000 ms" "yes"
+run_transient_detector_test "transient-go-client-timeout-exceeded" \
+  'Get "https://api.github.com/repos/o/r": net/http: request canceled (Client.Timeout exceeded while awaiting headers)' "yes"
+run_transient_detector_test "non-transient-bare--timeout-in-branch-name" \
   "branch agent/42-fix-webhook-timeout already exists" "no"
 run_transient_detector_test "non-transient-422" \
   "HTTP 422: Validation Failed" "no"
@@ -620,6 +624,10 @@ run_comment_retry_test "failure-comment-retries-response-headers-timeout" \
   2 'Post "https://api.github.com/graphql": net/http: timeout awaiting response headers' 3 no
 run_comment_retry_test "failure-comment-retries-curl-ssl-connection-timeout" \
   2 'curl: (28) SSL connection timeout' 3 no
+run_comment_retry_test "failure-comment-retries-curl-connection-timeout-after" \
+  2 'curl: (28) Connection timeout after 10000 ms' 3 no
+run_comment_retry_test "failure-comment-retries-go-client-timeout-exceeded" \
+  2 'Get "https://api.github.com/repos/o/r": Client.Timeout exceeded while awaiting headers' 3 no
 
 # 503 every time — 3 attempts then last-resort label, stderr preserved
 run_comment_retry_test "failure-comment-gives-up-after-3" \
@@ -1138,6 +1146,49 @@ run_report_survives_label_failure_test \
   "report-to-issue-returns-0-when-label-also-fails" report_post_failure_to_issue
 run_report_survives_label_failure_test \
   "report-to-pr-returns-0-when-label-also-fails" report_post_failure_to_pr
+
+# The last-resort failure warning interpolates the raw (possibly unvalidated)
+# number. A crafted value must not reassemble into a live workflow command.
+run_last_resort_warning_escapes_number_test() {
+  local test_name="$1"
+  local payload=$'7:%0%0AA:error\n::error::pwned'
+  local output rc=0
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      _post_failure_create_label() { return 0; }
+      _post_failure_add_label() { return 1; }
+      export REPO_FULL_NAME="my-org/my-repo"
+      export PR_NUMBER="${payload}"
+      _post_failure_apply_failed_label "fix-agent-failed" "pr"
+    } 2>&1
+  ) || rc=$?
+
+  if [ "${rc}" -eq 0 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected a non-zero exit when the label add fails"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! echo "${output}" | grep -q 'Failed to apply last-resort'; then
+    echo "FAIL: ${test_name}"
+    echo "  expected the failure warning to be emitted"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if echo "${output}" | grep -qE '^::error|%0A|%0D'; then
+    echo "FAIL: ${test_name}"
+    echo "  crafted number reassembled into a workflow command or newline escape"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_last_resort_warning_escapes_number_test \
+  "last-resort-warning-escapes-crafted-number"
 
 echo ""
 if [ ${FAILURES} -gt 0 ]; then

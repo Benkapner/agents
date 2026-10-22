@@ -110,7 +110,7 @@ forge_is_transient_error() {
   # Specific phrases only: a bare "timeout" would match branch names such as
   # "agent/42-fix-webhook-timeout".
   if echo "${lower}" | grep -qE \
-    'tls handshake timeout|ssl connection timeout|timeout awaiting response headers'; then
+    'tls handshake timeout|ssl connection timeout|timeout awaiting response headers|connection timeout after|client\.timeout exceeded'; then
     return 0
   fi
   return 1

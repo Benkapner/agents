@@ -109,7 +109,7 @@ forge_is_transient_error() {
   # Specific phrases only: a bare "timeout" would match branch names such as
   # "agent/42-fix-webhook-timeout".
   if echo "${lower}" | grep -qE \
-    'tls handshake timeout|ssl connection timeout|timeout awaiting response headers'; then
+    'tls handshake timeout|ssl connection timeout|timeout awaiting response headers|connection timeout after|client\.timeout exceeded'; then
     return 0
   fi
   return 1
@@ -598,7 +598,11 @@ _post_failure_apply_failed_label() {
     return 0
   fi
 
-  gha_echo warning "Failed to apply last-resort ${label} label to ${target} #${number}"
+  # `number` may be the unvalidated raw env value on this path; escape it
+  # order-safely (not delete-based) before it reaches a workflow-command line.
+  local log_number
+  log_number="$(_forge_retry_sanitize "${number}")"
+  gha_echo warning "Failed to apply last-resort ${label} label to ${target} #${log_number}"
   return 1
 }
 

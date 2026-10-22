@@ -417,7 +417,11 @@ _post_failure_apply_failed_label() {
     return 0
   fi
 
-  gha_echo warning "Failed to apply last-resort ${label} label to ${target} #${number}"
+  # `number` may be the unvalidated raw env value on this path; escape it
+  # order-safely (not delete-based) before it reaches a workflow-command line.
+  local log_number
+  log_number="$(_forge_retry_sanitize "${number}")"
+  gha_echo warning "Failed to apply last-resort ${label} label to ${target} #${log_number}"
   return 1
 }
 
