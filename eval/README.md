@@ -50,7 +50,11 @@ them from the runtime copy of the config only. That includes a quality
 judge's `max_error_rate`, so a judge that errors (for example a 400 from
 the judge model) no longer fails the run or triggers a scoring retry: it
 shows up only as a `JUDGE ERROR` line in the log and in the summary's
-error count. A case that fails before the agent runs is still an
+error count. After scoring, every check that failed on a case is logged
+as `CASE CHECK FAILED: [<judge>] <case>: <reason>`, and every judge that
+gave a case no verdict as `CASE JUDGE ERROR: [<judge>] <case>: <error>`,
+gating or report-only alike; these lines change no exit code. A case
+that fails before the agent runs is still an
 infrastructure failure (exit 3). Review has no
 `max_turns` judge, because its turn count does not track the work done.
 
