@@ -8,11 +8,10 @@
 // from one with a small edit.
 //
 // This is its own module because the root module cannot be tidied without
-// the fullsend checkout replace that the behaviour workflow sets up.
-//
-// The cel-go version in go.mod matches fullsend's go.mod at the pinned
-// version. Keep them in sync: bump cel-go here to fullsend's version in the
-// same PR that moves the fullsend pin in the repository root go.mod.
+// the fullsend checkout replace that the behaviour workflow sets up. Keep its
+// cel-go version equal to fullsend's go.mod: bump it in the same change that
+// moves the fullsend pin. renovate.json disables updates for this go.mod so
+// the two cannot drift apart.
 package triggertest
 
 import (
@@ -71,6 +70,9 @@ func fixturesDir(t *testing.T) string {
 	// Resolve the fullsend version the repository root go.mod pins.
 	cmd := exec.Command("go", "mod", "download", "-json", "github.com/fullsend-ai/fullsend")
 	cmd.Dir = filepath.Join("..", "..")
+	// An ancestor go.work or an exported GOFLAGS (-mod=vendor, -modfile)
+	// would resolve a different module, or none.
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("downloading the pinned fullsend module: %v", err)
@@ -95,8 +97,13 @@ func loadFixture(t *testing.T, dir, name string) map[string]any {
 	return ev
 }
 
-func sub(m map[string]any, key string) map[string]any {
-	return m[key].(map[string]any)
+func sub(t *testing.T, m map[string]any, key string) map[string]any {
+	t.Helper()
+	v, ok := m[key].(map[string]any)
+	if !ok {
+		t.Fatalf("fixture field %q is %T, not an object", key, m[key])
+	}
+	return v
 }
 
 func TestReviewTrigger(t *testing.T) {
@@ -106,7 +113,7 @@ func TestReviewTrigger(t *testing.T) {
 	cases := []struct {
 		name    string
 		fixture string
-		edit    func(ev map[string]any)
+		edit    func(t *testing.T, ev map[string]any)
 		want    bool
 	}{
 		{name: "PR opened", fixture: "pr-opened.json", want: true},
@@ -116,15 +123,15 @@ func TestReviewTrigger(t *testing.T) {
 		{
 			name:    "PR marked ready",
 			fixture: "pr-opened.json",
-			edit: func(ev map[string]any) {
-				sub(ev, "transition")["kind"] = "marked_ready"
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "marked_ready"
 			},
 			want: true,
 		},
 		{
 			name:    "ready-for-review label added to a PR",
 			fixture: "pr-opened.json",
-			edit: func(ev map[string]any) {
+			edit: func(t *testing.T, ev map[string]any) {
 				ev["transition"] = map[string]any{
 					"kind":  "label_changed",
 					"label": map[string]any{"name": "ready-for-review", "action": "added"},
@@ -133,26 +140,38 @@ func TestReviewTrigger(t *testing.T) {
 			want: true,
 		},
 		{
+			name:    "ready-for-review label added to a PR by a bot",
+			fixture: "pr-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				ev["transition"] = map[string]any{
+					"kind":  "label_changed",
+					"label": map[string]any{"name": "ready-for-review", "action": "added"},
+				}
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: true,
+		},
+		{
 			name:    "/fs-review comment on a PR",
 			fixture: "fs-fix-comment.json",
-			edit: func(ev map[string]any) {
-				sub(sub(ev, "transition"), "comment")["command"] = "/fs-review"
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-review"
 			},
 			want: true,
 		},
 		{
 			name:    "/fs-review comment on a PR whose lookup failed",
 			fixture: "fs-fix-comment.json",
-			edit: func(ev map[string]any) {
-				sub(sub(ev, "transition"), "comment")["command"] = "/fs-review"
-				delete(sub(ev, "state"), "change_proposal")
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-review"
+				delete(sub(t, ev, "state"), "change_proposal")
 			},
 			want: true,
 		},
 		{
 			name:    "/fs-review comment on an MR",
 			fixture: "gitlab-mr-opened.json",
-			edit: func(ev map[string]any) {
+			edit: func(t *testing.T, ev map[string]any) {
 				ev["transition"] = map[string]any{
 					"kind":    "comment_added",
 					"comment": map[string]any{"command": "/fs-review", "body": "/fs-review"},
@@ -163,27 +182,44 @@ func TestReviewTrigger(t *testing.T) {
 		{
 			name:    "/fs-review comment on an issue",
 			fixture: "fs-fix-comment.json",
-			edit: func(ev map[string]any) {
-				sub(sub(ev, "transition"), "comment")["command"] = "/fs-review"
-				delete(sub(ev, "entity"), "linked_change_proposal")
-				delete(sub(ev, "state"), "change_proposal")
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-review"
+				delete(sub(t, ev, "entity"), "linked_change_proposal")
+				delete(sub(t, ev, "state"), "change_proposal")
 			},
 			want: false,
 		},
 		{
 			name:    "/fs-review comment by a bot",
 			fixture: "fs-fix-comment.json",
-			edit: func(ev map[string]any) {
-				sub(sub(ev, "transition"), "comment")["command"] = "/fs-review"
-				sub(ev, "actor")["kind"] = "bot"
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-review"
+				sub(t, ev, "actor")["kind"] = "bot"
 			},
 			want: false,
 		},
 		{
 			name:    "comment without a command",
 			fixture: "fs-fix-comment.json",
-			edit: func(ev map[string]any) {
-				delete(sub(sub(ev, "transition"), "comment"), "command")
+			edit: func(t *testing.T, ev map[string]any) {
+				delete(sub(t, sub(t, ev, "transition"), "comment"), "command")
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-review comment edited on a PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "comment_edited"
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-review"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-review comment on a Jira issue",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-review"
 			},
 			want: false,
 		},
@@ -192,7 +228,7 @@ func TestReviewTrigger(t *testing.T) {
 		{
 			name:    "other label added to a PR",
 			fixture: "pr-opened.json",
-			edit: func(ev map[string]any) {
+			edit: func(t *testing.T, ev map[string]any) {
 				ev["transition"] = map[string]any{
 					"kind":  "label_changed",
 					"label": map[string]any{"name": "kind/bug", "action": "added"},
@@ -203,7 +239,7 @@ func TestReviewTrigger(t *testing.T) {
 		{
 			name:    "ready-for-review label removed from a PR",
 			fixture: "pr-opened.json",
-			edit: func(ev map[string]any) {
+			edit: func(t *testing.T, ev map[string]any) {
 				ev["transition"] = map[string]any{
 					"kind":  "label_changed",
 					"label": map[string]any{"name": "ready-for-review", "action": "removed"},
@@ -214,12 +250,20 @@ func TestReviewTrigger(t *testing.T) {
 		{
 			name:    "ready-for-review label added to an issue",
 			fixture: "ready-to-code-labeled.json",
-			edit: func(ev map[string]any) {
-				sub(sub(ev, "transition"), "label")["name"] = "ready-for-review"
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "label")["name"] = "ready-for-review"
 			},
 			want: false,
 		},
 		{name: "ready-to-code label added to an issue", fixture: "ready-to-code-labeled.json", want: false},
+		{
+			name:    "PR reopened",
+			fixture: "pr-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "reopened"
+			},
+			want: false,
+		},
 		{name: "PR closed", fixture: "pr-closed.json", want: false},
 		{name: "MR merged", fixture: "gitlab-mr-merged.json", want: false},
 		{name: "review requested changes", fixture: "review-changes-requested.json", want: false},
@@ -230,7 +274,7 @@ func TestReviewTrigger(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := loadFixture(t, dir, tc.fixture)
 			if tc.edit != nil {
-				tc.edit(ev)
+				tc.edit(t, ev)
 			}
 			out, _, err := prg.Eval(map[string]any{"event": ev})
 			if err != nil {
@@ -242,6 +286,25 @@ func TestReviewTrigger(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("trigger = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Dispatch skips an agent whose trigger errors (for example on a missing
+// key), so the trigger must evaluate cleanly on every fixture shape.
+func TestReviewTriggerEvaluatesOnEveryFixture(t *testing.T) {
+	prg := compileTrigger(t, loadTrigger(t, filepath.Join("..", "review.yaml")))
+	dir := fixturesDir(t)
+	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("listing fixtures in %s: %v", dir, err)
+	}
+	for _, f := range files {
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			ev := loadFixture(t, dir, filepath.Base(f))
+			if _, _, err := prg.Eval(map[string]any{"event": ev}); err != nil {
+				t.Errorf("evaluating trigger: %v", err)
 			}
 		})
 	}

@@ -27,6 +27,8 @@ All automatic triggers require the actor to have write-level repository permissi
 
 It can also be triggered manually with the `/fs-review` command.
 
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch that selects the same events on GitHub (on GitLab, MR opened and `/fs-review` only). Dispatch does not evaluate it for the built-in review agent yet, so the routing above is what runs today.
+
 ## Commands
 
 | Command | Where | Effect |
