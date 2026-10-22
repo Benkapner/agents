@@ -33,6 +33,30 @@ else
   echo "PASS: bundled-script-has-gitleaks-install"
 fi
 
+# Lib-defined code is only inlined into the bundle: in bundled mode check the
+# bundle (so a stale bundle is caught), in source mode check the lib itself.
+if [[ "${SCRIPT_TEST_TARGET:-source}" == "bundled" ]]; then
+  FAILURE_LIB_TARGET="${POST_SCRIPT}"
+else
+  FAILURE_LIB_TARGET="${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
+fi
+
+if ! grep -q 'forge_retry_transient' "${FAILURE_LIB_TARGET}"; then
+  echo "FAIL: post-failure-has-transient-retry"
+  echo "  ${FAILURE_LIB_TARGET} missing forge_retry_transient"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-transient-retry"
+fi
+
+if ! grep -q 'fix-agent-failed' "${FAILURE_LIB_TARGET}"; then
+  echo "FAIL: post-failure-has-last-resort-label"
+  echo "  ${FAILURE_LIB_TARGET} missing fix-agent-failed last-resort label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-last-resort-label"
+fi
+
 # Fetch + rebase must run after forge_set_push_remote and before the push
 # so reconstructed GitLab history becomes a fast-forward (issue #1228).
 if ! grep -q 'git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"' "${POST_SCRIPT}"; then
