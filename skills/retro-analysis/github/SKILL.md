@@ -89,17 +89,21 @@ gh api \
   "search/issues?q=<fix+keywords>+repo:<target_repo>+is:issue+is:open&per_page=20" \
   --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, url: .html_url, body: .body}'
 
-# Root-cause-keyed: subsystem/component keywords across the layer repos the
-# routing rules name (repeat repo: for each — do NOT use org:).
+# Root-cause-keyed: subsystem/component keywords across the three layer repos
+# the routing rules name — platform, agents, and source ($REPO_FULL_NAME).
+# Name all three explicitly (not <target_repo>, which is only whichever layer
+# this proposal routes to, and not org:, which reaches private/unrelated repos).
+# No is:open — the close-reason rules (duplicate / not planned / completed) must
+# apply across layers, so this returns closed issues too, with state_reason and
+# closed_at projected for the 30-day not-planned rule.
 gh api \
-  "search/issues?q=<subsystem+or+root-cause+keywords>+repo:fullsend-ai/fullsend+repo:<agents-repo>+repo:<target_repo>+is:issue+is:open&per_page=20" \
-  --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, url: .html_url, body: .body}'
+  "search/issues?q=<subsystem+or+root-cause+keywords>+repo:fullsend-ai/fullsend+repo:<agents-repo>+repo:$REPO_FULL_NAME+is:issue&per_page=20" \
+  --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
 
-# Include closed issues to apply the close-reason rules (duplicate / not
-# planned / completed). state_reason carries the close reason; closed_at is
-# required by the 30-day not-planned rule.
+# Fix-keyed closed issues: the fix-keyed pass above is open-only, so this
+# applies the close-reason rules to fix-keyed hits in target_repo.
 gh api \
-  "search/issues?q=<keywords>+repo:<target_repo>+is:issue&per_page=20" \
+  "search/issues?q=<fix+keywords>+repo:<target_repo>+is:issue+is:closed&per_page=20" \
   --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
 
 # Follow a duplicate chain to its canonical. GitHub's native "close as duplicate"

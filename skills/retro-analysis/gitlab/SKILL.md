@@ -88,11 +88,14 @@ curl --fail --silent --show-error \
   | jq '.[] | {iid: .iid, title: .title, state: .state, web_url: .web_url, description: .description}'
 
 # Root-cause-keyed: run once per layer project (platform, agents, source),
-# encoding each path, and merge. Do not use a group-wide search.
+# encoding each path, and merge. Do not use a group-wide search. No state=opened
+# — the close-reason rules must apply across layers, so this returns closed
+# issues too, projecting closed_at, labels and _links.closed_as_duplicate_of
+# (GitLab has no close-reason API; see the close-reason note below).
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/<layer-project-encoded>/issues?search=<subsystem+or+root-cause+keywords>&state=opened&per_page=20" \
-  | jq '.[] | {iid: .iid, title: .title, state: .state, web_url: .web_url, description: .description}'
+  "https://${GITLAB_HOST}/api/v4/projects/<layer-project-encoded>/issues?search=<subsystem+or+root-cause+keywords>&per_page=20" \
+  | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, closed_as_duplicate_of: ._links.closed_as_duplicate_of, web_url: .web_url, description: .description}'
 
 # Include closed issues to apply the close-reason rules. GitLab has NO
 # close-reason API, so unlike GitHub's state_reason the reason must be inferred:

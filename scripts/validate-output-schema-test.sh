@@ -894,6 +894,22 @@ run_test "retro-found-bare-hash-string-rejected" \
   '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"found":["#1887"]}}]}' \
   "false"
 
+# found accepts a nested GitLab group/subgroup/project#N reference.
+run_test "retro-found-nested-gitlab-group-ref" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"found":["group/subgroup/project#12"]}}]}' \
+  "true"
+
+# A large receipt must NOT fail whole-result validation (no maxItems): the
+# non-poisoning design requires a big found/searched to pass the schema and be
+# handled by the post-retro gate, not reject the whole result.
+run_test "retro-large-receipt-passes-schema" \
+  "$(python3 -c '
+import json
+found=list(range(1,31))
+searched=["phrase %d" % i for i in range(1,21)]
+print(json.dumps({"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":searched,"found":found}}]}))')" \
+  "true"
+
 # Missing receipt passes the schema (optional) — the post-retro gate skips it.
 run_test "retro-missing-related-issues-passes-schema" \
   '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v"}]}' \
