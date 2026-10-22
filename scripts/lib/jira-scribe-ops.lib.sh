@@ -163,6 +163,7 @@ forge_fetch_open_issues_raw() {
   _scribe_jira_search_paginated "$(_scribe_jira_backlog_jql)" \
     '["summary","description","labels","status"]' "${output_file}" || rc=$?
   if [[ ${rc} -eq 2 ]]; then
+    # shellcheck disable=SC2034 # SCRIBE_BACKLOG_PAGE_CAPPED consumed by pre-scribe
     SCRIBE_BACKLOG_PAGE_CAPPED=true
     return 2
   fi
@@ -239,10 +240,14 @@ _scribe_jira_createmeta_all() {
     # Merge page items via stdin/file to avoid --argjson argument-size limits
     # on projects with large allowedValues lists. Strip allowedValues to
     # reduce accumulated size since it is not needed for validation.
-    printf '%s' "${resp}" | jq -c '(.issueTypes // .values // .fields // []) | map(del(.allowedValues))' \
+    if printf '%s' "${resp}" | jq -c '(.issueTypes // .values // .fields // []) | map(del(.allowedValues))' \
       | jq -sc '.[0] + .[1]' "${items_file}" - > "${items_file}.tmp" \
-      && mv "${items_file}.tmp" "${items_file}" \
-      || { rm -f "${items_file}" "${items_file}.tmp"; return 1; }
+      && mv "${items_file}.tmp" "${items_file}"; then
+      :
+    else
+      rm -f "${items_file}" "${items_file}.tmp"
+      return 1
+    fi
     total=$(printf '%s' "${resp}" | jq -r '.total // empty')
     # Distinguish absent isLast from explicit false: jq's `// empty`
     # converts false to empty, so use has() to detect absence.
