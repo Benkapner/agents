@@ -4811,6 +4811,7 @@ run_ux_flag_test() {
   local expected_action="$5"
   local expected_exit="${6:-0}"
   local json_content="${7:-}"
+  local expected_ledger_action="${8:-}"
   local run_dir="${TMPDIR}/run-ux-${test_name}"
   local exit_code=0
 
@@ -4870,6 +4871,19 @@ EOF
     FAILURES=$((FAILURES + 1))
     return
   fi
+  if [[ -n "${expected_ledger_action}" ]]; then
+    local marker encoded actual_ledger_action
+    marker="$(jq -r '.body // ""' "${TMPDIR}/last-result.json" | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
+    encoded="${marker#<!-- fullsend:review-findings-v2:}"
+    encoded="${encoded% -->}"
+    actual_ledger_action="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -r '.action // empty' 2>/dev/null || true)"
+    if [[ "${actual_ledger_action}" != "${expected_ledger_action}" ]]; then
+      echo "FAIL: ${test_name} — expected ledger action ${expected_ledger_action}, got ${actual_ledger_action}"
+      [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
   echo "PASS: ${test_name}"
 }
 
@@ -4884,12 +4898,17 @@ run_ux_flag_test "opt-out-no-ux-request-changes-low" "false" "0" "1" "request-ch
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
 run_ux_flag_test "opt-out-no-ux-reject-low" "false" "0" "1" "reject" 0 \
   '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
+run_ux_flag_test "opt-out-no-ux-request-changes-empty" "false" "0" "0" "request-changes" 0 \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[]}'
 run_ux_flag_test "opt-out-actionable-low-remains-blocking" "false" "0" "1" "request-changes" 0 \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Actionable logic issue","actionable":true}]}'
 run_ux_flag_test "opt-out-ux-only-request-changes-becomes-comment" "false" "0" "0" "comment" 0 \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"}]}'
 run_ux_flag_test "opt-out-ux-only-reject-becomes-comment" "false" "0" "0" "comment" 0 \
   '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"}]}'
+run_ux_flag_test "opt-out-ux-reject-with-low-logic-becomes-comment" "false" "0" "1" "comment" 0 \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"critical","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}' \
+  comment
 
 # Opting out excludes prior UX rows from blocking calculations without
 # deleting their open/closed history from the next ledger projection.
@@ -4897,7 +4916,8 @@ run_ux_optout_ledger_history_test() {
   local test_name="ux-optout-preserves-ledger-history"
   local run_dir="${TMPDIR}/run-${test_name}"
   local prior_file="${run_dir}/prior.json"
-  local marker encoded exit_code=0
+  local exit_code=0
+  local marker encoded
   mkdir -p "${run_dir}/iteration-1/output"
   printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
     > "${run_dir}/iteration-1/output/agent-result.json"
@@ -4913,6 +4933,7 @@ run_ux_optout_ledger_history_test() {
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_URL="https://github.com/test-org/test-repo/pull/99"
     export FULLSEND_FORGE="github"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="false"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=""
     export MOCK_PR_FILES="src/main.go"

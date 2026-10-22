@@ -969,11 +969,9 @@ if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" ]]; then
     if (.findings | type) == "array" then
       .findings |= map(select(.category != "uxd-evaluate-code-heuristics"))
       | if $removed > 0 and (.action == "request-changes" or .action == "reject") then
-          if .action == "reject" then
-            if ((.findings // []) | length) == 0 then .action = "comment" else . end
-          elif ([.findings[]?
-                 | select((.severity | IN("medium", "high", "critical"))
-                          or (.actionable // false))] | length) == 0 then
+          if ([.findings[]?
+               | select((.severity | IN("medium", "high", "critical"))
+                        or (.actionable // false))] | length) == 0 then
             .action = "comment"
           else .
           end
