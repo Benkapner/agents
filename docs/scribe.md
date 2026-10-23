@@ -192,7 +192,7 @@ deployment and keep CI logs and artifacts private, including on dry-runs.
 
 #### Supplying Jira credentials in CI
 
-Scribe resolves `${JIRA_TOKEN}` and `${JIRA_USER_EMAIL}` host-side on the CI
+Scribe resolves `${JIRA_BASE_URL}`, `${JIRA_TOKEN}`, and `${JIRA_USER_EMAIL}` host-side on the CI
 runner via `env.runner`. The token is never passed into the sandboxed agent
 container. Configure these credentials in your CI platform as follows:
 
@@ -202,32 +202,38 @@ container. Configure these credentials in your CI platform as follows:
    repository or organization.
 2. Under **Repository secrets**, add `JIRA_TOKEN` with your Atlassian Cloud API
    token ([generated from your Atlassian account](https://id.atlassian.com/manage-profile/security/api-tokens)).
-3. Add `JIRA_USER_EMAIL` as a secret (or under the **Variables** tab).
-4. In your workflow YAML (e.g. `.github/workflows/scribe.yml`), pass them into
+3. Under the **Variables** tab, add `JIRA_BASE_URL` with your Jira Cloud instance
+   URL (`https://<site>.atlassian.net`).
+4. Add `JIRA_USER_EMAIL` as a secret (or under the **Variables** tab).
+5. In your workflow YAML (e.g. `.github/workflows/scribe.yml`), pass them into
    the job step's `env`:
 
 ```yaml
 - name: Run scribe
   env:
+    JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
     JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
     JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     # ... other required inputs (SCRIBE_REPO, SCRIBE_SEARCH_QUERY, etc.)
   run: |
-    fullsend run scribe
+    fullsend run scribe --fullsend-dir . --target-repo "${GITHUB_WORKSPACE}"
 ```
 
 **GitLab CI/CD:**
 
 1. Navigate to **Settings** → **CI/CD** → **Variables** in your project or group.
-2. Add `JIRA_TOKEN`:
+2. Add `JIRA_BASE_URL`:
+   - **Type:** `Variable`
+   - **Value:** `https://<site>.atlassian.net`
+3. Add `JIRA_TOKEN`:
    - **Type:** `Variable`
    - **Mask variable:** checked (ensures the token is masked in job logs)
    - **Protect variable:** leave unchecked unless the Scribe job runs
      exclusively on protected branches
    - **Expand variable reference:** unchecked (raw string)
-3. Add `JIRA_USER_EMAIL` with the associated account email.
-4. GitLab CI automatically injects project variables into the runner
+4. Add `JIRA_USER_EMAIL` with the associated account email.
+5. GitLab CI automatically injects project variables into the runner
    environment, so no extra workflow mapping is required.
 
 ### GitLab host validation

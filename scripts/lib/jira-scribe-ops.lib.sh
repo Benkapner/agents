@@ -148,8 +148,12 @@ _scribe_jira_search_paginated() {
       echo "ERROR: Jira JQL search response could not be parsed" >&2
       return 1
     }
-    if [[ -z "${token}" ]] || [[ "${is_last}" == "true" ]]; then
+    if [[ "${is_last}" == "true" ]]; then
       return 0
+    fi
+    if [[ -z "${token}" ]]; then
+      echo "ERROR: Jira JQL search returned isLast=false with no nextPageToken" >&2
+      return 1
     fi
   done
   echo "WARNING: Jira search stopped after ${SCRIBE_JIRA_MAX_PAGES} pages; results are truncated" >&2
@@ -373,8 +377,7 @@ forge_create_issue() {
     --title "${title}" \
     --body - \
     --jira-url "${JIRA_BASE_URL}" \
-    --jira-email "${JIRA_USER_EMAIL}" \
-    --token "${JIRA_TOKEN}") || {
+    --jira-email "${JIRA_USER_EMAIL}") || {
     echo "ERROR: forge_create_issue: fullsend issues create failed in project ${SCRIBE_JIRA_PROJECT}" >&2
     return 1
   }

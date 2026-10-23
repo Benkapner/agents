@@ -120,6 +120,8 @@ if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
         echo '<html>maintenance</html>'
       elif [[ "\${JIRA_MOCK_BAD_SEARCH:-}" == "no-issues" ]]; then
         echo '{"isLast":true}'
+      elif [[ "\${JIRA_MOCK_BAD_SEARCH:-}" == "islast-false-no-token" ]]; then
+        echo '{"issues":[],"isLast":false}'
       elif [[ "\${JIRA_MOCK_ENDLESS:-}" == "1" ]]; then
         echo '{"issues":[{"key":"PROJ-3","fields":{"summary":"Unrelated"}}],"nextPageToken":"more","isLast":false}'
       elif [[ "\${DATA}" == *'添加深色模式'* ]]; then
@@ -323,6 +325,22 @@ run_test_stdout "github/public-safe-false-rejected" \
 run_test_stdout "github/sensitive-email-rejected" \
   '{"topics":[{"topic":"Contact follow-up","summary":"**Meeting update — 2026-04-28**\n\nReach out at alice@example.com.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
   "contains sensitive content"
+if grep -qF "alice@example.com" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: github/sensitive-email-not-in-stdout — sensitive text leaked to stdout"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: github/sensitive-email-not-in-stdout"
+fi
+
+run_test_stdout "github/sensitive-title-rejected" \
+  '{"topics":[],"new_issues":[{"title":"Contact alice@example.com","summary":"Follow up.","body":"## Problem\nContact.\n\n## Acceptance criteria\n- [ ] Done","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "contains sensitive content"
+if grep -qF "alice@example.com" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: github/sensitive-title-not-in-stdout — sensitive title leaked to stdout"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: github/sensitive-title-not-in-stdout"
+fi
 
 run_test_stdout "github/code-block-rejected" \
   '{"topics":[{"topic":"Config change","summary":"**Meeting update — 2026-04-28**\n\nUse ```yaml\nkey: value\n``` in the workflow.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
@@ -606,6 +624,12 @@ else
   cat "${FULLSEND_LOG}" 2>/dev/null || true
   FAILURES=$((FAILURES + 1))
 fi
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qF -- '--token'; then
+  echo "FAIL: jira/live-create-no-token-arg — token exposed in command line arguments"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/live-create-no-token-arg"
+fi
 if grep -q '^gh issue create' "${GH_LOG}" 2>/dev/null; then
   echo "FAIL: jira/live-no-github-issue — GitHub issue created on Jira path"
   FAILURES=$((FAILURES + 1))
@@ -681,7 +705,7 @@ unset JIRA_MOCK_REQUIRED_LABELS
 
 # A search response that is not JSON, or has no issues array, must not be
 # read as "no duplicate": refuse to create.
-for bad_search in html no-issues; do
+for bad_search in html no-issues islast-false-no-token; do
   export JIRA_MOCK_BAD_SEARCH="${bad_search}"
   run_test_stdout "jira/live-malformed-search-${bad_search}-refused" "${JIRA_NEW_ISSUE}" \
     "Jira duplicate check failed" true
@@ -691,6 +715,15 @@ for bad_search in html no-issues; do
     echo "FAIL: jira/malformed-search-${bad_search}-error-message"
     cat "${TMPDIR}/stdout.log"
     FAILURES=$((FAILURES + 1))
+  fi
+  if [[ "${bad_search}" == "islast-false-no-token" ]]; then
+    if grep -qF "ERROR: Jira JQL search returned isLast=false with no nextPageToken" "${TMPDIR}/stdout.log"; then
+      echo "PASS: jira/malformed-search-islast-false-specific-error-message"
+    else
+      echo "FAIL: jira/malformed-search-islast-false-specific-error-message"
+      cat "${TMPDIR}/stdout.log"
+      FAILURES=$((FAILURES + 1))
+    fi
   fi
   assert_no_writes "jira/malformed-search-${bad_search}-no-writes"
 done
@@ -726,9 +759,27 @@ unset JIRA_MOCK_NO_LABELS
 JIRA_SENSITIVE_LABEL_ISSUE="${JIRA_NEW_ISSUE//\"meeting-notes\"/\"jane@example.com\"}"
 run_test_stdout "jira/live-sensitive-label-rejected" "${JIRA_SENSITIVE_LABEL_ISSUE}" "GATE REJECTED"
 assert_no_writes "jira/sensitive-label-no-writes"
+if grep -qF "jane@example.com" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira/sensitive-label-not-in-stdout — sensitive label leaked to stdout"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/sensitive-label-not-in-stdout"
+fi
 JIRA_UNICODE_LABEL_ISSUE="${JIRA_NEW_ISSUE//\"meeting-notes\"/\"notes\\u200bx\"}"
 run_test_stdout "jira/live-suspicious-unicode-label-rejected" "${JIRA_UNICODE_LABEL_ISSUE}" "GATE REJECTED"
 assert_no_writes "jira/suspicious-unicode-label-no-writes"
+
+# Large multiline label list: verify that pipefail does not cause early-exit SIGPIPE to drop detection
+LARGE_LABELS_JSON=$(jq -cn '["confidential@example.com"] + [range(500) | "label\(.)"]')
+JIRA_LARGE_SENSITIVE_LABELS_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c --argjson l "${LARGE_LABELS_JSON}" '.new_issues[0].labels = $l')
+run_test_stdout "jira/live-large-sensitive-label-rejected" "${JIRA_LARGE_SENSITIVE_LABELS_ISSUE}" "GATE REJECTED"
+assert_no_writes "jira/large-sensitive-label-no-writes"
+if grep -qF "confidential@example.com" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira/large-sensitive-label-not-in-stdout — sensitive label leaked to stdout"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/large-sensitive-label-not-in-stdout"
+fi
 export SCRIBE_DRY_RUN="true"
 
 # Label PUT payload shape: verify that the PUT sends the correct
