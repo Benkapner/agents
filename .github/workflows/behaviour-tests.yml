@@ -356,9 +356,9 @@ jobs:
           TEST_ACTOR_WRITE_PAT: ${{ secrets.AGENTS_BT_ACTOR_WRITE_PAT }}
           TEST_ACTOR_TRIAGE_PAT: ${{ secrets.AGENTS_BT_ACTOR_TRIAGE_PAT }}
           TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.AGENTS_BT_ACTOR_OUTSIDER_PAT }}
-          # The suite writes failed-scenario debug logs, workflow-run logs and
-          # sandbox traces here; slot repos are deleted at teardown, so this is
-          # the only copy. Redacted and uploaded by the steps below.
+          # The suite writes failed-scenario debug logs and workflow-run logs
+          # here; slot repos are deleted at teardown, so they are lost
+          # otherwise. Redacted and uploaded by the steps below.
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
         shell: bash
         run: |
@@ -383,7 +383,9 @@ jobs:
         with:
           # Pinned here, not taken from go.mod: go.mod comes from the PR head,
           # and PR-head code must not control artifact redaction (see
-          # fullsend#5221). Bump this sha deliberately, like an action pin.
+          # fullsend#5221). Bump this sha deliberately, like an action pin,
+          # and at least when go.mod moves past it, so redaction keeps up
+          # with what the suite writes into the artifact dir.
           repository: fullsend-ai/fullsend
           ref: 10adac08026bb3fd7a2410b80dc2c57148c17c48
           sparse-checkout: scripts/redact-behaviour-artifacts.sh
@@ -409,8 +411,10 @@ jobs:
           E2E_GCP_PROJECT_ID: ${{ secrets.AGENTS_BT_E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.AGENTS_BT_E2E_GCP_WIF_PROVIDER }}
           E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.AGENTS_BT_E2E_GCP_SERVICE_ACCOUNT }}
-        # Clean environment so nothing the PR head put on PATH or in the job
-        # env reaches the redaction toolchain.
+        # Clean environment so variables the PR head set (LD_PRELOAD,
+        # BASH_ENV, PATH) cannot affect redaction by accident. The trust
+        # boundary is the gate job: authorized PR code already sees these
+        # secrets during the test step.
         run: |
           exec /usr/bin/env -i \
             PATH=/usr/bin:/bin \
