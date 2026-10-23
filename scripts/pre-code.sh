@@ -217,7 +217,8 @@ GITHUB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=forge-transient-retry.lib.sh
 # (already bundled: lib/forge-transient-retry.lib.sh)
-# forge_push_branch: commits are created through the API so GitHub signs them.
+# forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
+# API publish that gets the commits signed by GitHub.
 # shellcheck source=github-signed-push.lib.sh
 # BEGIN bundled: lib/github-signed-push.lib.sh
 # shellcheck shell=bash
@@ -229,7 +230,8 @@ GITHUB_CODE_OPS_SH_LOADED=1
 # creates for an App installation token itself, as long as the request sets
 # no author, committer or signature. forge_push_branch rebuilds each commit
 # origin lacks (blobs, tree, commit, ref) and moves the local branch onto
-# the result.
+# the result. It takes this path only when GITHUB_SIGNED_COMMITS is "true";
+# otherwise it is a plain `git push`.
 #
 # The rebuilt commit's author is therefore the App's bot user; the sandbox
 # identity survives in an `Authored-by: name <email>` trailer, which
@@ -242,6 +244,8 @@ GITHUB_CODE_OPS_SH_LOADED=1
 # fullsend-ai/agents#357.
 #
 # Expected globals:
+#   GITHUB_SIGNED_COMMITS — "true" publishes through the API; anything else
+#                    is a plain git push
 #   REPO_FULL_NAME — owner/repo
 #   PUSH_TOKEN     — GitHub App installation token (GH_TOKEN as fallback)
 #   GIT_BOT_EMAIL  — the App bot's noreply address; only a commit it
@@ -464,10 +468,17 @@ _signed_push_update_ref() {
 # Drop-in for `git push -u origin BRANCH`: publishes the current branch's
 # commits that origin lacks through the API, updates origin/BRANCH, and
 # moves the local branch and its upstream onto the commits GitHub created.
+# Unless GITHUB_SIGNED_COMMITS is "true", it is that git push.
 # A non-fast-forward update needs --force-with-lease and, as with git, is
 # refused once origin/BRANCH differs from the remote-tracking ref.
 forge_push_branch() {
   local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
+  if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
+    local branch="$1"
+    shift
+    git push "$@" -u origin -- "${branch}"
+    return
+  fi
   _SIGNED_PUSH_DIR="$(mktemp -d)"
   _SIGNED_PUSH_MAP="${_SIGNED_PUSH_DIR}/commits"
   _SIGNED_PUSH_BLOBS="${_SIGNED_PUSH_DIR}/blobs"

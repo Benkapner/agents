@@ -37,6 +37,15 @@ else
   echo "PASS: bundled-script-has-signed-push"
 fi
 
+# The switch that keeps the publish on git push unless enabled.
+if ! grep -q 'GITHUB_SIGNED_COMMITS' "${SCRIPT_DIR}/post-fix.sh"; then
+  echo "FAIL: bundled-script-has-signed-commits-switch"
+  echo "  scripts/post-fix.sh does not carry the GITHUB_SIGNED_COMMITS switch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-commits-switch"
+fi
+
 if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-gitleaks-install"
   echo "  ${POST_SCRIPT} missing install_gitleaks"
@@ -296,6 +305,26 @@ if yq -e '.env.runner.FIX_CONFLICT_UPDATE_STRATEGY == "merge"' "${FIX_HARNESS}" 
   echo "PASS: fix-conflict-strategy-default-merge"
 else
   echo "FAIL: fix-conflict-strategy-default-merge — FIX_CONFLICT_UPDATE_STRATEGY must default to merge in harness/fix.yaml runner and sandbox"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# harness/fix.yaml ships GITHUB_SIGNED_COMMITS off, in its GitHub block
+# only; the eval overlay the root config.yaml registers turns it on so the
+# functional evals keep exercising the API path.
+FIX_EVAL_HARNESS="${SCRIPT_DIR}/../eval/harness/fix.yaml"
+ROOT_CONFIG="${SCRIPT_DIR}/../config.yaml"
+if yq -e '.forge.github.env.runner.GITHUB_SIGNED_COMMITS == "false"' "${FIX_HARNESS}" >/dev/null \
+   && yq -e '[.env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS, .forge.github.env.sandbox.GITHUB_SIGNED_COMMITS, .forge.gitlab.env.runner.GITHUB_SIGNED_COMMITS, .forge.gitlab.env.sandbox.GITHUB_SIGNED_COMMITS] | map(select(. != null)) | length == 0' "${FIX_HARNESS}" >/dev/null; then
+  echo "PASS: fix-harness-signed-commits-default-off"
+else
+  echo "FAIL: fix-harness-signed-commits-default-off — GITHUB_SIGNED_COMMITS must be \"false\" in forge.github.env.runner of harness/fix.yaml and set nowhere else"
+  FAILURES=$((FAILURES + 1))
+fi
+if yq -e '.base == "../../harness/fix.yaml" and .env.runner.GITHUB_SIGNED_COMMITS == "true"' "${FIX_EVAL_HARNESS}" >/dev/null \
+   && yq -e '.agents[] | select(.source == "eval/harness/fix.yaml")' "${ROOT_CONFIG}" >/dev/null; then
+  echo "PASS: eval-fix-harness-signed-commits-on"
+else
+  echo "FAIL: eval-fix-harness-signed-commits-on — eval/harness/fix.yaml must extend harness/fix.yaml with GITHUB_SIGNED_COMMITS \"true\" and be registered in config.yaml"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -730,6 +759,7 @@ run_postfix_integration_test() {
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
   ) > "${INTEGRATION_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1038,6 +1068,7 @@ Signed-off-by: Human User <human@example.com>" -q
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export TARGET_BRANCH="main"
     export PRE_AGENT_HEAD="${pre_rebase_head}"
     bash "${POST_SCRIPT}"
@@ -1123,6 +1154,7 @@ run_sec_postfix_test() {
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     bash "${POST_SCRIPT}"
   ) > "${SEC_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -1540,6 +1572,7 @@ run_prefix_github_validation_test() {
   # shellcheck disable=SC2030,SC2031
   (
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export REPO_FULL_NAME="${repo_full_name}"
     export PR_NUMBER="42"
     export TRIGGER_SOURCE="test-user"
@@ -1635,6 +1668,7 @@ MOCK
   (
     export PATH="${base}/bin:${PATH}"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_NUMBER="99"
     export TRIGGER_SOURCE="fullsend-ai-review[bot]"
@@ -1810,6 +1844,7 @@ EOF
   (
     export PATH="${base}/bin:${PATH}"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_NUMBER="99"
     export TRIGGER_SOURCE="fullsend-ai-review[bot]"
@@ -1902,6 +1937,21 @@ esac
 MOCKEOF
 chmod +x "${PUSH_REBASE_MOCK_BIN}/gh"
 
+# With GITHUB_SIGNED_COMMITS off, run_push_rebase_postfix puts this gh in
+# front of the mock: a Git Data API call fails the run, everything else is
+# served by the mock the scenario chose (PUSH_REBASE_DELEGATE_GH).
+PUSH_REBASE_OFF_BIN="${PUSH_REBASE_TMPDIR}/offbin"
+mkdir -p "${PUSH_REBASE_OFF_BIN}"
+cat > "${PUSH_REBASE_OFF_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "$1 $2" = "api -X" ]; then
+  echo "unexpected Git Data API call on the plain-push path: $*" >&2
+  exit 99
+fi
+exec "${PUSH_REBASE_DELEGATE_GH}" "$@"
+MOCKEOF
+chmod +x "${PUSH_REBASE_OFF_BIN}/gh"
+
 PUSH_REBASE_REAL_GIT="$(which git)"
 cat > "${PUSH_REBASE_MOCK_BIN}/git" <<MOCKEOF
 #!/usr/bin/env bash
@@ -1941,6 +1991,13 @@ run_push_rebase_postfix() {
     # same way GIT_BOT_EMAIL below does, so GitLab-specific gating can be
     # exercised without a second copy of this harness.
     export FULLSEND_FORGE="${FULLSEND_FORGE:-github}"
+    # The publish path under test: the API unless a caller exports
+    # GITHUB_SIGNED_COMMITS=false, the fleet default in harness/fix.yaml.
+    export GITHUB_SIGNED_COMMITS="${GITHUB_SIGNED_COMMITS:-true}"
+    if [ "${GITHUB_SIGNED_COMMITS}" != "true" ]; then
+      export PUSH_REBASE_DELEGATE_GH="${mock_bin}/gh"
+      export PATH="${PUSH_REBASE_OFF_BIN}:${PATH}"
+    fi
     if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
       # Only needed on the gitlab path (setup() validates PR_URL against
       # REPO_FULL_NAME/PR_NUMBER and derives GITLAB_HOST from it); harmless
@@ -2294,7 +2351,7 @@ MOCKEOF
 # post-fix must skip rebase onto origin/BRANCH (which would undo it) and
 # force-push the rebased history (issue #565).
 run_push_rebase_preserves_agent_rebase_onto_target_test() {
-  local test_name="push-rebase-preserves-agent-rebase-onto-target"
+  local test_name="push-rebase-preserves-agent-rebase-onto-target${1:+-$1}"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
   mkdir -p "${base}"
 
@@ -3266,7 +3323,7 @@ JSONEOF
 # Agent reset the contiguous fix-agent suffix and re-committed. post-fix
 # must skip replay onto origin/BRANCH so the discarded attempts stay gone.
 run_push_history_rewrite_preserves_redo_test() {
-  local test_name="push-history-rewrite-preserves-redo"
+  local test_name="push-history-rewrite-preserves-redo${1:+-$1}"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
   mkdir -p "${base}"
   local bot_email="bot@example.com"
@@ -3336,7 +3393,7 @@ run_push_history_rewrite_preserves_redo_test() {
 # Ordinary append: no history_rewritten marker, no squash/redo instruction.
 # New commit on top of the remote tip must fast-forward; no skip.
 run_push_history_rewrite_ordinary_append_test() {
-  local test_name="push-history-rewrite-ordinary-append"
+  local test_name="push-history-rewrite-ordinary-append${1:+-$1}"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
   mkdir -p "${base}"
 
@@ -4495,6 +4552,13 @@ run_push_history_rewrite_indistinguishable_from_reconstruction_test
 run_push_history_rewrite_preserves_reconstructed_human_commit_test
 run_push_history_rewrite_bot_trigger_ignores_marker_test
 run_push_history_rewrite_non_rewrite_instruction_ignores_marker_test
+
+# The fleet default (GITHUB_SIGNED_COMMITS "false" in harness/fix.yaml): the
+# same publishes go through a plain git push, with any Git Data API call
+# failing the run. Covers the fast-forward, lease (redo) and rebase pushes.
+GITHUB_SIGNED_COMMITS=false run_push_history_rewrite_ordinary_append_test signed-commits-off
+GITHUB_SIGNED_COMMITS=false run_push_history_rewrite_preserves_redo_test signed-commits-off
+GITHUB_SIGNED_COMMITS=false run_push_rebase_preserves_agent_rebase_onto_target_test signed-commits-off
 
 # ---------------------------------------------------------------------------
 # Forge-reported conflict: post-fix skip of origin/BRANCH replay (issue #1518).

@@ -34,6 +34,9 @@ export REPO_FULL_NAME="test-org/test-repo"
 export PUSH_TOKEN="fake-token"
 # The bot test-fixtures/fake-gh-git-api.sh authors commits as.
 export GIT_BOT_EMAIL='1+fullsend-ai-coder[bot]@users.noreply.github.com'
+# The API path is under test here; the plain-push path has its own cases
+# at the end.
+export GITHUB_SIGNED_COMMITS=true
 # Hermetic git: no host signing or identity config.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 
@@ -531,6 +534,90 @@ if [ "${PUSH_RC}" -eq 0 ] || ! printf '%s' "${PUSH_OUT}" | grep -q "no commit on
   fail "orphan-history-refused" "exit ${PUSH_RC}" "${PUSH_OUT}"
 else
   pass "orphan-history-refused"
+fi
+
+# --- GITHUB_SIGNED_COMMITS off: forge_push_branch is a plain git push -----
+# No gh call is legitimate on this path, so any one fails the push.
+OFF_BIN="${TEST_TMPDIR}/offbin"
+mkdir -p "${OFF_BIN}"
+cat > "${OFF_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "unexpected gh call on the plain-push path: $*" >&2
+exit 99
+MOCKEOF
+chmod +x "${OFF_BIN}/gh"
+
+# push_off VALUE CLONE [args...] — push_in with GITHUB_SIGNED_COMMITS set to
+# VALUE ("unset" removes it) and gh refusing every call.
+push_off() {
+  local value="$1" repo="$2"
+  shift 2
+  PUSH_RC=0
+  if [ "${value}" = "unset" ]; then
+    PUSH_OUT="$(cd "${repo}" && unset GITHUB_SIGNED_COMMITS \
+      && PATH="${OFF_BIN}:${PATH}" forge_push_branch "$@" 2>&1)" || PUSH_RC=$?
+  else
+    PUSH_OUT="$(cd "${repo}" && GITHUB_SIGNED_COMMITS="${value}" \
+      PATH="${OFF_BIN}:${PATH}" forge_push_branch "$@" 2>&1)" || PUSH_RC=$?
+  fi
+}
+
+# plain_push_ok NAME CLONE — the remote tip is the local commit itself (not
+# a rebuilt one) and the branch tracks origin.
+plain_push_ok() {
+  local name="$1" repo="$2" local_tip tip upstream
+  local_tip="$(git -C "${repo}" rev-parse HEAD)"
+  tip="$(remote_rev "${repo}" "refs/heads/${BRANCH}" || true)"
+  upstream="$(git -C "${repo}" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)"
+  if [ "${PUSH_RC}" -ne 0 ] || [ "${tip}" != "${local_tip}" ] || [ "${upstream}" != "origin/${BRANCH}" ]; then
+    fail "${name}" "exit ${PUSH_RC}" "remote ${tip} local ${local_tip} upstream '${upstream}'" "${PUSH_OUT}"
+  else
+    pass "${name}"
+  fi
+}
+
+# Unset and "false" are the fleet default; only the exact string "true"
+# enables the API path.
+for value in unset false 1; do
+  repo="$(setup_repo "off-${value}")"
+  commit_file "${repo}" new.txt "new" "feat: new"
+  push_off "${value}" "${repo}" "${BRANCH}"
+  plain_push_ok "off-${value}-is-a-plain-push" "${repo}"
+done
+
+# A plain push keeps git's own non-fast-forward wording, which the
+# post-scripts match to retry with --force-with-lease.
+repo="$(setup_repo off-lease)"
+bare="${repo%/repo}/remote.git"
+commit_file "${repo}" a.txt "a" "feat: a"
+push_off false "${repo}" "${BRANCH}"
+diverge_remote "${repo}"
+theirs="$(remote_rev "${repo}" "refs/heads/${BRANCH}")"
+commit_file "${repo}" b.txt "b" "feat: b"
+push_off false "${repo}" "${BRANCH}"
+if [ "${PUSH_RC}" -eq 0 ] || ! printf '%s' "${PUSH_OUT}" | grep -qiE 'rejected|non-fast-forward|fetch first' \
+   || [ "$(remote_rev "${repo}" "refs/heads/${BRANCH}")" != "${theirs}" ]; then
+  fail "off-non-fast-forward-refused-with-git-wording" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "off-non-fast-forward-refused-with-git-wording"
+fi
+
+# --force-with-lease passes through to git: refused while the tracking ref
+# is stale, applied once it matches the remote.
+push_off false "${repo}" "${BRANCH}" --force-with-lease
+if [ "${PUSH_RC}" -eq 0 ] || [ "$(remote_rev "${repo}" "refs/heads/${BRANCH}")" != "${theirs}" ]; then
+  fail "off-force-with-lease-stale-tracking-ref-refused" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "off-force-with-lease-stale-tracking-ref-refused"
+fi
+git -C "${repo}" fetch -q origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+push_off false "${repo}" "${BRANCH}" --force-with-lease
+local_tip="$(git -C "${repo}" rev-parse HEAD)"
+if [ "${PUSH_RC}" -ne 0 ] || [ "$(remote_rev "${repo}" "refs/heads/${BRANCH}")" != "${local_tip}" ] \
+   || git --git-dir="${bare}" merge-base --is-ancestor "${theirs}" "${local_tip}"; then
+  fail "off-force-with-lease-replaces-remote-branch" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "off-force-with-lease-replaces-remote-branch"
 fi
 
 echo

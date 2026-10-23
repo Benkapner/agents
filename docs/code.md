@@ -55,6 +55,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
 | `FULLSEND_APP_SET` | GitHub App identity prefix for custom deployments. The pre-script derives the bot/coder bot logins (`<prefix>[bot]` / `<prefix>-coder[bot]`) excluded from the existing-PR check, so PRs opened by a custom coder bot aren't misclassified as human PRs. | `"fullsend-ai"` | Any GitHub App identity prefix |
+| `GITHUB_SIGNED_COMMITS` | Set to `"true"` to publish the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](#signed-commits)); anything else keeps `git push`. The default is set in the GitHub overlay of `harness/code.yaml` (and `harness/fix.yaml` for the fix agent); override per repo via `base:` composition. | `"false"` | `"true"`, `"false"` |
 
 ## How the agent works
 
@@ -86,10 +87,13 @@ An explicit request to change the reference itself also receives a normal PR.
 
 ### Signed commits
 
-On GitHub, the post-script rebuilds each commit produced by the agent
-through the [Git Data API](https://docs.github.com/en/rest/git) with the
-App installation token, which causes GitHub to sign every commit it
-creates. The result shows as **Verified** in GitHub.
+With `GITHUB_SIGNED_COMMITS` set to `"true"` (it is `"false"` by default),
+the post-script rebuilds each commit produced by the agent through the
+[Git Data API](https://docs.github.com/en/rest/git) with the App
+installation token, which causes GitHub to sign every commit it creates.
+The result shows as **Verified** in GitHub. With any other value the
+branch is pushed with `git push` and the rest of this section does not
+apply.
 
 Compared to `git push`:
 
@@ -112,7 +116,7 @@ Compared to `git push`:
   is retried; a commit touching more files than the hourly limit allows
   fails with the API's rate-limit error.
 
-On GitLab the branch is pushed with `git push`.
+On GitLab the branch is always pushed with `git push`.
 
 ### Signed-off-by trailers
 
