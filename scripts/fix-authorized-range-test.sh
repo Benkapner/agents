@@ -41,36 +41,38 @@ published() {
   commit "$d" 'app[bot]' "${BOT_EMAIL}" "$msg" -m "Authored-by: ${name} <${BOT_EMAIL}>" "$@"
 }
 run() { (cd "$1" && bash "${RANGE}" main 2>&1); }
+# expect REPO NAME N — the authorized range is the N commits at HEAD.
+expect() {
+  local d="$1" name="$2" n="$3" out
+  if out="$(run "$d")" && [ "$out" = "REWRITE_BASE=$(git -C "$d" rev-parse "HEAD~${n}")
+IN_SCOPE=${n}" ]; then pass "$name"; else fail "$name" "$out"; fi
+}
 
 # --- sandbox-authored suffix above a code-agent commit --------------------
 r="$(new_repo plain)"
 commit "$r" fullsend-code "${BOT_EMAIL}" "feat: code"
 commit "$r" fullsend-fix "${BOT_EMAIL}" "fix: one"
 commit "$r" fullsend-fix "${BOT_EMAIL}" "fix: two"
-out="$(run "$r")" && [ "$out" = "REWRITE_BASE=$(git -C "$r" rev-parse HEAD~2)
-IN_SCOPE=2" ] && pass "plain-suffix" || fail "plain-suffix" "$out"
+expect "$r" plain-suffix 2
 
 # --- published commits: the trailer decides -------------------------------
 r="$(new_repo published)"
 published "$r" fullsend-code "feat: code"
 published "$r" fullsend-fix "fix: one"
 commit "$r" fullsend-fix "${BOT_EMAIL}" "fix: two"
-out="$(run "$r")" && [ "$out" = "REWRITE_BASE=$(git -C "$r" rev-parse HEAD~2)
-IN_SCOPE=2" ] && pass "published-trailer-suffix" || fail "published-trailer-suffix" "$out"
+expect "$r" published-trailer-suffix 2
 
 # --- a human's spoofed trailer does not make it the fix agent's -----------
 r="$(new_repo spoofed)"
 commit "$r" Human h@example.com "feat: human" -m "Authored-by: fullsend-fix <${BOT_EMAIL}>"
 commit "$r" fullsend-fix "${BOT_EMAIL}" "fix: one"
-out="$(run "$r")" && [ "$out" = "REWRITE_BASE=$(git -C "$r" rev-parse HEAD~1)
-IN_SCOPE=1" ] && pass "spoofed-trailer-ignored" || fail "spoofed-trailer-ignored" "$out"
+expect "$r" spoofed-trailer-ignored 1
 
 # --- another bot's trailer is not trusted: the suffix stops there ---------
 r="$(new_repo otherbot)"
 commit "$r" 'github-actions[bot]' "41898282+github-actions[bot]@users.noreply.github.com" "chore: fmt" -m "Authored-by: fullsend-fix <${BOT_EMAIL}>"
 commit "$r" fullsend-fix "${BOT_EMAIL}" "fix: one"
-out="$(run "$r")" && [ "$out" = "REWRITE_BASE=$(git -C "$r" rev-parse HEAD~1)
-IN_SCOPE=1" ] && pass "other-bot-trailer-ignored" || fail "other-bot-trailer-ignored" "$out"
+expect "$r" other-bot-trailer-ignored 1
 
 # --- two trailers on a published commit are ambiguous: fail closed --------
 r="$(new_repo double)"
