@@ -40,7 +40,7 @@ a request, for example because `GITLAB_HOST` resolves to a private address the
 policy does not authorize. A denial is final. Make no further requests to that
 host. Do not retry with an alternate URL, host or IP form, header, curl option,
 or environment variable. Report that the request was denied and follow your
-agent's failure instructions.
+agent's instructions for denied requests.
 
 When you have made your last GitLab request, scrub the token in its own Bash
 call: `: > /tmp/gitlab-api.curlrc`. If you need another request after that,
