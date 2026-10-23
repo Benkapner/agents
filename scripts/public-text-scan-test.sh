@@ -29,7 +29,8 @@ fi
   exit 1
 }
 export REAL_GIT REAL_GITLEAKS
-mkdir -p "${TEST_DIR}/bin"
+TEST_HOME="${TEST_DIR}/home"
+mkdir -p "${TEST_HOME}/.local/bin" "${TEST_DIR}/bin"
 
 cat > "${TEST_DIR}/bin/git" <<'EOF'
 #!/usr/bin/env bash
@@ -79,6 +80,9 @@ case "${method} ${url}" in
 esac
 if "${status}"; then printf '\n201'; fi
 EOF
+# post-code prepends HOME/.local/bin after installing gitleaks. Keep the
+# selected scanner in the original PATH and put a wrong-version decoy in
+# HOME/.local/bin so public-text scans must use the captured absolute path.
 cat > "${TEST_DIR}/bin/gitleaks" <<'EOF'
 #!/usr/bin/env bash
 ORIGINAL_ARGS=("$@")
@@ -106,7 +110,13 @@ if "${public}"; then
 fi
 exec "${REAL_GITLEAKS}" "${ORIGINAL_ARGS[@]}"
 EOF
-chmod +x "${TEST_DIR}/bin/"*
+cat > "${TEST_HOME}/.local/bin/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 0.0.0; exit 0; fi
+printf '%s\n' 'untrusted PATH scanner invoked' >> "${UNTRUSTED_GITLEAKS_CALLS}"
+exit 0
+EOF
+chmod +x "${TEST_DIR}/bin/gitleaks" "${TEST_HOME}/.local/bin/gitleaks" "${TEST_DIR}/bin/"*
 
 FAILURES=0
 # Synthetic credential assembled at runtime so the test source is not a leak.
@@ -160,7 +170,9 @@ Signed-off-by: Test <test@example.com>
   (
     cd "${run_dir}"
     export PATH="${TEST_DIR}/bin:${PATH}"
+    export HOME="${TEST_HOME}"
     export PUBLIC_TEXT_CAPTURE="${run_dir}/published.txt" TEST_REPO="${run_dir}/repo"
+    export UNTRUSTED_GITLEAKS_CALLS="${run_dir}/untrusted-gitleaks-called"
     export TEST_SCAN_MODE="${mode}" PUSH_TOKEN=fake-token
     export REPO_FULL_NAME=test-org/test-repo ISSUE_NUMBER=99 REPO_DIR=repo
     export FULLSEND_FORGE="${forge}" FULLSEND_VALIDATED_ITERATION_DIR="${run_dir}/output"
@@ -184,6 +196,8 @@ Signed-off-by: Test <test@example.com>
     echo "FAIL: ${name} — post-script exit ${rc}"
     cat "${run_dir}/log"
     FAILURES=$((FAILURES + 1))
+  elif [ -e "${run_dir}/untrusted-gitleaks-called" ]; then
+    echo "FAIL: ${name} — PATH-shadow gitleaks was used for scanning"; FAILURES=$((FAILURES + 1))
   elif [ "${expected}" = jira ]; then
     if [ -e "${run_dir}/published.txt" ] || ! grep -q 'No PR created for TEST-99' "${run_dir}/log"; then
       echo "FAIL: ${name} — changed Jira no-op behavior"; FAILURES=$((FAILURES + 1))

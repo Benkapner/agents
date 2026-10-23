@@ -352,7 +352,7 @@ scan_public_text() (
   printf '%s\n' "$1" > "${scan_dir}/text" || return 1
   cd "${scan_dir}" || return 1
   # Suppress both streams: even scanner failures may echo sensitive input.
-  gitleaks detect --source "${scan_dir}/text" --no-git --redact --exit-code 2 \
+  "${GITLEAKS_BIN}" detect --source "${scan_dir}/text" --no-git --redact --exit-code 2 \
     --ignore-gitleaks-allow --gitleaks-ignore-path "${scan_dir}" \
     >/dev/null 2>&1 || rc=$?
   return "${rc}"

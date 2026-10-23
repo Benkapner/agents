@@ -2095,6 +2095,7 @@ chmod +x "${SEC_CODE_MOCK_BIN}/sleep"
 
 cat > "${SEC_CODE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 exit 0
 MOCKEOF
 chmod +x "${SEC_CODE_MOCK_BIN}/gitleaks"
@@ -2887,6 +2888,7 @@ chmod +x "${GL_INT_MOCK_BIN}/sleep"
 
 cat > "${GL_INT_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 exit 0
 MOCKEOF
 chmod +x "${GL_INT_MOCK_BIN}/gitleaks"
