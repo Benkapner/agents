@@ -12,8 +12,7 @@ Feature: Agents triage behaviour
     And the agent will succeed to Emit triage JSON
     And the issue has label "ready-to-code"
 
-  # An insufficient result routes nowhere downstream. post-triage posts
-  # its comment as a plain comment, not a sticky one.
+  # An insufficient result routes nowhere downstream.
   Scenario: Triage asks for more information on an insufficient issue
     Given the enrolled test repository
     And a dummy agent that would:

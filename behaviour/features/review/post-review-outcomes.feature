@@ -35,6 +35,7 @@ Feature: Review post-script outcomes
     When the write actor posts "/fs-review" on the pull request
     Then the harness "review" workflow completes successfully
     And the agent will succeed to Emit review JSON
+    And the review agent submitted "approved"
     And the pull request has label "ready-for-merge"
 
   # A changes-requested review from the review bot starts fix, which no
@@ -48,11 +49,15 @@ Feature: Review post-script outcomes
     When the write actor posts "/fs-review" on the pull request
     Then the harness "review" workflow completes successfully
     And the agent will succeed to Emit review JSON
+    And the review agent submitted "changes_requested"
     And a comment on the pull request contains "Behaviour smoke: the review bot requests changes."
     And a comment on the pull request contains "disable automatic fix runs for this PR"
     And the pull request does not have label "ready-for-merge"
+    And the pull request does not have label "requires-manual-review"
 
-  # Every closed pull request dispatches retro, so its trigger is off.
+  # Every closed pull request dispatches retro, so its trigger is off. A
+  # reject is submitted as changes requested, so fullsend-no-fix keeps fix
+  # from running too.
   Scenario: A rejecting review closes the pull request
     Given the repository agents are configured with:
       """
@@ -60,12 +65,14 @@ Feature: Review post-script outcomes
         trigger: "false"
       """
     And a pull request is opened
+    And the pull request is labeled "fullsend-no-fix"
     And a dummy agent that would:
       | description      | op            | args                                                  |
       | Emit review JSON | write_fixture | output/agent-result.json, fixtures/review/reject.json |
     When the write actor posts "/fs-review" on the pull request
     Then the harness "review" workflow completes successfully
     And the agent will succeed to Emit review JSON
+    And the review agent submitted "changes_requested"
     And the pull request has been closed
     And the pull request has label "rejected"
 
