@@ -11,13 +11,10 @@ Feature: Code applier branch handling
   (declared via BEHAVIOUR_CAPABILITIES in the Makefile) because they
   assert the post-code branch-namespace enforcement in this repo.
 
-  The fix applier's refuse-to-push-on-branch-mismatch counterpart cannot
-  be expressed here yet: the fix stage's only dispatch route is a
-  changes_requested review submitted by the org review bot, which the
-  behaviour suite cannot produce (suite-posted comments are bot-authored
-  and bot comments are dropped by the dispatch gates). That path stays
-  covered by script-level tests in this repo until a suite-reachable fix
-  trigger exists.
+  The fix stage is reachable from the suite: the write actor's "/fs-fix"
+  comment on a pull request dispatches it (see fix.feature). The fix
+  applier's refuse-to-push-on-branch-mismatch counterpart is still not
+  expressed here; it stays covered by script-level tests in this repo.
 
   The decoy branch uses issue number 990000099 — far above any issue
   number a pool repo will ever reach — so the anchored
@@ -67,3 +64,5 @@ Feature: Code applier branch handling
     Then the harness "code" workflow completes successfully
     And the agent will succeed to Check out namespaced branch
     And the pull request head branch matches "agent/<issue>-impl"
+    And the pull request body contains "Closes #<issue>"
+    And the pull request has label "ready-for-review"
