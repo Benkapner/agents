@@ -2,7 +2,7 @@
 # check-dco-signoff.sh — Validate DCO sign-off in commit messages.
 #
 # Ensures that commit messages contain a Signed-off-by trailer matching
-# the git author identity ('git var GIT_AUTHOR_IDENT') for human commits.
+# the git author or committer identity for human commits.
 # Skips merge commits and [bot] authors.
 
 set -euo pipefail
@@ -33,7 +33,14 @@ if ! author_ident="$(git var GIT_AUTHOR_IDENT 2>/dev/null)"; then
   exit 1
 fi
 
-# Author format from GIT_AUTHOR_IDENT: "Name <email> timestamp tz"
+# Extract committer identity from git
+if ! committer_ident="$(git var GIT_COMMITTER_IDENT 2>/dev/null)"; then
+  echo "Error: Unable to determine git committer identity from 'git var GIT_COMMITTER_IDENT'." >&2
+  echo "Ensure 'user.name' and 'user.email' are configured in git." >&2
+  exit 1
+fi
+
+# Ident format: "Name <email> timestamp tz"
 author_name="$(echo "${author_ident}" | sed -E 's/^(.*) <[^>]+>.*/\1/')"
 author_email="$(echo "${author_ident}" | sed -E 's/^.* <([^>]+)>.*/\1/')"
 if [[ -z "${author_name}" || -z "${author_email}" || "${author_email}" == "${author_ident}" ]]; then
@@ -41,15 +48,28 @@ if [[ -z "${author_name}" || -z "${author_email}" || "${author_email}" == "${aut
   exit 1
 fi
 
-# Skip [bot] git authors:
-# Match if the author name has [bot] (e.g. dependabot[bot], github-actions[bot])
+committer_name="$(echo "${committer_ident}" | sed -E 's/^(.*) <[^>]+>.*/\1/')"
+committer_email="$(echo "${committer_ident}" | sed -E 's/^.* <([^>]+)>.*/\1/')"
+if [[ -z "${committer_name}" || -z "${committer_email}" || "${committer_email}" == "${committer_ident}" ]]; then
+  echo "Error: Failed to parse committer name and email from git committer ident: ${committer_ident}" >&2
+  exit 1
+fi
+
+# Skip [bot] git authors/committers:
+# Match if the name has [bot] (e.g. dependabot[bot], github-actions[bot])
 # or if the email is a GitHub bot noreply email (*[bot]@users.noreply.github.com)
-if [[ "${author_name}" =~ \[[bB][oO][tT]\] ]] || [[ "${author_email}" =~ \[[bB][oO][tT]\]@users\.noreply\.github\.com$ ]]; then
+is_bot() {
+  local name="$1"
+  local email="$2"
+  [[ "${name}" =~ \[[bB][oO][tT]\] ]] || [[ "${email}" =~ \[[bB][oO][tT]\]@users\.noreply\.github\.com$ ]]
+}
+
+if is_bot "${author_name}" "${author_email}" || is_bot "${committer_name}" "${committer_email}"; then
   exit 0
 fi
 
 author="${author_name} <${author_email}>"
-expected_signoff="Signed-off-by: ${author}"
+committer="${committer_name} <${committer_email}>"
 
 # Determine comment character (respects core.commentChar, defaults to '#')
 comment_char="$(git config --get core.commentChar 2>/dev/null || true)"
@@ -60,22 +80,34 @@ fi
 # Validate commit message content before the scissors cutoff line,
 # ignoring comment lines and CRLF line endings.
 # Uses a single awk process reading the file directly to avoid pipeline SIGPIPE issues.
-# Expected sign-off and comment char are passed via environment variables so
-# awk ENVIRON reads them verbatim without interpreting backslash escapes (unlike awk -v).
-if ! EXPECTED_SIGNOFF="${expected_signoff}" COMMENT_CHAR="${comment_char}" awk '
+# Matches Probot dco.js behavior: accepts a Signed-off-by trailer whose name is in
+# {author_name, committer_name} and whose email is in {author_email, committer_email}
+# (case-insensitive for email and Signed-off-by prefix, tolerating trailing whitespace).
+# Author and committer idents are passed via environment variables so awk ENVIRON
+# reads them verbatim without interpreting backslash escapes (unlike awk -v).
+if ! AUTHOR_NAME="${author_name}" \
+     AUTHOR_EMAIL="${author_email}" \
+     COMMITTER_NAME="${committer_name}" \
+     COMMITTER_EMAIL="${committer_email}" \
+     COMMENT_CHAR="${comment_char}" \
+     awk '
   BEGIN {
-    signoff = ENVIRON["EXPECTED_SIGNOFF"]
+    author_name = ENVIRON["AUTHOR_NAME"]
+    author_email = tolower(ENVIRON["AUTHOR_EMAIL"])
+    committer_name = ENVIRON["COMMITTER_NAME"]
+    committer_email = tolower(ENVIRON["COMMITTER_EMAIL"])
     cchar = ENVIRON["COMMENT_CHAR"]
     found = 0
   }
   {
     sub(/\r$/, "")
-    line = $0
-    sub(/^[ \t]+/, "", line)
+    sub(/[ \t]+$/, "")
+    cur = $0
+    sub(/^[ \t]+/, "", cur)
 
     # Check if line begins with comment_char
-    if (length(line) >= length(cchar) && substr(line, 1, length(cchar)) == cchar) {
-      rem = substr(line, length(cchar) + 1)
+    if (length(cur) >= length(cchar) && substr(cur, 1, length(cchar)) == cchar) {
+      rem = substr(cur, length(cchar) + 1)
       # Git scissors line: commentChar + space + dashes + (>8 or 8<) + dashes
       # e.g. "# ------------------------ >8 ------------------------"
       if (rem ~ /^[ \t]+-+.*(>8|8<).*-+/) {
@@ -84,8 +116,29 @@ if ! EXPECTED_SIGNOFF="${expected_signoff}" COMMENT_CHAR="${comment_char}" awk '
       next
     }
 
-    if ($0 == signoff) {
-      found = 1
+    # Case-insensitive check for Signed-off-by prefix
+    if (tolower(substr($0, 1, 14)) == "signed-off-by:") {
+      rest = substr($0, 15)
+      sub(/^[ \t]+/, "", rest)
+      if (substr(rest, length(rest)) == ">") {
+        idx = 0
+        for (i = length(rest) - 1; i >= 1; i--) {
+          if (substr(rest, i, 1) == "<") {
+            idx = i
+            break
+          }
+        }
+        if (idx > 1) {
+          line_name = substr(rest, 1, idx - 1)
+          sub(/[ \t]+$/, "", line_name)
+          line_email = tolower(substr(rest, idx + 1, length(rest) - idx - 1))
+          name_match = (line_name == author_name || line_name == committer_name)
+          email_match = (line_email == author_email || line_email == committer_email)
+          if (name_match && email_match) {
+            found = 1
+          }
+        }
+      }
     }
   }
   END {
@@ -96,14 +149,21 @@ if ! EXPECTED_SIGNOFF="${expected_signoff}" COMMENT_CHAR="${comment_char}" awk '
     }
   }
 ' "${COMMIT_MSG_FILE}"; then
+  if [[ "${author}" == "${committer}" ]]; then
+    expected_output="  Signed-off-by: ${author}"
+  else
+    expected_output="  Signed-off-by: ${author}
+  Signed-off-by: ${committer}"
+  fi
+
   cat >&2 <<EOF
 Error: Missing or mismatched DCO Signed-off-by trailer in commit message.
 
 Expected:
-  ${expected_signoff}
+${expected_output}
 
 To fix this:
-  use git commit -s and ensure git user.name/user.email match Signed-off-by.
+  Use 'git commit -s' or add a Signed-off-by trailer matching the author or committer.
 EOF
   exit 1
 fi
