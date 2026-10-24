@@ -36,22 +36,32 @@ mkdir -p "${MOCK_BIN}" "${DATA}" "${HOME_DIR}"
 
 # --- Mocks ---
 
-# Mock gh: answers `gh pr view --json <field>` with the post-jq value from
-# ${DATA}/<field>.txt, or exits 1 when ${DATA}/<field>.fail exists.
+# Mock gh: answers `gh pr view --json <field> --jq <expr>` by building the
+# JSON gh would return from ${DATA}/<field>.txt (one label per line for
+# labels, else a single value; empty means null) and applying the caller's
+# --jq filter, so the library's filters are exercised. Exits 1 when
+# ${DATA}/<field>.fail exists.
 printf '#!/usr/bin/env bash\nLOG=%q\nDATA=%q\n' "${GH_LOG}" "${DATA}" > "${MOCK_BIN}/gh"
 cat >> "${MOCK_BIN}/gh" <<'MOCKEOF'
 echo "gh $*" >> "${LOG}"
 field=""
+filter="."
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --json) field="$2"; shift 2 ;;
+    --jq) filter="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 [[ -n "${field}" ]] || exit 0
 [[ -f "${DATA}/${field}.fail" ]] && exit 1
-[[ -f "${DATA}/${field}.txt" ]] && cat "${DATA}/${field}.txt"
-exit 0
+[[ -f "${DATA}/${field}.txt" ]] || exit 0
+if [[ "${field}" == "labels" ]]; then
+  json="$(jq -Rn '{labels: [inputs | select(length > 0) | {name: .}]}' < "${DATA}/${field}.txt")"
+else
+  json="$(jq -Rn --arg f "${field}" '[inputs] as $l | {($f): (if ($l | length) == 0 or $l[0] == "" then null else $l[0] end)}' < "${DATA}/${field}.txt")"
+fi
+printf '%s\n' "${json}" | jq -r "${filter}"
 MOCKEOF
 
 # Mock curl (GitLab API): returns ${DATA}/mr.json, or exits 22 when
@@ -64,8 +74,9 @@ echo "curl $*" >> "${LOG}"
 exit 0
 MOCKEOF
 
-# Mock git: simulate `fetch`; optionally fail restoring a non-credentialed
-# origin URL (${DATA}/git-restore.fail); delegate everything else.
+# Mock git: simulate `fetch`; optionally fail setting the credentialed
+# origin URL (${DATA}/git-setpush.fail) or restoring the plain one
+# (${DATA}/git-restore.fail); delegate everything else.
 printf '#!/usr/bin/env bash\nLOG=%q\nDATA=%q\nREAL_GIT=%q\n' \
   "${GIT_LOG}" "${DATA}" "${REAL_GIT}" > "${MOCK_BIN}/git"
 cat >> "${MOCK_BIN}/git" <<'MOCKEOF'
@@ -88,6 +99,11 @@ if [[ "${is_fetch}" == "true" ]]; then
   fi
   "${REAL_GIT}" -C "${repo}" update-ref "${last#*:}" HEAD
   exit 0
+fi
+if [[ "${is_set_url}" == "true" && -f "${DATA}/git-setpush.fail" \
+      && ( "${last}" == *x-access-token* || "${last}" == *oauth2:* ) ]]; then
+  echo "error: could not lock config file" >&2
+  exit 1
 fi
 if [[ "${is_set_url}" == "true" && -f "${DATA}/git-restore.fail" \
       && "${last}" != *x-access-token* && "${last}" != *oauth2:* ]]; then
@@ -428,6 +444,24 @@ expect_out "Could not restore original origin URL"
 expect_no_log "${GITHUB_PATH_FILE}" ".local/bin"
 finish
 rm -f "${DATA}/git-restore.fail"
+
+make_target_repo
+run_pre_fix "conflict-masks-push-token-on-actions" 0 \
+  REPO_DIR="${TARGET_REPO}" PUSH_TOKEN="${PUSH_TOKEN_VALUE}" GITHUB_ACTIONS=true
+expect_out "::add-mask::${PUSH_TOKEN_VALUE}"
+expect_origin_url "${ORIGIN_URL}"
+finish
+
+make_target_repo
+touch "${DATA}/git-setpush.fail"
+run_pre_fix "conflict-set-push-remote-failure-warns" 0 \
+  REPO_DIR="${TARGET_REPO}" PUSH_TOKEN="${PUSH_TOKEN_VALUE}"
+expect_out "Could not set authenticated origin URL before fetching release-1"
+expect_log "${GIT_LOG}" "fetch origin +refs/heads/release-1:refs/remotes/origin/release-1"
+expect_no_log "${GIT_LOG}" "remote set-url origin ${ORIGIN_URL}"
+expect_origin_url "${ORIGIN_URL}"
+finish
+rm -f "${DATA}/git-setpush.fail"
 
 run_pre_fix "conflict-without-target-repo-warns" 0
 expect_out "conflict=true"
