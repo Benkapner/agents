@@ -79,6 +79,7 @@ Feature: Review post-script outcomes
     And the pull request has label "rejected"
     When the write actor posts "/fs-review" on the pull request
     Then the harness "review" workflow completes successfully
+    And the harness "review" run was skipped by its pre-script
     And a comment on the pull request contains "Review skipped — this PR is already **closed**."
     And a comment on the pull request contains "pre-review check"
 
