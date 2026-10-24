@@ -58,9 +58,8 @@ Feature: Review post-script outcomes
   # Every closed pull request dispatches retro, so its trigger is off. A
   # reject is submitted as changes requested, so fullsend-no-fix keeps fix
   # from running too. On a second /fs-review of the closed pull request,
-  # pre-review.sh posts a "Review skipped" comment; post-review.sh posts the
-  # same text, so the pre-review footer pins which one ran. pre-review does
-  # not yet stop the agent run (#1779).
+  # pre-review.sh posts "Review skipped" and signals the skip, so no sandbox
+  # starts and post-review.sh never runs; the footer shows pre-review posted.
   Scenario: A rejecting review closes the pull request
     Given the repository agents are configured with:
       """
