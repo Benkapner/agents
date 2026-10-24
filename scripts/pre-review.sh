@@ -14,12 +14,8 @@
 #   PRIOR_REVIEW_FILE   — prior sticky review body; rewritten to validated JSON
 #   PRIOR_REVIEW_PROVENANCE — authenticated provenance for the prior review
 #
-# Skip signalling uses the pre-script output protocol
-# (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
-# when the PR is closed/merged or its author is in REVIEW_SKIP_AUTHORS, this
-# script writes skipped=true to the file named by FULLSEND_PRESCRIPT_OUTPUT
-# and fullsend run stops before creating the sandbox. Under a CLI that
-# predates the protocol the variable is unset and the write is skipped.
+# A closed/merged PR or a REVIEW_SKIP_AUTHORS author writes skipped=true via
+# the pre-script output protocol, so fullsend run stops before the sandbox.
 set -euo pipefail
 
 : "${PR_URL:?PR_URL must be set}"
