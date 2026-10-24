@@ -12,6 +12,13 @@
 #   REVIEW_SKIP_AUTHORS — comma-separated author list to skip
 #   PRIOR_REVIEW_FILE   — prior sticky review body; rewritten to validated JSON
 #   PRIOR_REVIEW_PROVENANCE — authenticated provenance for the prior review
+#
+# Skip signalling uses the pre-script output protocol
+# (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
+# when the PR is closed/merged or its author is in REVIEW_SKIP_AUTHORS, this
+# script writes skipped=true to the file named by FULLSEND_PRESCRIPT_OUTPUT
+# and fullsend run stops before creating the sandbox. Under a CLI that
+# predates the protocol the variable is unset and the write is skipped.
 set -euo pipefail
 
 : "${PR_URL:?PR_URL must be set}"
@@ -19,6 +26,8 @@ set -euo pipefail
 
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/prescript-output.lib.sh
+source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 # shellcheck source=lib/review-ops.lib.sh
 source "${SCRIPT_DIR}/lib/review-ops.lib.sh"
 
@@ -241,6 +250,8 @@ The \`/fs-review\` command only reviews open PRs/MRs.
 
   forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
+  prescript_output "skipped" "true"
+  prescript_output "reason" "PR #${PR_NUMBER} is already ${STATE_LOWER}"
   exit 0
 fi
 
@@ -278,6 +289,8 @@ if [[ -n "${REVIEW_SKIP_AUTHORS:-}" ]]; then
 
         forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
+        prescript_output "skipped" "true"
+        prescript_output "reason" "PR author ${_SAFE_AUTHOR} is in REVIEW_SKIP_AUTHORS"
         exit 0
       fi
     done
