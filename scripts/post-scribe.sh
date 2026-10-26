@@ -498,6 +498,10 @@ case "${FULLSEND_TRACKER}" in
 #
 # Optional env vars:
 #   SCRIBE_JIRA_ISSUE_TYPE — issue type name for created issues (default: "Task")
+#   SCRIBE_JIRA_LABELS     — comma-separated allowlist of labels that scribe may
+#                            apply to Jira issues (default: "meeting-notes")
+#   SCRIBE_JIRA_MAX_PAGES  — maximum pages fetched per paginated Jira read
+#                            (default: 50)
 
 [[ -n "${JIRA_SCRIBE_OPS_SH_LOADED:-}" ]] && return 0
 JIRA_SCRIBE_OPS_SH_LOADED=1
@@ -519,6 +523,7 @@ if [[ ! "${SCRIBE_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
   exit 1
 fi
 SCRIBE_JIRA_ISSUE_TYPE="${SCRIBE_JIRA_ISSUE_TYPE:-Task}"
+SCRIBE_JIRA_LABELS="${SCRIBE_JIRA_LABELS:-meeting-notes}"
 
 # Maximum pages fetched per paginated Jira read (100 issues per JQL page).
 SCRIBE_JIRA_MAX_PAGES="${SCRIBE_JIRA_MAX_PAGES:-50}"
@@ -682,13 +687,41 @@ forge_post_issue_comment() {
   return 1
 }
 
-# Add labels to an existing Jira issue via the REST API. Labels are a
-# comma-separated list; Jira labels cannot contain spaces, so spaces
-# become hyphens.
+# Filter and sanitize labels for Jira:
+# 1. Accepts either a JSON array or a comma-separated list.
+# 2. Intersects with the operator allowlist SCRIBE_JIRA_LABELS (default: "meeting-notes").
+# 3. Enforces ^[A-Za-z0-9._-]{1,64}$ per label.
+# 4. Caps at 10 labels and deduplicates while preserving order.
+_scribe_jira_filter_labels() {
+  local raw="$1"
+  jq -cn \
+    --arg raw "${raw}" \
+    --arg allowlist "${SCRIBE_JIRA_LABELS:-meeting-notes}" '
+    def parse_list:
+      if (type == "array") then .
+      elif (type == "string") then [split(",")[] | gsub("^\\s+|\\s+$"; "")]
+      else [] end;
+    def parse_raw:
+      ($raw | try fromjson catch $raw) | parse_list;
+    def parse_allowlist:
+      $allowlist | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(test("^[A-Za-z0-9._-]{1,64}$")));
+    (parse_allowlist) as $allowed |
+    [parse_raw[]?
+      | select(type == "string")
+      | gsub("^\\s+|\\s+$"; "")
+      | select(test("^[A-Za-z0-9._-]{1,64}$"))
+      | select(. as $item | $allowed | index($item))
+    ] | reduce .[] as $item ([]; if index($item) then . else . + [$item] end) | .[0:10]
+  '
+}
+
+# Add labels to an existing Jira issue via the REST API. Labels can be
+# passed as a JSON array or a comma-separated list. Labels are filtered
+# through _scribe_jira_filter_labels (allowlist, format, count cap).
 _scribe_jira_add_labels() {
   local key="$1" labels="$2"
   local labels_json ops
-  labels_json=$(jq -cn --arg l "${labels}" '[$l | split(",")[] | gsub("^\\s+|\\s+$"; "") | gsub("\\s+"; "-") | select(length > 0)]')
+  labels_json=$(_scribe_jira_filter_labels "${labels}")
   if [[ "$(printf '%s' "${labels_json}" | jq 'length')" -eq 0 ]]; then
     return 0
   fi
@@ -825,8 +858,8 @@ tracker_find_existing_issue() {
 }
 
 # Create an issue in SCRIBE_JIRA_PROJECT. Body is read from stdin. Labels
-# are a comma-separated list; Jira labels cannot contain spaces, so spaces
-# become hyphens. Returns the issue browse URL.
+# can be a JSON array or a comma-separated list; they are filtered against
+# SCRIBE_JIRA_LABELS and validated before adding. Returns the issue browse URL.
 #
 # Delegates the actual POST to `fullsend issues create --tracker jira`,
 # which handles Markdown-to-ADF conversion and the Jira REST call.
@@ -1279,6 +1312,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   BODY=$(jq -r ".new_issues[${i}].body" "${RESULT_FILE}")
   CONFIDENCE=$(jq -r ".new_issues[${i}].confidence" "${RESULT_FILE}")
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
+  LABELS_JSON=$(jq -c ".new_issues[${i}].labels // [\"meeting-notes\"]" "${RESULT_FILE}")
 
   # Gate: confidence
   if ! is_valid_confidence "${CONFIDENCE}"; then
@@ -1337,7 +1371,12 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     echo "    [DRY RUN] Would create issue: ${SAFE_TITLE}"
-    echo "    [DRY RUN] Labels: $(_gha_sanitize "${LABELS}")"
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]] && declare -f _scribe_jira_filter_labels >/dev/null 2>&1; then
+      DISPLAY_LABELS=$(printf '%s' "$(_scribe_jira_filter_labels "${LABELS_JSON}")" | jq -r 'join(",")')
+    else
+      DISPLAY_LABELS="${LABELS}"
+    fi
+    echo "    [DRY RUN] Labels: $(_gha_sanitize "${DISPLAY_LABELS}")"
     echo "    [DRY RUN] Body length: ${BODY_LEN} chars"
     NEW_ISSUE_URLS+=("")
   else
@@ -1356,7 +1395,11 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
       fi
     fi
     CREATE_RC=0
-    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS_JSON}") || CREATE_RC=$?
+    else
+      ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
+    fi
     if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
       echo "    ERROR: forge_create_issue failed (exit ${CREATE_RC})"
       unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"

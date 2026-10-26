@@ -139,6 +139,7 @@ fullsend agent add .fullsend/scribe.yaml --name scribe --fullsend-dir .
 | `FULLSEND_TRACKER` | yes (Jira) | `jira`. Defaults to `FULLSEND_FORGE` |
 | `SCRIBE_JIRA_PROJECT` | yes (Jira) | Project key for backlog reads and new issues |
 | `SCRIBE_JIRA_ISSUE_TYPE` | no | Issue type for new issues (default: `Task`) |
+| `SCRIBE_JIRA_LABELS` | no | Comma-separated allowlist of labels scribe may apply to Jira issues (default: `meeting-notes`) |
 | `JIRA_BASE_URL` | yes (Jira) | `https://<site>.atlassian.net` (Jira Cloud only) |
 | `JIRA_USER_EMAIL` | yes (Jira) | Account email for the operator-provided API token |
 | `JIRA_TOKEN` | yes (Jira) | Jira Cloud API token |
@@ -166,7 +167,10 @@ Behavior:
   match), the post-script refuses to create the issue.
 - The same content gates and `SCRIBE_DRY_RUN` safety gate apply. The
   sensitive-content and suspicious-Unicode gates cover labels as well as
-  the title and body.
+  the title and body. In Jira mode, agent-proposed labels are intersected with
+  an operator allowlist (`SCRIBE_JIRA_LABELS`, default `meeting-notes`),
+  validated against `^[A-Za-z0-9._-]{1,64}$`, and capped at 10 labels before
+  being added to created issues.
 
 Issue creation delegates to `fullsend issues create --tracker jira`
 ([#7083](https://github.com/fullsend-ai/fullsend/issues/7083)), which

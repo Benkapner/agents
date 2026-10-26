@@ -805,6 +805,98 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# Allowlist filtering: agent-proposed labels not in allowlist are excluded
+JIRA_UNALLOWLISTED_LABELS_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c '.new_issues[0].labels = ["meeting-notes", "release-blocker", "do-not-triage"]')
+run_test_stdout "jira/live-unallowlisted-labels-filtered" "${JIRA_UNALLOWLISTED_LABELS_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+LABEL_DATA=$(sed -n 's/^LABEL_PUT_DATA=//p' "${CURL_LOG}" | head -1)
+if echo "${LABEL_DATA}" | jq -e '.update.labels == [{"add":"meeting-notes"}]' >/dev/null 2>&1; then
+  echo "PASS: jira/unallowlisted-labels-excluded-from-put"
+else
+  echo "FAIL: jira/unallowlisted-labels-excluded-from-put — unexpected payload: ${LABEL_DATA}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Custom allowlist: operator-specified allowlist permits multiple configured labels
+export SCRIBE_JIRA_LABELS="meeting-notes,team-a"
+JIRA_CUSTOM_ALLOWLIST_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c '.new_issues[0].labels = ["meeting-notes", "team-a", "unapproved"]')
+run_test_stdout "jira/live-custom-allowlist-applied" "${JIRA_CUSTOM_ALLOWLIST_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+LABEL_DATA=$(sed -n 's/^LABEL_PUT_DATA=//p' "${CURL_LOG}" | head -1)
+if echo "${LABEL_DATA}" | jq -e '.update.labels == [{"add":"meeting-notes"},{"add":"team-a"}]' >/dev/null 2>&1; then
+  echo "PASS: jira/custom-allowlist-permitted-labels"
+else
+  echo "FAIL: jira/custom-allowlist-permitted-labels — unexpected payload: ${LABEL_DATA}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset SCRIBE_JIRA_LABELS
+
+# Label with comma is rejected by format regex and not split into multiple labels
+JIRA_COMMA_LABEL_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c '.new_issues[0].labels = ["label,with,comma", "meeting-notes"]')
+run_test_stdout "jira/live-label-with-comma-rejected-not-split" "${JIRA_COMMA_LABEL_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+LABEL_DATA=$(sed -n 's/^LABEL_PUT_DATA=//p' "${CURL_LOG}" | head -1)
+if echo "${LABEL_DATA}" | jq -e '.update.labels == [{"add":"meeting-notes"}]' >/dev/null 2>&1; then
+  echo "PASS: jira/label-with-comma-rejected-and-not-split"
+else
+  echo "FAIL: jira/label-with-comma-rejected-and-not-split — unexpected payload: ${LABEL_DATA}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Label exceeding 64 chars is filtered out by format regex
+LONG_LABEL="this-label-is-sixty-five-characters-long-which-exceeds-the-maximum"
+JIRA_LONG_LABEL_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c --arg l "${LONG_LABEL}" '.new_issues[0].labels = [$l, "meeting-notes"]')
+run_test_stdout "jira/live-label-over-64-chars-filtered" "${JIRA_LONG_LABEL_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+LABEL_DATA=$(sed -n 's/^LABEL_PUT_DATA=//p' "${CURL_LOG}" | head -1)
+if echo "${LABEL_DATA}" | jq -e '.update.labels == [{"add":"meeting-notes"}]' >/dev/null 2>&1; then
+  echo "PASS: jira/label-over-64-chars-filtered"
+else
+  echo "FAIL: jira/label-over-64-chars-filtered — unexpected payload: ${LABEL_DATA}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Label count capped at 10
+export SCRIBE_JIRA_LABELS="l1,l2,l3,l4,l5,l6,l7,l8,l9,l10,l11,l12"
+TWELVE_LABELS_JSON=$(jq -cn '[range(1; 13) | "l\(.)"]')
+JIRA_MANY_LABELS_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c --argjson l "${TWELVE_LABELS_JSON}" '.new_issues[0].labels = $l')
+run_test_stdout "jira/live-label-count-capped-at-10" "${JIRA_MANY_LABELS_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+LABEL_DATA=$(sed -n 's/^LABEL_PUT_DATA=//p' "${CURL_LOG}" | head -1)
+LABEL_COUNT=$(echo "${LABEL_DATA}" | jq -r '.update.labels | length' 2>/dev/null || echo 0)
+if [[ "${LABEL_COUNT}" -eq 10 ]]; then
+  echo "PASS: jira/label-count-capped-at-10"
+else
+  echo "FAIL: jira/label-count-capped-at-10 — expected 10 labels, got ${LABEL_COUNT} (payload: ${LABEL_DATA})"
+  FAILURES=$((FAILURES + 1))
+fi
+unset SCRIBE_JIRA_LABELS
+
+# When all proposed labels are unallowlisted, issue is created without label PUT
+JIRA_NO_ALLOWED_LABELS_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c '.new_issues[0].labels = ["unapproved-label"]')
+run_test_stdout "jira/live-all-unallowlisted-omits-put" "${JIRA_NO_ALLOWED_LABELS_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF 'LABEL_PUT_DATA=' "${CURL_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/all-unallowlisted-omits-put — unexpected label PUT sent"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/all-unallowlisted-omits-put"
+fi
+
+# Dry run reflects filtered labels in output
+export SCRIBE_DRY_RUN="true"
+JIRA_DRY_RUN_FILTER_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c '.new_issues[0].labels = ["meeting-notes", "unapproved-label"]')
+run_test_stdout "jira/dry-run-filters-labels-in-output" "${JIRA_DRY_RUN_FILTER_ISSUE}" \
+  "[DRY RUN] Labels: meeting-notes"
+if grep -qF "unapproved-label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira/dry-run-filters-labels-in-output — unapproved label leaked into stdout"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/dry-run-excludes-unapproved-label-from-stdout"
+fi
+export SCRIBE_DRY_RUN="false"
+
 # Label PUT failure: verify the issue is still created but the failure
 # is surfaced in the console summary.
 export JIRA_MOCK_LABEL_FAIL="1"
