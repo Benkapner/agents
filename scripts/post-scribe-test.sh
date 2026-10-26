@@ -843,18 +843,24 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# Label exceeding 64 chars is filtered out by format regex
-LONG_LABEL="this-label-is-sixty-five-characters-long-which-exceeds-the-maximum"
-JIRA_LONG_LABEL_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c --arg l "${LONG_LABEL}" '.new_issues[0].labels = [$l, "meeting-notes"]')
+# Label exceeding 64 chars is filtered out by format regex even when allowlisted;
+# 64-char boundary label is preserved.
+LONG_LABEL="this-label-is-sixty-five-characters-long-which-exceeds-the-max-65"
+BOUNDARY_64_LABEL="label-with-exact-length-of-sixty-four-characters-boundary-case64"
+export SCRIBE_JIRA_LABELS="meeting-notes,${LONG_LABEL},${BOUNDARY_64_LABEL}"
+JIRA_LONG_LABEL_ISSUE=$(echo "${JIRA_NEW_ISSUE}" | jq -c --arg long "${LONG_LABEL}" --arg b64 "${BOUNDARY_64_LABEL}" \
+  '.new_issues[0].labels = [$long, $b64, "meeting-notes"]')
 run_test_stdout "jira/live-label-over-64-chars-filtered" "${JIRA_LONG_LABEL_ISSUE}" \
   "Created: https://mock.atlassian.net/browse/PROJ-100"
 LABEL_DATA=$(sed -n 's/^LABEL_PUT_DATA=//p' "${CURL_LOG}" | head -1)
-if echo "${LABEL_DATA}" | jq -e '.update.labels == [{"add":"meeting-notes"}]' >/dev/null 2>&1; then
+if echo "${LABEL_DATA}" | jq -e --arg b64 "${BOUNDARY_64_LABEL}" \
+  '.update.labels == [{"add":$b64},{"add":"meeting-notes"}]' >/dev/null 2>&1; then
   echo "PASS: jira/label-over-64-chars-filtered"
 else
   echo "FAIL: jira/label-over-64-chars-filtered — unexpected payload: ${LABEL_DATA}"
   FAILURES=$((FAILURES + 1))
 fi
+unset SCRIBE_JIRA_LABELS
 
 # Label count capped at 10
 export SCRIBE_JIRA_LABELS="l1,l2,l3,l4,l5,l6,l7,l8,l9,l10,l11,l12"
