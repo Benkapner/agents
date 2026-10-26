@@ -3434,7 +3434,9 @@ run_push_history_rewrite_ordinary_append_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if grep -q "skipping rebase onto origin/agent/99-test-fix" "${stdout_log}"; then
+  # The general fast-forward skip (issue #1323) is expected here; only the
+  # history-rewrite / target-rebase preservation skips must not fire.
+  if grep -q "skipping rebase onto origin/agent/99-test-fix to preserve" "${stdout_log}"; then
     echo "FAIL: ${test_name} — ordinary append skipped origin/BRANCH rebase"
     cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
@@ -4521,9 +4523,112 @@ run_push_history_rewrite_non_rewrite_instruction_ignores_marker_test() {
   echo "PASS: ${test_name}"
 }
 
+# Issue #1323: the agent merged origin/main into the PR branch to reconcile
+# a stale base, with no merged_target / rebased_onto_target flag and no human
+# rebase request. origin/BRANCH is already an ancestor of HEAD, so the
+# replay must be skipped: a default rebase would drop the merge commit and
+# replay main-side commits onto the old PR tip — silently inflating the PR
+# when they apply cleanly ("clean"), or re-hitting the conflict the agent
+# already resolved ("conflict").
+run_push_preserves_unflagged_target_merge_test() {
+  local mode="$1"
+  local test_name="push-preserves-unflagged-target-merge-${mode}${2:+-$2}"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git -C "${base}/seed" checkout -q main
+  if [ "${mode}" = "conflict" ]; then
+    echo "main-change" > "${base}/seed/file.txt"
+    git -C "${base}/seed" add file.txt
+  else
+    echo "ahead" > "${base}/seed/other.txt"
+    git -C "${base}/seed" add other.txt
+  fi
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+  local main_ahead
+  main_ahead="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  if [ "${mode}" = "conflict" ]; then
+    git -C "${base}/repo" merge -q --no-edit origin/main >/dev/null 2>&1 || true
+    echo "resolved" > "${base}/repo/file.txt"
+    git -C "${base}/repo" add file.txt
+    git -C "${base}/repo" commit -q --no-edit
+  else
+    git -C "${base}/repo" merge -q --no-edit origin/main
+  fi
+  local local_tree
+  local_tree="$(git -C "${base}/repo" rev-parse "HEAD^{tree}")"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "bring this branch up to date with main" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "Rebasing local agent/99-test-fix onto origin/agent/99-test-fix" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — replayed onto origin/BRANCH even though it is an ancestor of HEAD"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "origin/agent/99-test-fix is already an ancestor of local HEAD" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected the fast-forward skip message"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_ahead}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch does not contain the main tip as an ancestor (merge dropped)"
+    git --git-dir="${base}/remote.git" log --oneline --graph refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [ -z "$(git --git-dir="${base}/remote.git" rev-list --merges refs/heads/agent/99-test-fix)" ]; then
+    echo "FAIL: ${test_name} — merge commit was dropped by replay"
+    git --git-dir="${base}/remote.git" log --oneline --graph refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tree
+  remote_tree="$(git --git-dir="${base}/remote.git" rev-parse "refs/heads/agent/99-test-fix^{tree}")"
+  if [ "${remote_tree}" != "${local_tree}" ]; then
+    echo "FAIL: ${test_name} — pushed tree differs from the agent's resolved tree"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 run_push_rebase_reconstructed_test
 run_push_rebase_matching_history_test
 run_push_rebase_fresh_branch_test
+run_push_preserves_unflagged_target_merge_test clean
+run_push_preserves_unflagged_target_merge_test conflict
 run_push_rebase_conflict_test
 run_push_rebase_fetch_failure_test
 run_push_rebase_preserves_agent_rebase_onto_target_test
@@ -4561,6 +4666,7 @@ run_push_history_rewrite_non_rewrite_instruction_ignores_marker_test
 GITHUB_SIGNED_COMMITS=false run_push_history_rewrite_ordinary_append_test signed-commits-off
 GITHUB_SIGNED_COMMITS=false run_push_history_rewrite_preserves_redo_test signed-commits-off
 GITHUB_SIGNED_COMMITS=false run_push_rebase_preserves_agent_rebase_onto_target_test signed-commits-off
+GITHUB_SIGNED_COMMITS=false run_push_preserves_unflagged_target_merge_test clean signed-commits-off
 
 # ---------------------------------------------------------------------------
 # Forge-reported conflict: post-fix skip of origin/BRANCH replay (issue #1518).
