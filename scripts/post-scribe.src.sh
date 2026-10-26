@@ -422,7 +422,6 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   BODY=$(jq -r ".new_issues[${i}].body" "${RESULT_FILE}")
   CONFIDENCE=$(jq -r ".new_issues[${i}].confidence" "${RESULT_FILE}")
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
-  LABELS_JSON=$(jq -c ".new_issues[${i}].labels // [\"meeting-notes\"]" "${RESULT_FILE}")
 
   # Gate: confidence
   if ! is_valid_confidence "${CONFIDENCE}"; then
@@ -481,11 +480,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     echo "    [DRY RUN] Would create issue: ${SAFE_TITLE}"
-    if [[ "${FULLSEND_TRACKER}" == "jira" ]] && declare -f _scribe_jira_filter_labels >/dev/null 2>&1; then
-      DISPLAY_LABELS=$(printf '%s' "$(_scribe_jira_filter_labels "${LABELS_JSON}")" | jq -r 'join(",")')
-    else
-      DISPLAY_LABELS="${LABELS}"
-    fi
+    DISPLAY_LABELS=$(forge_normalize_labels "${LABELS}")
     echo "    [DRY RUN] Labels: $(_gha_sanitize "${DISPLAY_LABELS}")"
     echo "    [DRY RUN] Body length: ${BODY_LEN} chars"
     NEW_ISSUE_URLS+=("")
@@ -505,11 +500,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
       fi
     fi
     CREATE_RC=0
-    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
-      ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS_JSON}") || CREATE_RC=$?
-    else
-      ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
-    fi
+    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
     if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
       echo "    ERROR: forge_create_issue failed (exit ${CREATE_RC})"
       unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"

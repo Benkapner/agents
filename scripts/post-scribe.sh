@@ -159,6 +159,12 @@ forge_issue_url_base() {
   echo "https://github.com/${repo}/issues"
 }
 
+# Normalize labels for display and creation. Returns comma-separated string.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "${labels}"
+}
+
 # Return the CI run URL for notifications.
 forge_run_url() {
   echo "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${1}}/actions/runs/${GITHUB_RUN_ID:-0}"
@@ -439,6 +445,12 @@ forge_issue_url_base() {
   local repo="$1" origin
   origin=$(_gitlab_trusted_origin) || return 1
   echo "${origin}/${repo}/-/issues"
+}
+
+# Normalize labels for display and creation. Returns comma-separated string.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "${labels}"
 }
 
 # Return the CI run/job URL for notifications.
@@ -947,6 +959,13 @@ forge_create_issue() {
 forge_issue_url_base() {
   echo "${JIRA_BASE_URL}/browse"
 }
+
+# Normalize and filter labels for Jira against allowlist, format, and cap.
+# Returns comma-separated string for display and logging.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "$(_scribe_jira_filter_labels "${labels}")" | jq -r 'join(",")'
+}
 # END bundled: lib/jira-scribe-ops.lib.sh
     ;;
   *)
@@ -1345,7 +1364,6 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   BODY=$(jq -r ".new_issues[${i}].body" "${RESULT_FILE}")
   CONFIDENCE=$(jq -r ".new_issues[${i}].confidence" "${RESULT_FILE}")
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
-  LABELS_JSON=$(jq -c ".new_issues[${i}].labels // [\"meeting-notes\"]" "${RESULT_FILE}")
 
   # Gate: confidence
   if ! is_valid_confidence "${CONFIDENCE}"; then
@@ -1404,11 +1422,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     echo "    [DRY RUN] Would create issue: ${SAFE_TITLE}"
-    if [[ "${FULLSEND_TRACKER}" == "jira" ]] && declare -f _scribe_jira_filter_labels >/dev/null 2>&1; then
-      DISPLAY_LABELS=$(printf '%s' "$(_scribe_jira_filter_labels "${LABELS_JSON}")" | jq -r 'join(",")')
-    else
-      DISPLAY_LABELS="${LABELS}"
-    fi
+    DISPLAY_LABELS=$(forge_normalize_labels "${LABELS}")
     echo "    [DRY RUN] Labels: $(_gha_sanitize "${DISPLAY_LABELS}")"
     echo "    [DRY RUN] Body length: ${BODY_LEN} chars"
     NEW_ISSUE_URLS+=("")
@@ -1428,11 +1442,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
       fi
     fi
     CREATE_RC=0
-    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
-      ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS_JSON}") || CREATE_RC=$?
-    else
-      ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
-    fi
+    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
     if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
       echo "    ERROR: forge_create_issue failed (exit ${CREATE_RC})"
       unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"

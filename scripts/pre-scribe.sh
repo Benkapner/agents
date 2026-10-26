@@ -157,6 +157,12 @@ forge_issue_url_base() {
   echo "https://github.com/${repo}/issues"
 }
 
+# Normalize labels for display and creation. Returns comma-separated string.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "${labels}"
+}
+
 # Return the CI run URL for notifications.
 forge_run_url() {
   echo "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${1}}/actions/runs/${GITHUB_RUN_ID:-0}"
@@ -437,6 +443,12 @@ forge_issue_url_base() {
   local repo="$1" origin
   origin=$(_gitlab_trusted_origin) || return 1
   echo "${origin}/${repo}/-/issues"
+}
+
+# Normalize labels for display and creation. Returns comma-separated string.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "${labels}"
 }
 
 # Return the CI run/job URL for notifications.
@@ -944,6 +956,13 @@ forge_create_issue() {
 
 forge_issue_url_base() {
   echo "${JIRA_BASE_URL}/browse"
+}
+
+# Normalize and filter labels for Jira against allowlist, format, and cap.
+# Returns comma-separated string for display and logging.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "$(_scribe_jira_filter_labels "${labels}")" | jq -r 'join(",")'
 }
 # END bundled: lib/jira-scribe-ops.lib.sh
     ;;

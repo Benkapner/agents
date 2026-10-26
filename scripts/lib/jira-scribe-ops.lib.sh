@@ -481,3 +481,10 @@ forge_create_issue() {
 forge_issue_url_base() {
   echo "${JIRA_BASE_URL}/browse"
 }
+
+# Normalize and filter labels for Jira against allowlist, format, and cap.
+# Returns comma-separated string for display and logging.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "$(_scribe_jira_filter_labels "${labels}")" | jq -r 'join(",")'
+}
