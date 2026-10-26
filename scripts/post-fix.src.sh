@@ -1104,6 +1104,22 @@ if [ "${NO_PUSH}" = "false" ]; then
         echo "history_rewritten is set but local HEAD is structurally indistinguishable from origin/${BRANCH} (same commit count and tree) — treating as a GitLab reconstruction rather than a genuine rewrite, and falling through to rebase onto origin/${BRANCH}"
       fi
     fi
+    # General fast-forward skip (issue #1323): when the freshly fetched
+    # origin/${BRANCH} is already an ancestor of HEAD, the plain push below
+    # is a fast-forward and the replay has nothing to reconcile. Running it
+    # anyway is harmful whenever HEAD carries a merge commit (e.g. the agent
+    # merged the target to reconcile a stale base): a default `git rebase`
+    # drops the merge and replays target-side history onto the old PR tip,
+    # either re-hitting the conflict the agent already resolved or silently
+    # inflating the PR. This uses runner-computed ancestry only — no
+    # sandbox-written flag — and is a no-op for linear histories. GitLab
+    # reconstructions have diverged SHAs, never satisfy it, and keep
+    # falling through to the replay.
+    if [ "${SKIP_REMOTE_REBASE}" = "false" ] \
+      && git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null; then
+      SKIP_REMOTE_REBASE=true
+      echo "origin/${BRANCH} is already an ancestor of local HEAD — skipping rebase onto origin/${BRANCH} (push is a fast-forward)"
+    fi
     if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
       echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."
       REBASE_OUTPUT="$(git rebase "origin/${BRANCH}" 2>&1)" && REBASE_RC=0 || REBASE_RC=$?
