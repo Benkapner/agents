@@ -37,6 +37,7 @@ work items).
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. Auto-promotion is also subject to `TRIAGE_AUTO_CODE` — see [Ready-to-code promotion](triage.md#ready-to-code-promotion). |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
+| `code-agent-failed` | Last-resort fallback applied to the issue when the post-code script fails and cannot post a failure comment even after retrying transient forge errors. Does not trigger or block the agent — it exists purely so the failure stays discoverable when the forge outage also swallows the comment. |
 
 ## Configuration
 
@@ -54,6 +55,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
 | `FULLSEND_APP_SET` | GitHub App identity prefix for custom deployments. The pre-script derives the bot/coder bot logins (`<prefix>[bot]` / `<prefix>-coder[bot]`) excluded from the existing-PR check, so PRs opened by a custom coder bot aren't misclassified as human PRs. | `"fullsend-ai"` | Any GitHub App identity prefix |
+| `GITHUB_SIGNED_COMMITS` | Set to `"true"` to publish the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](#signed-commits)); anything else keeps `git push`. The default is set in the GitHub overlay of `harness/code.yaml` (and `harness/fix.yaml` for the fix agent); override per repo via `base:` composition. | `"false"` | `"true"`, `"false"` |
 
 ## How the agent works
 
@@ -61,7 +63,7 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue, and skips tracking issues that have sub-issues (GitHub sub-issues or GitLab work-item children). `/fs-code --force` bypasses both checks.
 2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
-3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
+3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, publishes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 
 This separation ensures the agent never has direct write access to the repository.
 
