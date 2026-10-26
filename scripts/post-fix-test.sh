@@ -987,6 +987,7 @@ chmod +x "${REBASE_MOCK_BIN}/gh"
 # Mock gitleaks: always pass (the test targets DIFF_BASE logic, not gitleaks)
 cat > "${REBASE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 exit 0
 MOCKEOF
 chmod +x "${REBASE_MOCK_BIN}/gitleaks"
@@ -1900,6 +1901,7 @@ chmod +x "${PUSH_REBASE_MOCK_BIN}/sleep"
 
 cat > "${PUSH_REBASE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 exit 0
 MOCKEOF
 chmod +x "${PUSH_REBASE_MOCK_BIN}/gitleaks"
@@ -5876,6 +5878,7 @@ run_push_forge_conflict_precommit_gate_first_parent_test() {
   # tree delta rather than just the conflict resolution.
   cat > "${gate_mock}/gitleaks" <<EOF
 #!/usr/bin/env bash
+if [ "\$1" = version ]; then echo 8.30.1; exit 0; fi
 log_opts=""
 pipe_mode=false
 for arg in "\$@"; do
@@ -6011,6 +6014,7 @@ run_push_forge_conflict_untrusted_merge_secret_test() {
   # not confirmed trusted-target history.
   cat > "${gate_mock}/gitleaks" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 pipe_mode=false
 for arg in "$@"; do
   case "${arg}" in
@@ -6135,6 +6139,7 @@ run_push_forge_conflict_untrusted_octopus_merge_secret_test() {
   # merge with an unconfirmed extra parent.
   cat > "${gate_mock}/gitleaks" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 pipe_mode=false
 for arg in "$@"; do
   case "${arg}" in
