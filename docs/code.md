@@ -98,6 +98,39 @@ rejected PR body falls back to the normalized commit body only if that text
 passes the same scan. Raw text-scan diagnostics are not logged.
 Jira-source no-PR runs still emit only their existing generic notice.
 
+### Signed commits
+
+With `GITHUB_SIGNED_COMMITS` set to `"true"` (it is `"false"` by default),
+the post-script rebuilds each commit produced by the agent through the
+[Git Data API](https://docs.github.com/en/rest/git) with the App
+installation token, which causes GitHub to sign every commit it creates.
+The result shows as **Verified** in GitHub. With any other value the
+branch is pushed with `git push` and the rest of this section does not
+apply.
+
+Compared to `git push`:
+
+- The author becomes the App's bot user. The identity the commit was made
+  with is kept in an `Authored-by: name <email>` trailer, which the fix
+  agent and its post-script read to tell fix-agent commits from code-agent
+  and human ones.
+- The branch ref moves with a compare-and-swap, so a `--force-with-lease`
+  publish is refused when the branch moved since the post-script last
+  fetched it.
+- A signature made inside the sandbox (gitsign or SSH signing configured
+  through the harness env) is not preserved; the published commit carries
+  GitHub's signature instead. When GitHub does not sign a commit, the
+  publish fails under an App installation token and proceeds with a
+  warning under any other token, which never gets a signature.
+- Each blob not already in the parent tree or uploaded earlier in the
+  same push, plus each tree and commit, is one request against GitHub's
+  [secondary rate limit](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits)
+  (about 80 content-creating requests per minute, 500 per hour). A burst
+  is retried; a commit touching more files than the hourly limit allows
+  fails with the API's rate-limit error.
+
+On GitLab the branch is always pushed with `git push`.
+
 ### Signed-off-by trailers
 
 Agents must not sign off their commits — DCO is a human attestation, and the

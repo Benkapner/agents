@@ -25,6 +25,53 @@ else
   echo "PASS: bundled-script-has-failure-reporting"
 fi
 
+if ! grep -q 'forge_push_branch' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-signed-push"
+  echo "  ${POST_SCRIPT} missing forge_push_branch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-push"
+fi
+
+# The Authored-by trailer the signed publish adds must not reach the PR body.
+if ! grep -qF "sed '/^Authored-by:/d'" "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-strips-authored-by"
+  echo "  ${POST_SCRIPT} does not drop Authored-by from the commit body"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-strips-authored-by"
+fi
+
+# The switch that keeps the publish on git push unless enabled.
+if ! grep -q 'GITHUB_SIGNED_COMMITS' "${SCRIPT_DIR}/post-code.sh"; then
+  echo "FAIL: bundled-script-has-signed-commits-switch"
+  echo "  scripts/post-code.sh does not carry the GITHUB_SIGNED_COMMITS switch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-commits-switch"
+fi
+
+# harness/code.yaml ships GITHUB_SIGNED_COMMITS off, in its GitHub overlay
+# only; the eval overlay the root config.yaml registers turns it on so the
+# functional evals keep exercising the API path.
+CODE_HARNESS="${SCRIPT_DIR}/../harness/code.yaml"
+CODE_EVAL_HARNESS="${SCRIPT_DIR}/../eval/harness/code.yaml"
+ROOT_CONFIG="${SCRIPT_DIR}/../config.yaml"
+if [ "$(yq -r '[.overlays[] | select(.when == "runtime.forge == \"github\"") | .env.runner.GITHUB_SIGNED_COMMITS] | join(",")' "${CODE_HARNESS}")" = "false" ] \
+   && [ "$(yq -r '[.env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS, (.overlays[] | select(.when != "runtime.forge == \"github\"") | .env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS)] | map(select(. != null)) | length' "${CODE_HARNESS}")" = "0" ]; then
+  echo "PASS: code-harness-signed-commits-default-off"
+else
+  echo "FAIL: code-harness-signed-commits-default-off — GITHUB_SIGNED_COMMITS must be \"false\" in the GitHub overlay of harness/code.yaml and set nowhere else"
+  FAILURES=$((FAILURES + 1))
+fi
+if yq -e '.base == "../../harness/code.yaml" and .env.runner.GITHUB_SIGNED_COMMITS == "true"' "${CODE_EVAL_HARNESS}" >/dev/null \
+   && yq -e '.agents[] | select(.source == "eval/harness/code.yaml")' "${ROOT_CONFIG}" >/dev/null; then
+  echo "PASS: eval-code-harness-signed-commits-on"
+else
+  echo "FAIL: eval-code-harness-signed-commits-on — eval/harness/code.yaml must extend harness/code.yaml with GITHUB_SIGNED_COMMITS \"true\" and be registered in config.yaml"
+  FAILURES=$((FAILURES + 1))
+fi
+
 if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-gitleaks-install"
   echo "  ${POST_SCRIPT} missing install_gitleaks"
@@ -55,6 +102,32 @@ if ! grep -q 'forge_ensure_label' "${POST_SCRIPT}"; then
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: bundled-script-has-ensure-label"
+fi
+
+# Lib-defined code is only inlined into the bundle: in bundled mode check the
+# bundle (so a stale bundle is caught), in source mode check the lib itself.
+if [[ "${SCRIPT_TEST_TARGET:-source}" == "bundled" ]]; then
+  CODE_OPS_TARGET="${POST_SCRIPT}"
+  FAILURE_LIB_TARGET="${POST_SCRIPT}"
+else
+  CODE_OPS_TARGET="${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+  FAILURE_LIB_TARGET="${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
+fi
+
+if ! grep -q 'forge_retry_transient gh pr create' "${CODE_OPS_TARGET}"; then
+  echo "FAIL: create-pr-wrapped-in-transient-retry"
+  echo "  ${CODE_OPS_TARGET} does not wrap gh pr create with forge_retry_transient"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: create-pr-wrapped-in-transient-retry"
+fi
+
+if ! grep -q 'code-agent-failed' "${FAILURE_LIB_TARGET}"; then
+  echo "FAIL: post-failure-has-last-resort-label"
+  echo "  ${FAILURE_LIB_TARGET} missing code-agent-failed last-resort label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-last-resort-label"
 fi
 
 # ---------------------------------------------------------------------------
@@ -907,6 +980,7 @@ count_related_to_commit_body_test() {
   local processed
   processed="$(printf '%s\n' "${raw_commit_body}" \
     | sed '/^Signed-off-by:/d' \
+    | sed '/^Authored-by:/d' \
     | sed '/^Closes #/d' \
     | sed '/^Related to #/d' \
     | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
@@ -1272,7 +1346,7 @@ decide_push_retry() {
     return 0
   fi
 
-  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     echo "retry:force-with-lease"
     return 0
   fi
@@ -1316,6 +1390,10 @@ run_push_retry_test "push-non-fast-forward" \
 # Rejected error → retry with --force-with-lease
 run_push_retry_test "push-rejected" \
   "1" "! [rejected] agent/42 -> agent/42 (fetch first)" "retry:force-with-lease"
+
+# GitHub's wording when the API ref update loses a race → retry with --force-with-lease
+run_push_retry_test "push-api-not-a-fast-forward" \
+  "1" "gh: Update is not a fast forward (HTTP 422)" "retry:force-with-lease"
 
 # Unknown error → fail
 run_push_retry_test "push-unexpected-error" \
@@ -2086,6 +2164,8 @@ run_numeric_validation_test "issue-number-shell-injection" "1;echo pwned" "false
 SEC_CODE_TMPDIR="$(mktemp -d)"
 SEC_CODE_MOCK_BIN="${SEC_CODE_TMPDIR}/bin"
 mkdir -p "${SEC_CODE_MOCK_BIN}"
+# Git Data API calls from forge_push_branch are served from the bare remote.
+export FAKE_GH_GIT_API="${SCRIPT_DIR}/test-fixtures/fake-gh-git-api.sh"
 
 cat > "${SEC_CODE_MOCK_BIN}/sleep" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -2137,6 +2217,7 @@ setup_sec_code_repo() {
 cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "api -X")      exec bash "${FAKE_GH_GIT_API}" "$@" ;;
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     echo ""; exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
@@ -2160,21 +2241,76 @@ _sec_ns_rc=0
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
   export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-namespace.log" 2>&1 || _sec_ns_rc=$?
 
 _sec_ns_safe="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list "agent/99-evil-branch" 2>/dev/null)"
 _sec_ns_evil="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list "evil-branch" 2>/dev/null)"
+# The fake API authors every commit it creates as the App bot, so the
+# author of the remote tip proves the publish went through the API path.
+_sec_ns_author="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" log -1 --format=%an refs/heads/agent/99-evil-branch 2>/dev/null || true)"
 
-if [ -n "${_sec_ns_safe}" ] && [ -z "${_sec_ns_evil}" ]; then
+if [ -n "${_sec_ns_safe}" ] && [ -z "${_sec_ns_evil}" ] && [ "${_sec_ns_author}" = "fullsend-ai-coder[bot]" ]; then
   echo "PASS: security-namespace-enforcement"
 else
   echo "FAIL: security-namespace-enforcement"
   echo "  exit code:      ${_sec_ns_rc}"
   echo "  agent/99-*:     '${_sec_ns_safe}'"
   echo "  evil-branch:    '${_sec_ns_evil}'"
+  echo "  tip author:     '${_sec_ns_author}' (want fullsend-ai-coder[bot])"
   echo "  remote refs:    $(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list)"
   cat "${SEC_CODE_TMPDIR}/stdout-namespace.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# --- GITHUB_SIGNED_COMMITS off (the harness default): plain git push -----
+# Any Git Data API call on this path fails the run.
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api -X")      echo "unexpected Git Data API call on the plain-push path: $*" >&2; exit 99 ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_off_dir="${SEC_CODE_TMPDIR}/run-signed-commits-off"
+setup_sec_code_repo "${_sec_off_dir}" "agent/99-test-fix"
+
+_sec_off_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_off_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="false"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-signed-commits-off.log" 2>&1 || _sec_off_rc=$?
+
+# The remote tip is the sandbox commit itself, with its own author, not a
+# commit rebuilt under the App bot.
+_sec_off_remote="$(${REAL_GIT} -C "${_sec_off_dir}/remote.git" rev-parse --verify --quiet refs/heads/agent/99-test-fix || true)"
+_sec_off_local="$(${REAL_GIT} -C "${_sec_off_dir}/repo" rev-parse HEAD)"
+_sec_off_author="$(${REAL_GIT} -C "${_sec_off_dir}/remote.git" log -1 --format=%an refs/heads/agent/99-test-fix 2>/dev/null || true)"
+if [ "${_sec_off_rc}" -eq 0 ] && [ -n "${_sec_off_remote}" ] && [ "${_sec_off_remote}" = "${_sec_off_local}" ] \
+   && [ "${_sec_off_author}" = "Test" ]; then
+  echo "PASS: signed-commits-off-plain-push"
+else
+  echo "FAIL: signed-commits-off-plain-push"
+  echo "  exit code:  ${_sec_off_rc}"
+  echo "  remote tip: '${_sec_off_remote}' local HEAD: '${_sec_off_local}'"
+  echo "  tip author: '${_sec_off_author}' (want Test)"
+  cat "${SEC_CODE_TMPDIR}/stdout-signed-commits-off.log"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -2205,6 +2341,7 @@ _sec_api_rc=0
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
   export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-api-failure.log" 2>&1 || _sec_api_rc=$?
 
@@ -2252,6 +2389,7 @@ _sec_kill_rc=0
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
   export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-killed.log" 2>&1 || _sec_kill_rc=$?
 
@@ -2292,6 +2430,7 @@ _sec_noop_rc=0
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
   export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-genuine-noop.log" 2>&1 || _sec_noop_rc=$?
 
@@ -2346,6 +2485,7 @@ _sec_gitstatus_rc=0
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
   export FULLSEND_FORGE="github"
+  export GITHUB_SIGNED_COMMITS="true"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-git-status-fails.log" 2>&1 || _sec_gitstatus_rc=$?
 
@@ -3028,6 +3168,7 @@ run_am_test() {
     # shellcheck disable=SC2317
     sleep() { :; }
 
+    # shellcheck disable=SC2030
     export REPO_ENCODED="test-group%2Ftest-project"
     forge_enable_auto_merge "1" "--squash"
   ) 2>&1
@@ -3212,7 +3353,7 @@ run_workflow_url_test() {
     # shellcheck disable=SC1091
     source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
     eval "${env_setup}"
-    # shellcheck disable=SC2031
+    # shellcheck disable=SC2030,SC2031
     export REPO_FULL_NAME="test-group/test-project"
     forge_get_workflow_run_url
   ) 2>&1
@@ -3246,6 +3387,175 @@ run_workflow_url_test "gitlab-workflow-url-gha-fallback" \
 run_workflow_url_test "gitlab-workflow-url-gha-precedence" \
   'export GITHUB_RUN_ID="111"; export GITHUB_REPOSITORY="org/repo"; export CI_SERVER_URL="https://gitlab.com"; export CI_JOB_ID="999"' \
   "https://github.com/org/repo/actions/runs/111"
+
+# =============================================================================
+# forge_create_pr transient retry (issue #1361)
+# =============================================================================
+
+run_gh_create_pr_retry_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local fail_times="$2"
+  local error_msg="$3"
+  local expect_attempts="$4"
+  local expect_rc="$5"
+
+  local tmp mock_bin call_log rc=0 output attempts
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+n=$(grep -c 'pr create' "${CALL_LOG}" 2>/dev/null || true)
+if printf '%s' " $*" | grep -q ' pr create '; then
+  if [ "${n}" -le "${FAIL_TIMES}" ]; then
+    echo "${ERROR_MSG}" >&2
+    exit 1
+  fi
+  echo "https://github.com/org/repo/pull/1"
+  exit 0
+fi
+exit 0
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITHUB_CODE_OPS_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+      sleep() { :; }
+      export REPO_FULL_NAME="org/repo"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export CALL_LOG="${call_log}"
+      export FAIL_TIMES="${fail_times}"
+      export ERROR_MSG="${error_msg}"
+      export PATH="${mock_bin}:${PATH}"
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  attempts=$(grep -c 'pr create' "${call_log}" || true)
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${attempts}" -ne "${expect_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_attempts} gh pr create attempts, got ${attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${expect_rc}" -eq 0 ]; then
+    if ! echo "${output}" | grep -q 'https://github.com/org/repo/pull/1'; then
+      echo "FAIL: ${test_name}"
+      echo "  expected PR URL on success"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_gh_create_pr_retry_test "create-pr-retries-transient-503" \
+  2 "HTTP 503: Internal Server Error" 3 0
+run_gh_create_pr_retry_test "create-pr-gives-up-after-3" \
+  99 "HTTP 503: Internal Server Error" 3 1
+run_gh_create_pr_retry_test "create-pr-no-retry-on-422" \
+  99 "HTTP 422: Validation Failed" 1 1
+run_gh_create_pr_retry_test "create-pr-succeeds-first-try" \
+  0 "HTTP 503: Internal Server Error" 1 0
+
+run_gl_create_pr_retry_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local fail_times="$2"
+  local error_msg="$3"
+  local expect_attempts="$4"
+  local expect_rc="$5"
+
+  local tmp call_log rc=0 output attempts
+  tmp=$(mktemp -d)
+  call_log="${tmp}/calls"
+  : > "${call_log}"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITLAB_CODE_OPS_SH_LOADED
+      unset GITLAB_HOST_VALIDATION_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+      sleep() { :; }
+      export CALL_LOG="${call_log}"
+      export FAIL_TIMES="${fail_times}"
+      export ERROR_MSG="${error_msg}"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export REPO_ENCODED="group%2Fproject"
+      _gitlab_code_api_with_status() {
+        printf '%s\n' "called" >> "${CALL_LOG}"
+        local n
+        n=$(wc -l < "${CALL_LOG}" | tr -d ' ')
+        if [ "${n}" -le "${FAIL_TIMES}" ]; then
+          echo "${ERROR_MSG}" >&2
+          return 1
+        fi
+        echo '{"web_url":"https://gitlab.com/group/project/-/merge_requests/1"}'
+        return 0
+      }
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  attempts=$(wc -l < "${call_log}" | tr -d ' ')
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${attempts}" -ne "${expect_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_attempts} GitLab create attempts, got ${attempts}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_gl_create_pr_retry_test "gitlab-create-pr-retries-transient-503" \
+  2 "GitLab API error (HTTP 503): no available server" 3 0
+run_gl_create_pr_retry_test "gitlab-create-pr-gives-up-after-3" \
+  99 "GitLab API error (HTTP 503): no available server" 3 1
+run_gl_create_pr_retry_test "gitlab-create-pr-no-retry-on-400" \
+  99 "GitLab API error (HTTP 400): invalid source branch" 1 1
 
 # --- Summary ---
 

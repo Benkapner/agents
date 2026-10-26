@@ -15,6 +15,13 @@
 [[ -n "${GITHUB_CODE_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_CODE_OPS_SH_LOADED=1
 
+# shellcheck source=forge-transient-retry.lib.sh
+source "${BASH_SOURCE[0]%/*}/forge-transient-retry.lib.sh"
+# forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
+# API publish that gets the commits signed by GitHub.
+# shellcheck source=github-signed-push.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-signed-push.lib.sh"
+
 # --- URL handling ---
 
 forge_validate_issue_url() {
@@ -71,7 +78,7 @@ forge_create_label() {
 forge_post_issue_comment() {
   local body="$1"
   printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null
+    --repo "${REPO_FULL_NAME}" --body-file -
 }
 
 forge_post_pr_comment() {
@@ -79,7 +86,7 @@ forge_post_pr_comment() {
   local body="$2"
   gh pr comment "${target_pr}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null
+    --body "${body}"
 }
 
 # --- PR/MR lifecycle ---
@@ -138,7 +145,7 @@ forge_create_pr() {
   local head="$2"
   local title="$3"
   local body="$4"
-  gh pr create \
+  forge_retry_transient gh pr create \
     --repo "${REPO_FULL_NAME}" \
     --head "${head}" \
     --base "${base}" \

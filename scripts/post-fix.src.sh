@@ -41,7 +41,8 @@
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count
-#   ITERATION_CAP     — max iterations (default: 5)
+#   ITERATION_CAP     — max iterations (default: 5); a live
+#                       `fullsend-fix-budget/N` PR label can lower it
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging)
 #   HUMAN_INSTRUCTION — the harness-captured /fs-fix comment text (only for
 #                       human-triggered runs); used to confirm a rebase or
@@ -670,7 +671,8 @@ FIX_AGENT_GIT_NAME="fullsend-fix"
 # history_rewrite_preserves_remote_human_commits — 0 when every commit on
 # origin/BRANCH since it diverged from origin/TARGET_BRANCH that is NOT
 # authored by this fix agent (email + name, not email alone — see
-# FIX_AGENT_GIT_NAME above) is still present in local HEAD, either as an
+# FIX_AGENT_GIT_NAME above; author per commit_author_identity) is still
+# present in local HEAD, either as an
 # exact-SHA ancestor, or as an equivalent commit recognized by one of two
 # fallbacks:
 #   - same tree + same author identity — tolerates GitLab MR reconstruction,
@@ -711,8 +713,7 @@ history_rewrite_preserves_remote_human_commits() {
     return 1
   }
   for sha in $(git rev-list "${mb}..${remote_ref}" 2>/dev/null || true); do
-    author_email="$(git log -1 --format='%ae' "${sha}" 2>/dev/null)"
-    author_name="$(git log -1 --format='%an' "${sha}" 2>/dev/null)"
+    IFS=$'\t' read -r author_name author_email <<< "$(commit_author_identity "${sha}")"
     if [ "${author_email}" != "${bot}" ] || [ "${author_name}" != "${FIX_AGENT_GIT_NAME}" ]; then
       if git merge-base --is-ancestor "${sha}" HEAD 2>/dev/null; then
         continue
@@ -729,13 +730,14 @@ history_rewrite_preserves_remote_human_commits() {
         # Matching is done with exact field equality rather than
         # `grep -qF` against a bare "tree name email" string, which is an
         # unanchored substring match.
-        while IFS=$'\t' read -r candidate_tree candidate_name candidate_email; do
+        while IFS=$'\t' read -r candidate candidate_tree; do
           [ -n "${candidate_tree}" ] || continue
           [ "${candidate_tree}" = "${tree}" ] || continue
+          IFS=$'\t' read -r candidate_name candidate_email <<< "$(commit_author_identity "${candidate}")"
           [ "${candidate_name}" = "${author_name}" ] || continue
           [ "${candidate_email}" = "${author_email}" ] || continue
           continue 2
-        done < <(git log --format='%T%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+        done < <(git log --format='%H%x09%T' "${target_ref}..HEAD" 2>/dev/null)
       fi
       patch_id="$(git show "${sha}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
       if [ -n "${patch_id}" ]; then
@@ -748,8 +750,9 @@ history_rewrite_preserves_remote_human_commits() {
         # survived the rewrite. Matching is done with exact string
         # equality on %an/%ae rather than `git log --author=`, which
         # treats the name as an unanchored regex.
-        while IFS=$'\t' read -r candidate candidate_name candidate_email; do
+        while IFS= read -r candidate; do
           [ -n "${candidate}" ] || continue
+          IFS=$'\t' read -r candidate_name candidate_email <<< "$(commit_author_identity "${candidate}")"
           [ "${candidate_name}" = "${author_name}" ] || continue
           [ "${candidate_email}" = "${author_email}" ] || continue
           candidate_patch_id="$(git show "${candidate}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
@@ -757,7 +760,7 @@ history_rewrite_preserves_remote_human_commits() {
             HISTORY_REWRITE_PATCH_ID_ONLY_MATCH=true
             continue 2
           fi
-        done < <(git log --format='%H%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+        done < <(git log --format='%H' "${target_ref}..HEAD" 2>/dev/null)
       fi
       echo "history-rewrite: commit ${sha} (author ${author_name} <${author_email}>) on ${remote_ref} is not an ancestor of HEAD and has no equivalent (tree+author or patch-id+author) commit in HEAD" >&2
       return 1
@@ -1128,14 +1131,14 @@ ${REBASE_OUTPUT}"
   # force-with-lease is safe: it still rejects if someone else pushed in
   # the meantime.
   echo "Pushing branch ${BRANCH}..."
-  PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+  PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
   print_sanitized_gha_log "${PUSH_OUTPUT}"
 
   if [ "${PUSH_RC}" -ne 0 ]; then
-    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
       gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
       FORCE_PUSH_OUTPUT=""
-      if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+      if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
         print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
         PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
@@ -1179,7 +1182,7 @@ fi
 # the note on its own so the rewrite still leaves a trace on the PR.
 signoff_note_fallback() {
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
-    forge_post_pr_comment "${PR_NUMBER}" \
+    forge_retry_transient forge_post_pr_comment "${PR_NUMBER}" \
       "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)." \
       || gha_echo warning "Could not post the Signed-off-by strip note to PR #${PR_NUMBER}"
   fi
@@ -1223,13 +1226,30 @@ fi
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
+
+# Per-PR automatic fix budget (issue #1680): mirror pre-fix so the
+# needs-human warning and summary use the same tightened bot cap that
+# pre-fix enforces. Read live; a failed read keeps the configured cap.
+FIX_BUDGET=""
+if is_bot_user "${TRIGGER_SOURCE}"; then
+  if PR_LABELS_LIVE="$(forge_get_pr_labels "${PR_NUMBER}")"; then
+    FIX_BUDGET="$(fix_budget_from_labels "${PR_LABELS_LIVE}" "${BOT_CAP}")"
+  else
+    gha_echo warning "Could not read PR labels — any fullsend-fix-budget/N label is ignored for this run"
+  fi
+fi
+BOT_CAP="${FIX_BUDGET:-${BOT_CAP}}"
 WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 
 # The needs-human label is based on the bot cap — it signals that the
 # autonomous review→fix loop needs human direction. Human-triggered /fs-fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
-  gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  if [ -n "${FIX_BUDGET}" ]; then
+    gha_echo warning "Fix iteration ${ITERATION} is approaching the per-PR automatic fix budget of ${BOT_CAP} set by label fullsend-fix-budget/${FIX_BUDGET}"
+  else
+    gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  fi
   forge_create_label "needs-human" "Agent loop needs human intervention" "D93F0B"
   # shellcheck disable=SC2153
   forge_add_pr_label "${PR_NUMBER}" "needs-human"
@@ -1244,7 +1264,9 @@ echo "  Branch: ${BRANCH:-none}"
 echo "  PR: #${PR_NUMBER}"
 if [ "${NO_PUSH}" = "true" ]; then echo "  Pushed: no"; else echo "  Pushed: yes"; fi
 echo "  Trigger: ${TRIGGER_SOURCE}"
-if is_bot_user "${TRIGGER_SOURCE}"; then
+if is_bot_user "${TRIGGER_SOURCE}" && [ -n "${FIX_BUDGET}" ]; then
+  echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap, lowered by label fullsend-fix-budget/${FIX_BUDGET})"
+elif is_bot_user "${TRIGGER_SOURCE}"; then
   echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap)"
 else
   echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap, total across bot+human)"
