@@ -832,6 +832,91 @@ MOCKEOF
   echo "PASS: ${test_name}"
 }
 
+test_jira_closed_issues() {
+  local test_name="jira/closed-issues"
+  local closed_file="${TMPDIR}/jira-closed.json"
+  local captured_payload="${TMPDIR}/jira-closed-payload.json"
+  local jira_bin="${TMPDIR}/jira-bin-closed"
+  mkdir -p "${jira_bin}"
+
+  cat > "${jira_bin}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+PREV=""
+for arg in "\$@"; do
+  if [[ "\${PREV}" == "--data" ]]; then
+    printf '%s' "\${arg}" > "${captured_payload}"
+  fi
+  PREV="\${arg}"
+done
+echo '{"issues":[{"key":"PROJ-10","fields":{"summary":"Resolved task","labels":["done-label"]}},{"key":"PROJ-9","fields":{"summary":"Another task","labels":[]}}]}'
+MOCKEOF
+  chmod +x "${jira_bin}/curl"
+
+  local out
+  if ! out=$(
+    PATH="${jira_bin}:${PATH}" \
+    JIRA_BASE_URL="https://mock.atlassian.net" JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake" SCRIBE_JIRA_PROJECT="PROJ" bash -c '
+      set -euo pipefail
+      _gha_sanitize() { printf "%s" "$1"; }
+      source "$1/lib/jira-scribe-ops.lib.sh"
+      forge_list_closed_issues "unused" "$2" 50
+    ' _ "${SCRIPT_DIR}" "${closed_file}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — fetch failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! assert_eq "${test_name}: count" "2" "$(jq 'length' "${closed_file}")"; then return; fi
+  if ! assert_eq "${test_name}: key" "PROJ-10" "$(jq -r '.[0].key' "${closed_file}")"; then return; fi
+  if ! assert_eq "${test_name}: title" "Resolved task" "$(jq -r '.[0].title' "${closed_file}")"; then return; fi
+  if ! assert_eq "${test_name}: labels" '["done-label"]' "$(jq -c '.[0].labels' "${closed_file}")"; then return; fi
+  if ! assert_eq "${test_name}: url" "https://mock.atlassian.net/browse/PROJ-10" "$(jq -r '.[0].url' "${closed_file}")"; then return; fi
+
+  # Verify JQL payload
+  local jql max_results
+  jql=$(jq -r '.jql' "${captured_payload}")
+  max_results=$(jq -r '.maxResults' "${captured_payload}")
+  if ! assert_eq "${test_name}: jql" 'project = "PROJ" AND statusCategory = Done AND resolved >= -30d ORDER BY resolved DESC' "${jql}"; then return; fi
+  if ! assert_eq "${test_name}: maxResults" "50" "${max_results}"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
+test_jira_closed_issues_failure_fallback() {
+  local test_name="jira/closed-issues-failure-fallback"
+  local closed_file="${TMPDIR}/jira-closed-fail.json"
+  local jira_bin="${TMPDIR}/jira-bin-closed-fail"
+  mkdir -p "${jira_bin}"
+
+  cat > "${jira_bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 22
+MOCKEOF
+  chmod +x "${jira_bin}/curl"
+
+  local out
+  if ! out=$(
+    PATH="${jira_bin}:${PATH}" \
+    JIRA_BASE_URL="https://mock.atlassian.net" JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake" SCRIBE_JIRA_PROJECT="PROJ" bash -c '
+      set -euo pipefail
+      _gha_sanitize() { printf "%s" "$1"; }
+      source "$1/lib/jira-scribe-ops.lib.sh"
+      forge_list_closed_issues "unused" "$2" 50
+    ' _ "${SCRIPT_DIR}" "${closed_file}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — function failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! assert_eq "${test_name}: fallback empty array" "[]" "$(jq -c '.' "${closed_file}")"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- Run tests ---
 
 # GitHub tests
@@ -854,6 +939,8 @@ test_gitlab_labels_milestone_preserved
 # Jira tests
 test_jira_backlog_pagination
 test_jira_backlog_page_cap_truncation
+test_jira_closed_issues
+test_jira_closed_issues_failure_fallback
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

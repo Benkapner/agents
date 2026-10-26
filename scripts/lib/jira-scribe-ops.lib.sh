@@ -4,11 +4,11 @@
 #
 # Bundled into pre-scribe.sh and post-scribe.sh via scribe-ops.lib.sh, which
 # sources this file AFTER the GitHub/GitLab forge library when
-# FULLSEND_TRACKER=jira. The functions below redefine the backlog and write
-# operations (open-issue fetch, backlog filter, open count, issue creation,
-# issue URL base) so that backlog matching and writes target one Jira
-# project, while repo context (closed issues, open PRs, doc index, run URL)
-# keeps coming from the forge.
+# FULLSEND_TRACKER=jira. The functions below redefine the backlog, closed-issue,
+# and write operations (open-issue fetch, backlog filter, closed-issue fetch,
+# open count, issue creation, issue URL base) so that backlog matching,
+# closed-issue context, and writes target one Jira project, while repo context
+# (open PRs, doc index, run URL) keeps coming from the forge.
 #
 # Scope (MVP): new issues only, in one operator-configured project and
 # issue type. Comment writes are not supported — existing_issue is a
@@ -125,6 +125,11 @@ _scribe_jira_backlog_jql() {
     "$(_scribe_jql_quote "${SCRIBE_JIRA_PROJECT}")"
 }
 
+_scribe_jira_closed_jql() {
+  printf 'project = %s AND statusCategory = Done AND resolved >= -30d ORDER BY resolved DESC' \
+    "$(_scribe_jql_quote "${SCRIBE_JIRA_PROJECT}")"
+}
+
 # Run a JQL search, following nextPageToken. Writes one JSON array of issues
 # per page to output_file (same multi-document shape as `gh api --paginate`).
 # Returns 2 if the page cap was hit while more results remained.
@@ -207,6 +212,34 @@ forge_get_issue_count() {
   _scribe_jira_api POST "/search/approximate-count" \
     --data "$(jq -cn --arg jql "$(_scribe_jira_backlog_jql)" '{jql: $jql}')" 2>/dev/null \
     | jq -r '.count // empty' 2>/dev/null || echo ""
+}
+
+# Fetch recently closed (Done) issues from the Jira project (resolved in the
+# last 30 days, up to limit, default 50).
+forge_list_closed_issues() {
+  local _repo="$1" output_file="$2" limit="${3:-50}"
+  [[ "${limit}" =~ ^[1-9][0-9]*$ ]] || limit=50
+  [[ "${limit}" -gt 100 ]] && limit=100
+  local payload response
+  payload=$(jq -cn \
+    --arg jql "$(_scribe_jira_closed_jql)" \
+    --argjson limit "${limit}" \
+    '{jql: $jql, fields: ["summary","labels"], maxResults: $limit}')
+  response=$(_scribe_jira_api POST "/search/jql" --data "${payload}" 2>/dev/null) || {
+    echo "WARNING: failed to fetch recently closed Jira issues" >&2
+    echo '[]' > "${output_file}"
+    return 0
+  }
+  if ! printf '%s' "${response}" | jq --arg base "${JIRA_BASE_URL}" '[.issues[]? | {
+      key,
+      title: (.fields.summary // ""),
+      labels: (.fields.labels // []),
+      url: ($base + "/browse/" + .key)
+    }]' > "${output_file}" 2>/dev/null; then
+    echo "WARNING: failed to parse recently closed Jira issues" >&2
+    echo '[]' > "${output_file}"
+    return 0
+  fi
 }
 
 # --- Post-script: issue operations ---

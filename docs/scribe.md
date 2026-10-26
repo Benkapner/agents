@@ -107,8 +107,9 @@ Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 
 Scribe can create new issues in one Jira Cloud project instead of the
 forge's issue tracker. The forge (`FULLSEND_FORGE`) still provides repo
-context (closed issues, open PRs, doc index). The Jira project provides
-the backlog the agent matches against and receives new issues.
+context (open PRs, doc index). The Jira project provides the open backlog
+and recently resolved issues the agent matches against and receives new
+issues.
 
 Set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by
 extending the harness with `base:` composition. Then update the agent's
@@ -154,6 +155,9 @@ Behavior:
   JQL `nextPageToken` pagination. Fetching stops after 50 pages (about
   5,000 issues); a larger backlog is silently truncated to the most
   recently created issues.
+- Recently closed issues: in Jira mode, up to 50 Done issues resolved in
+  the last 30 days are fetched from the Jira project so the agent does
+  not re-propose work that was recently completed.
 - Before creating anything (including in dry-run), the post-script checks
   Jira create metadata. It fails if the issue type is missing or the
   project requires fields scribe does not set, or the create screen has no

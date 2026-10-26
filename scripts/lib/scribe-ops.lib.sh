@@ -4,8 +4,8 @@
 #
 # Sources the correct forge-specific ops based on FULLSEND_FORGE. When
 # FULLSEND_TRACKER=jira, additionally sources the Jira tracker ops, which
-# redefine the backlog and issue-creation functions so they target Jira
-# while repo context (closed issues, PRs, docs) stays on the forge.
+# redefine the backlog, closed-issue, and issue-creation functions so they
+# target Jira while repo context (open PRs, docs) stays on the forge.
 # FULLSEND_TRACKER defaults to FULLSEND_FORGE.
 # Bundled inline by bundle-sh.sh at build time.
 
