@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Tests for setup-fixture.sh: the EVAL_REPO_VISIBILITY value is validated
-# before anything is created, the developer's git hooks are bypassed on the
-# snapshot commit only for a private repo, and a half-created repo found on
-# retry is reused only with the visibility this run asked for.
+# before anything is created; the developer's git hooks are bypassed on the
+# snapshot commit and its push only for a private repo; a half-created repo
+# found on retry is reused only with the visibility this run asked for; the
+# snapshot push is retried (STUB_PUSH_FAILURES fails the first N pushes); and
+# the repo name is recorded for teardown-fixture.sh as soon as it exists, so a
+# later failure still leaves the record behind (#1736).
 #
 # gh, git, sleep and uuidgen are stubs that record their arguments; yq and jq
 # are the real ones. The script needs bash 4 (mapfile), so it runs under the
-# same bash as this test.
+# same bash as this test, except for one public-repo case that is also run
+# under /bin/bash when that bash predates 4.4 (SF_BASH).
+#
+# Run from the repo root:
+#   bash eval/scripts/setup-fixture-test.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -108,6 +115,7 @@ run_sf() { # root [VAR=value ...]
 }
 
 gh_calls() { cat "$1/capture/gh-calls.log" 2>/dev/null || true; }
+hook_output() { yq -r "$2 // \"\"" "$1/ws/.hook-outputs.yaml" 2>/dev/null || true; }
 git_calls() { cat "$1/capture/git-calls.log" 2>/dev/null || true; }
 sleep_calls() { cat "$1/capture/sleep-calls.log" 2>/dev/null || true; }
 
@@ -133,10 +141,14 @@ if [[ $RC -eq 0 ]] \
   && git_calls "$ROOT" | grep -q -- "-c core.hooksPath=/dev/null commit --no-verify -m eval: initial content" \
   && git_calls "$ROOT" | grep -q -- "-c core.hooksPath=/dev/null push origin HEAD" \
   && ! echo "$OUT" | grep -q "WARNING" \
-  && grep -q 'FIXTURE_NUMBER: "7"' "${ROOT}/ws/.hook-outputs.yaml"; then
-  pass "by default the repo is private and the snapshot commit and push bypass local git hooks"
+  && [[ "$(hook_output "$ROOT" .env.EPHEMERAL_REPO)" == "testorg/eval-case-deadbeef" ]] \
+  && [[ "$(hook_output "$ROOT" .data.ephemeral_repo)" == "testorg/eval-case-deadbeef" ]] \
+  && [[ "$(hook_output "$ROOT" .env.FIXTURE_URL)" == "https://github.com/testorg/eval-case-deadbeef/issues/7" ]] \
+  && [[ "$(hook_output "$ROOT" .env.FIXTURE_NUMBER)" == "7" ]] \
+  && [[ "$(hook_output "$ROOT" .env.FIXTURE_TYPE)" == "issue" ]]; then
+  pass "by default the repo is private, the commit and push bypass local git hooks, and the full hook outputs replace the early record"
 else
-  fail "by default the repo is private and the snapshot commit and push bypass local git hooks (rc=$RC, output: $OUT)"
+  fail "by default the repo is private, the commit and push bypass local git hooks, and the full hook outputs replace the early record (rc=$RC, output: $OUT)"
 fi
 rm -rf "$ROOT"
 
@@ -201,10 +213,11 @@ OUT=$(run_sf "$ROOT" STUB_CREATE_RC=1 2>&1) || RC=$?
 if [[ $RC -eq 1 ]] \
   && echo "$OUT" | grep -q "could not create testorg/eval-case-deadbeef after 3 attempts" \
   && [[ "$(gh_calls "$ROOT" | grep -c "^repo create ")" == "3" ]] \
-  && [[ "$(sleep_calls "$ROOT" | tr '\n' ' ')" == "sleep 5 sleep 10 " ]]; then
-  pass "three failed creates with no existing repo give up after two backoffs, with no sleep after the last"
+  && [[ "$(sleep_calls "$ROOT" | tr '\n' ' ')" == "sleep 5 sleep 10 " ]] \
+  && [[ ! -f "${ROOT}/ws/.hook-outputs.yaml" ]]; then
+  pass "three failed creates with no existing repo give up after two backoffs, with no sleep after the last, and record nothing for teardown"
 else
-  fail "three failed creates with no existing repo give up after two backoffs, with no sleep after the last (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
+  fail "three failed creates with no existing repo give up after two backoffs, with no sleep after the last, and record nothing for teardown (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
 fi
 rm -rf "$ROOT"
 
@@ -223,6 +236,7 @@ else
 fi
 rm -rf "$ROOT"
 
+# --- Three failed pushes give up; the early teardown record survives ---
 ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
 RC=0
 OUT=$(run_sf "$ROOT" STUB_PUSH_FAILURES=3 2>&1) || RC=$?
@@ -230,10 +244,13 @@ if [[ $RC -eq 1 ]] \
   && echo "$OUT" | grep -q "could not push the snapshot to testorg/eval-case-deadbeef after 3 attempts" \
   && [[ "$(git_calls "$ROOT" | grep -c " push origin HEAD")" == "3" ]] \
   && [[ "$(sleep_calls "$ROOT" | tr '\n' ' ')" == "sleep 10 sleep 20 " ]] \
-  && ! gh_calls "$ROOT" | grep -q "^issue create "; then
-  pass "three failed pushes give up with no sleep after the last and nothing created afterwards"
+  && ! gh_calls "$ROOT" | grep -q "^issue create " \
+  && [[ "$(hook_output "$ROOT" .env.EPHEMERAL_REPO)" == "testorg/eval-case-deadbeef" ]] \
+  && [[ "$(hook_output "$ROOT" .data.ephemeral_repo)" == "testorg/eval-case-deadbeef" ]] \
+  && [[ -z "$(hook_output "$ROOT" .env.FIXTURE_URL)" ]]; then
+  pass "three failed pushes give up with no sleep after the last, nothing created afterwards, and the repo recorded for teardown"
 else
-  fail "three failed pushes give up with no sleep after the last and nothing created afterwards (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
+  fail "three failed pushes give up with no sleep after the last, nothing created afterwards, and the repo recorded for teardown (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
 fi
 rm -rf "$ROOT"
 
