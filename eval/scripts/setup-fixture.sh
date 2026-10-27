@@ -147,7 +147,7 @@ if ! git -C "$TARGET_DIR" diff --cached --quiet; then
   hook_opts=()
   if [[ "$EVAL_REPO_VISIBILITY" == "private" ]]; then
     hook_opts=(-c core.hooksPath=/dev/null)
-    git -C "$TARGET_DIR" ${hook_opts[@]+"${hook_opts[@]}"} commit --no-verify -m "eval: initial content"
+    git -C "$TARGET_DIR" "${hook_opts[@]}" commit --no-verify -m "eval: initial content"
   else
     echo "WARNING: EVAL_REPO_VISIBILITY=${EVAL_REPO_VISIBILITY}: the snapshot will be published under the eval account; local git hooks run on this commit and its push" >&2
     git -C "$TARGET_DIR" commit -m "eval: initial content"

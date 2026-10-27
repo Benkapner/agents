@@ -12,18 +12,21 @@
 #
 # Required env (injected by harness from hook outputs + execution.env):
 #   FULLSEND_DIR    — path to the fullsend scaffold directory
-#   EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT — optional per-run overrides,
-#                     passed as fullsend run --runtime/--model/--effort
-#   EVAL_FORGE      — optional forge passed as fullsend run --forge (default
-#                     github; a local run otherwise resolves no forge)
-#   EVAL_SANDBOX_BINARY — optional path of the Linux fullsend binary copied
-#                     into the sandbox (default: the fullsend on PATH); set it
-#                     on a macOS host
-#   OPENAI_API_KEY  — optional; passed through to fullsend run for the pi and
-#                     codex runtimes when set
 #   GH_TOKEN        — GitHub token
 #   FIXTURE_URL     — URL of the fixture (issue or PR)
 #   FIXTURE_TYPE    — "issue" or "pull_request"
+#
+# Optional env:
+#   EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT — per-run overrides, passed as
+#                     fullsend run --runtime/--model/--effort
+#   EVAL_TIMEOUT    — runner timeout in seconds (default 1800)
+#   EVAL_FORGE      — forge passed as fullsend run --forge (default github; a
+#                     local run otherwise resolves no forge)
+#   EVAL_SANDBOX_BINARY — path of the Linux fullsend binary copied into the
+#                     sandbox (default: the fullsend on PATH); set it on a
+#                     macOS host
+#   OPENAI_API_KEY  — passed through to fullsend run for the codex and pi
+#                     runtimes when set
 set -euo pipefail
 
 AGENT="${1:?agent name required}"
