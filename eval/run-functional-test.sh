@@ -41,6 +41,17 @@ trap 'rm -rf "${TMPROOT}"' EXIT
 # (one release:true, one not) and a stub harness, so run-functional.sh's
 # own file-existence checks pass without a real agent-eval-harness.
 # ---------------------------------------------------------------------------
+# git with no user config, hooks or signing, for the fixture repositories.
+FIXTURE_GIT="git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null"
+# pin_harness <root> <version>: a new harness commit at <version>, checked out
+# in the submodule and recorded by the superproject (a pin bump).
+pin_harness() {
+  echo "version = \"$2\"" > "$1/harness-src/pyproject.toml"
+  $FIXTURE_GIT -C "$1/harness-src" add -A && $FIXTURE_GIT -C "$1/harness-src" commit -qm "pin $2"
+  $FIXTURE_GIT -C "$1/eval/.agent-eval-harness" -c protocol.file.allow=always pull -q origin HEAD
+  $FIXTURE_GIT -C "$1" add eval/.agent-eval-harness && $FIXTURE_GIT -C "$1" commit -qm "bump to $2"
+}
+
 setup_fixture() {
   local root="$1"
   mkdir -p "${root}/eval/testagent/cases/001-release-case"
@@ -91,11 +102,24 @@ YAML
   echo "fixture: {}" > "${root}/eval/testagent/cases/002-full-only-case/input.yaml"
 
   # Stub harness at run-functional.sh's default AGENT_EVAL_HARNESS_DIR
-  # (${EVAL_DIR}/.agent-eval-harness) — it only checks these paths exist.
-  mkdir -p "${root}/eval/.agent-eval-harness/skills/eval-run/scripts"
-  : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/workspace.py"
-  : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/execute.py"
-  : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/score.py"
+  # (${EVAL_DIR}/.agent-eval-harness): it only checks these paths exist and
+  # reads the version. run-functional.sh takes the pinned version from the
+  # submodule commit the superproject records, so the fixture is a git
+  # checkout: a harness repo with a 1.37.4 commit then a 1.56.3 commit,
+  # recorded as the submodule at 1.56.3 (the minimum run-functional.sh
+  # enforces). The fixture's own files stay untracked.
+  mkdir -p "${root}/harness-src/skills/eval-run/scripts"
+  : > "${root}/harness-src/skills/eval-run/scripts/workspace.py"
+  : > "${root}/harness-src/skills/eval-run/scripts/execute.py"
+  : > "${root}/harness-src/skills/eval-run/scripts/score.py"
+  $FIXTURE_GIT -C "${root}/harness-src" init -q
+  echo 'version = "1.37.4"' > "${root}/harness-src/pyproject.toml"
+  $FIXTURE_GIT -C "${root}/harness-src" add -A && $FIXTURE_GIT -C "${root}/harness-src" commit -qm old
+  echo 'version = "1.56.3"' > "${root}/harness-src/pyproject.toml"
+  $FIXTURE_GIT -C "${root}/harness-src" add -A && $FIXTURE_GIT -C "${root}/harness-src" commit -qm pin
+  $FIXTURE_GIT -C "$root" init -q
+  $FIXTURE_GIT -C "$root" -c protocol.file.allow=always submodule add -q "${root}/harness-src" eval/.agent-eval-harness
+  $FIXTURE_GIT -C "$root" add .gitmodules eval/.agent-eval-harness && $FIXTURE_GIT -C "$root" commit -qm super
 
   mkdir -p "${root}/bin" "${root}/capture"
 
@@ -116,10 +140,14 @@ for a in "$@"; do
 done
 [[ -n "$config_arg" ]] && cp "$config_arg" "${CAPTURE_DIR}/last-config.yaml"
 
-if [[ "${1:-}" == "-c" ]]; then
-  # `python3 -c "import agent_eval"` probe — pretend it is installed.
+# `python3 -P -c "import agent_eval"` probe: installed unless
+# STUB_AGENT_EVAL_MISSING is set. A probe without -P is refused, so the flag
+# cannot silently go away.
+if [[ "${1:-}" == "-P" && "${2:-}" == "-c" ]]; then
+  [[ -n "${STUB_AGENT_EVAL_MISSING:-}" ]] && exit 1
   exit 0
 fi
+[[ "${1:-}" == "-c" ]] && exit 1
 
 case "${1:-}" in
   *execute.py)
@@ -493,6 +521,207 @@ if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "002-full-only-case (exit missing)";
   pass "a case record with no exit_code fails the script"
 else
   fail "a case record with no exit_code fails the script (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
+# Harness version gate: the checkout in use must be a plain release version
+# at or above the submodule pin, for every eval. AGENT_EVAL_HARNESS_DIR may
+# point at another checkout. The pin is the submodule commit the superproject
+# records, not the directory's contents.
+# ---------------------------------------------------------------------------
+RUN="STUB_CASE_RESULTS=001-release-case:0:3,002-full-only-case:0:3"
+other_harness() { # root version: a second checkout for AGENT_EVAL_HARNESS_DIR
+  mkdir -p "$1/other-harness/skills/eval-run/scripts"
+  : > "$1/other-harness/skills/eval-run/scripts/workspace.py"
+  : > "$1/other-harness/skills/eval-run/scripts/execute.py"
+  : > "$1/other-harness/skills/eval-run/scripts/score.py"
+  [[ -z "$2" ]] || echo "version = \"$2\"" > "$1/other-harness/pyproject.toml"
+}
+no_execute() { [[ "$(cat "$1/capture/execute-calls" 2>/dev/null || echo 0)" == "0" ]]; }
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+rm -rf "${ROOT}/.git"   # an exported tree: nothing records the pin
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the pinned agent-eval-harness version: ${ROOT} is not a git checkout that records eval/.agent-eval-harness" \
+  && echo "$OUT" | grep -q "Run the evals from a git clone of this repository. Run: git submodule sync" \
+  && no_execute "$ROOT"; then
+  pass "a tree that is not a git checkout is refused before anything runs: the pin cannot be read"
+else
+  fail "a tree that is not a git checkout is refused before anything runs: the pin cannot be read (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# git also finds a repository in the parent directories: an exported tree
+# inside a checkout must not borrow the enclosing checkout's pin.
+run_test
+OUTER="$(mktemp -d)"; setup_fixture "$OUTER"
+ROOT="${OUTER}/exported"; setup_fixture "$ROOT"; rm -rf "${ROOT}/.git"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the pinned agent-eval-harness version: ${ROOT} is not a git checkout that records eval/.agent-eval-harness" \
+  && no_execute "$ROOT"; then
+  pass "an exported tree inside another checkout is refused as not a git checkout"
+else
+  fail "an exported tree inside another checkout is refused as not a git checkout (rc=$RC, output: $OUT)"
+fi
+rm -rf "$OUTER"
+
+# A directory of plain files committed where the submodule was is not a pin.
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+$FIXTURE_GIT -C "$ROOT" rm -q --cached eval/.agent-eval-harness
+rm -f "${ROOT}/.gitmodules" "${ROOT}/eval/.agent-eval-harness/.git"
+$FIXTURE_GIT -C "$ROOT" add eval/.agent-eval-harness && $FIXTURE_GIT -C "$ROOT" commit -qm "plain files"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the pinned agent-eval-harness version: ${ROOT} is not a git checkout that records eval/.agent-eval-harness as a submodule" \
+  && no_execute "$ROOT"; then
+  pass "a harness directory committed as plain files is refused: not a submodule pin"
+else
+  fail "a harness directory committed as plain files is refused: not a submodule pin (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" STUB_AGENT_EVAL_MISSING=1 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "agent-eval-harness library is not installed" \
+  && echo "$OUT" | grep -q "pip install -e eval/.agent-eval-harness" \
+  && no_execute "$ROOT"; then
+  pass "a missing agent_eval install is refused before anything runs"
+else
+  fail "a missing agent_eval install is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+$FIXTURE_GIT -C "$ROOT" submodule deinit -q -f eval/.agent-eval-harness   # recorded, never initialised
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+# With the submodule as the checkout in use, the missing-script check comes
+# first; the hint is the same.
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "harness script not found: ${ROOT}/eval/.agent-eval-harness/skills/eval-run/scripts/workspace.py" \
+  && echo "$OUT" | grep -q "Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness" \
+  && no_execute "$ROOT"; then
+  pass "an uninitialised submodule is refused before anything runs"
+else
+  fail "an uninitialised submodule is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" 1.57.0
+$FIXTURE_GIT -C "$ROOT" submodule deinit -q -f eval/.agent-eval-harness   # never initialised, another checkout in use
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "but that commit is not in the submodule directory" \
+  && no_execute "$ROOT"; then
+  pass "an uninitialised submodule with another checkout in use is still refused: the pin is read from the submodule"
+else
+  fail "an uninitialised submodule with another checkout in use is still refused: the pin is read from the submodule (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+$FIXTURE_GIT -C "${ROOT}/eval/.agent-eval-harness" checkout -q HEAD~1   # directory behind the pin
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "checkout at ${ROOT}/eval/.agent-eval-harness is version 1.37.4, older than the agent-eval-harness 1.56.3 this repo pins" \
+  && no_execute "$ROOT"; then
+  pass "a submodule directory behind the recorded pin is refused (the pin is read from the gitlink)"
+else
+  fail "a submodule directory behind the recorded pin is refused (the pin is read from the gitlink) (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "this repo pins"; then
+  pass "a submodule directory at the recorded pin runs normally"
+else
+  fail "a submodule directory at the recorded pin runs normally (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" 1.49.1
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "checkout at ${ROOT}/other-harness is version 1.49.1, older than the agent-eval-harness 1.56.3 this repo pins" \
+  && echo "$OUT" | grep -q "point AGENT_EVAL_HARNESS_DIR at a checkout of 1.56.3 or later" \
+  && no_execute "$ROOT"; then
+  pass "a checkout older than the pin is refused before anything runs"
+else
+  fail "a checkout older than the pin is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# The minimum is the pin itself, not a number written into the script.
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" 1.57.0
+pin_harness "$ROOT" 1.60.0
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "is version 1.57.0, older than the agent-eval-harness 1.60.0 this repo pins" && no_execute "$ROOT"; then
+  pass "the minimum follows the submodule pin"
+else
+  fail "the minimum follows the submodule pin (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+for ver in 1.56.3 1.56.10 2.0.0; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" "$ver"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+  if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "this repo pins"; then
+    pass "a checkout at ${ver} (at or above the pin) runs normally"
+  else
+    fail "a checkout at ${ver} (at or above the pin) runs normally (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+for ver in unknown 1.56.3rc1 2.0; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" "$ver"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+  if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "is version '${ver}', not a release version" && no_execute "$ROOT"; then
+    pass "a checkout at '${ver}' is refused as not a release version"
+  else
+    fail "a checkout at '${ver}' is refused as not a release version (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" ""
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the agent-eval-harness version from ${ROOT}/other-harness/pyproject.toml" \
+  && echo "$OUT" | grep -q "point AGENT_EVAL_HARNESS_DIR at a checkout of 1.56.3 or later" \
+  && no_execute "$ROOT"; then
+  pass "a checkout with no readable version is refused"
+else
+  fail "a checkout with no readable version is refused (rc=$RC, output: $OUT)"
 fi
 rm -rf "$ROOT"
 
