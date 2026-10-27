@@ -68,11 +68,10 @@ FIXTURE_BODY=${FIXTURE_BODY//\$\{REPO_URL\}/https://github.com/${EPHEMERAL_REPO}
 
 # Private by default: the fixture is a throwaway copy of someone else's
 # repository, and a public copy is indexed, scanned and acted on by automation
-# as if it were meant to be published (Red Hat InfoSec flagged an upstream
-# sample TLS key in a public kserve snapshot on 2026-09-25, which is what
-# changed the default). EVAL_REPO_VISIBILITY=public restores the old
-# behaviour; the value is checked here, before anything is created, since gh
-# would otherwise reject a typo as an unknown flag on every attempt of the
+# as if it were meant to be published (a secret scanner has flagged a sample
+# key in a public fixture snapshot). EVAL_REPO_VISIBILITY=public restores the
+# old behaviour; the value is checked here, before anything is created, since
+# gh would otherwise reject a typo as an unknown flag on every attempt of the
 # retry loop below.
 EVAL_REPO_VISIBILITY="${EVAL_REPO_VISIBILITY:-private}"
 case "$EVAL_REPO_VISIBILITY" in

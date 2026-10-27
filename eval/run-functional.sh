@@ -49,8 +49,8 @@
 #                   (code, review and fix pin 1700, retro 540; triage uses
 #                   the environment, default 1800)
 #   EVAL_FORGE    — forge passed as fullsend run --forge (default github)
-#   EVAL_SANDBOX_BINARY — Linux fullsend binary copied into the sandbox
-#                   (default: the fullsend on PATH); set it on a macOS host
+#   EVAL_SANDBOX_BINARY — a specific Linux fullsend binary to copy into the
+#                   sandbox; unset, fullsend picks one itself
 #   EVAL_REPO_VISIBILITY — visibility of the ephemeral fixture repos:
 #                   private (default) or public
 #   OPENAI_API_KEY — passed through to fullsend run for the codex and pi

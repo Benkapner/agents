@@ -210,7 +210,7 @@ calls during both execution and scoring.
 | `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |
 | `EVAL_EFFORT` | Effort override via `fullsend run --effort`. |
 | `EVAL_FORGE` | Forge passed to `fullsend run --forge`. Defaults to `github`; a local run otherwise resolves no forge and fullsend's pre-code step fails. |
-| `EVAL_SANDBOX_BINARY` | Path of the Linux `fullsend` binary copied into the sandbox. Defaults to the `fullsend` on PATH; set it on a macOS host, where that binary cannot run in the sandbox. |
+| `EVAL_SANDBOX_BINARY` | Optional: a specific Linux `fullsend` binary to copy into the sandbox, passed as `fullsend run --fullsend-binary`. Unset, `fullsend` picks the binary itself: its own executable on Linux, and on another OS a Linux build it fetches or makes. |
 | `OPENAI_API_KEY` | Passed through to `fullsend run` for the pi and codex runtimes when set (kept on the runner per ADR 0092). |
 | `EVAL_TIER` | `full` or `release` — see [Tiers](#tiers) above. Defaults to `release` under a cross-repo Actions `workflow_call`, `full` otherwise. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account key file for Vertex AI. |

@@ -22,9 +22,9 @@
 #   EVAL_TIMEOUT    — runner timeout in seconds (default 1800)
 #   EVAL_FORGE      — forge passed as fullsend run --forge (default github; a
 #                     local run otherwise resolves no forge)
-#   EVAL_SANDBOX_BINARY — path of the Linux fullsend binary copied into the
-#                     sandbox (default: the fullsend on PATH); set it on a
-#                     macOS host
+#   EVAL_SANDBOX_BINARY — a specific Linux fullsend binary to copy into the
+#                     sandbox (fullsend run --fullsend-binary); unset, fullsend
+#                     picks one itself
 #   OPENAI_API_KEY  — passed through to fullsend run for the codex and pi
 #                     runtimes when set
 set -euo pipefail
@@ -261,10 +261,6 @@ install -m 0600 /dev/null "$ENV_FILE"
   [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]] && emit_env "GOOGLE_APPLICATION_CREDENTIALS" "${GOOGLE_APPLICATION_CREDENTIALS}"
 } > "$ENV_FILE"
 
-# The binary copied into the sandbox must be Linux; on a macOS host point
-# EVAL_SANDBOX_BINARY at a GOOS=linux build (CI runs on Linux and uses the
-# host binary as before).
-FULLSEND_BIN="${EVAL_SANDBOX_BINARY:-$(command -v fullsend)}"
 EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 
 mkdir -p "$OUTPUT_DIR"
@@ -277,6 +273,11 @@ override_args=()
 [[ -n "${EVAL_RUNTIME:-}" ]] && override_args+=(--runtime "$EVAL_RUNTIME")
 [[ -n "${EVAL_MODEL:-}" ]] && override_args+=(--model "$EVAL_MODEL")
 [[ -n "${EVAL_EFFORT:-}" ]] && override_args+=(--effort "$EVAL_EFFORT")
+# fullsend picks the binary it copies into the sandbox: its own executable on
+# Linux, and on another OS a Linux build it fetches or makes. Passing
+# --fullsend-binary switches that off, so pass it only when the caller names
+# a specific binary with EVAL_SANDBOX_BINARY.
+[[ -n "${EVAL_SANDBOX_BINARY:-}" ]] && override_args+=(--fullsend-binary "$EVAL_SANDBOX_BINARY")
 
 # Forge detection falls back to CI env vars (GITHUB_ACTIONS/GITLAB_CI), so a
 # local run resolves no forge and pre-code.sh fails on an empty
@@ -290,7 +291,6 @@ timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
   --target-repo "$TARGET_DIR" \
   --env-file "$ENV_FILE" \
   --output-dir "$OUTPUT_DIR" \
-  --fullsend-binary "$FULLSEND_BIN" \
   "${override_args[@]+"${override_args[@]}"}" \
   || rc=$?
 
