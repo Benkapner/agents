@@ -184,7 +184,18 @@ assert_fail "author != committer error lists both candidates" \
   GIT_COMMITTER_EMAIL="committer@example.com" \
   "${CHECK_SCRIPT}" "${MSG_MISSING}"
 
-# 11. Email differing only in case (case-insensitive email matching)
+# 11. Author name differing only in case (case-insensitive name matching per Probot dco.js)
+MSG_CASE_NAME="${TMPDIR}/msg_case_name.txt"
+cat > "${MSG_CASE_NAME}" <<EOF
+feat(case): author name differing in case
+
+Signed-off-by: test author <author@example.com>
+EOF
+
+assert_pass "author name differing only in case passes" \
+  run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_CASE_NAME}"
+
+# 12. Email differing only in case (case-insensitive email matching per Probot dco.js)
 MSG_CASE_EMAIL="${TMPDIR}/msg_case_email.txt"
 cat > "${MSG_CASE_EMAIL}" <<EOF
 feat(case): email differing in case
@@ -195,14 +206,14 @@ EOF
 assert_pass "email differing only in case passes" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_CASE_EMAIL}"
 
-# 12. Trailing whitespace on Signed-off-by line
+# 13. Trailing whitespace on Signed-off-by line
 MSG_TRAILING_WHITESPACE="${TMPDIR}/msg_trailing_whitespace.txt"
 printf "feat(trailing): trailing spaces on trailer\n\nSigned-off-by: Test Author <author@example.com>   \t  \n" > "${MSG_TRAILING_WHITESPACE}"
 
 assert_pass "trailing whitespace on Signed-off-by line is tolerated" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_TRAILING_WHITESPACE}"
 
-# 13. Case-insensitive Signed-off-by prefix (e.g. signed-off-by:)
+# 14. Case-insensitive Signed-off-by prefix (e.g. signed-off-by:)
 MSG_LOWER_PREFIX="${TMPDIR}/msg_lower_prefix.txt"
 cat > "${MSG_LOWER_PREFIX}" <<EOF
 feat(prefix): lowercase signed-off-by prefix
@@ -213,7 +224,39 @@ EOF
 assert_pass "case-insensitive Signed-off-by prefix passes" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_LOWER_PREFIX}"
 
-# 14. Commented-out sign-off fails
+# 15. Missing space after colon rejected (Probot exact format)
+MSG_NO_SPACE_COLON="${TMPDIR}/msg_no_space_colon.txt"
+cat > "${MSG_NO_SPACE_COLON}" <<EOF
+feat(format): missing space after colon
+
+Signed-off-by:Test Author <author@example.com>
+EOF
+
+assert_fail "missing space after colon fails" \
+  "Missing or mismatched DCO Signed-off-by trailer" \
+  run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_NO_SPACE_COLON}"
+
+# 16. Tab after colon rejected (Probot exact format)
+MSG_TAB_COLON="${TMPDIR}/msg_tab_colon.txt"
+printf "feat(format): tab after colon\n\nSigned-off-by:\tTest Author <author@example.com>\n" > "${MSG_TAB_COLON}"
+
+assert_fail "tab after colon fails" \
+  "Missing or mismatched DCO Signed-off-by trailer" \
+  run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_TAB_COLON}"
+
+# 17. Missing space before < rejected (Probot exact format)
+MSG_NO_SPACE_LT="${TMPDIR}/msg_no_space_lt.txt"
+cat > "${MSG_NO_SPACE_LT}" <<EOF
+feat(format): missing space before email
+
+Signed-off-by: Test Author<author@example.com>
+EOF
+
+assert_fail "missing space before < fails" \
+  "Missing or mismatched DCO Signed-off-by trailer" \
+  run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_NO_SPACE_LT}"
+
+# 18. Commented-out sign-off fails
 MSG_COMMENTED="${TMPDIR}/msg_commented.txt"
 cat > "${MSG_COMMENTED}" <<EOF
 refactor(core): clean up functions
@@ -225,7 +268,19 @@ assert_fail "commented-out sign-off fails" \
   "Missing or mismatched DCO Signed-off-by trailer" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_COMMENTED}"
 
-# 15. Sign-off below scissors cutoff line is discarded by git and must fail
+# 19. Commented look-alike scissors line (# --- 8< ---) does not cut off validation
+MSG_LOOKALIKE_SCISSORS="${TMPDIR}/msg_lookalike_scissors.txt"
+cat > "${MSG_LOOKALIKE_SCISSORS}" <<EOF
+feat(scissors): commented look-alike scissors line
+
+# --- 8< ---
+Signed-off-by: Test Author <author@example.com>
+EOF
+
+assert_pass "commented look-alike scissors line does not cut off validation" \
+  run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_LOOKALIKE_SCISSORS}"
+
+# 20. Sign-off below exact scissors cutoff line is discarded by git and must fail
 MSG_BELOW_SCISSORS="${TMPDIR}/msg_below_scissors.txt"
 cat > "${MSG_BELOW_SCISSORS}" <<EOF
 feat(scissors): commit with sign-off below scissors line
@@ -238,7 +293,7 @@ assert_fail "sign-off below scissors line fails" \
   "Missing or mismatched DCO Signed-off-by trailer" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_BELOW_SCISSORS}"
 
-# 16. Sign-off above scissors line passes
+# 21. Sign-off above scissors line passes
 MSG_ABOVE_SCISSORS="${TMPDIR}/msg_above_scissors.txt"
 cat > "${MSG_ABOVE_SCISSORS}" <<EOF
 feat(scissors): commit with sign-off above scissors line
@@ -251,7 +306,7 @@ EOF
 assert_pass "sign-off above scissors line passes" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_ABOVE_SCISSORS}"
 
-# 17. Uncommented '--- >8 ---' in commit body does not truncate message
+# 22. Uncommented '--- >8 ---' in commit body does not truncate message
 MSG_UNCOMMENTED_SCISSORS="${TMPDIR}/msg_uncommented_scissors.txt"
 cat > "${MSG_UNCOMMENTED_SCISSORS}" <<EOF
 feat(scissors): commit message with uncommented scissors text
@@ -266,7 +321,7 @@ EOF
 assert_pass "uncommented '--- >8 ---' in body does not truncate message" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_UNCOMMENTED_SCISSORS}"
 
-# 18. Author name containing backslash is read verbatim via ENVIRON (no awk -v escape)
+# 23. Author name containing backslash is read verbatim via ENVIRON (no awk -v escape)
 MSG_BACKSLASH="${TMPDIR}/msg_backslash.txt"
 cat > "${MSG_BACKSLASH}" <<'EOF'
 feat(author): author name with backslash
@@ -280,7 +335,7 @@ assert_pass "author name containing backslash is matched verbatim" \
   GIT_AUTHOR_EMAIL='author@example.com' \
   "${CHECK_SCRIPT}" "${MSG_BACKSLASH}"
 
-# 19. Respect custom core.commentChar (e.g. ';')
+# 24. Respect custom core.commentChar (e.g. ';')
 CUSTOM_REPO="${TMPDIR}/custom_repo"
 mkdir -p "${CUSTOM_REPO}"
 git -C "${CUSTOM_REPO}" init -q
@@ -299,15 +354,16 @@ assert_fail "commented-out sign-off with custom core.commentChar fails" \
   "Missing or mismatched DCO Signed-off-by trailer" \
   run_in_repo "${CUSTOM_REPO}" "${CHECK_SCRIPT}" "${MSG_CUSTOM_COMMENT}"
 
-# 20. Bot author skipped (dependabot[bot])
+# 25. Bot author skipped (dependabot[bot])
 assert_pass "bot author skipped without sign-off" \
   run_in_repo "${FIXTURE_REPO}" env \
   GIT_AUTHOR_NAME="dependabot[bot]" \
   GIT_AUTHOR_EMAIL="49699333+dependabot[bot]@users.noreply.github.com" \
   "${CHECK_SCRIPT}" "${MSG_MISSING}"
 
-# 21. Bot committer skipped (github-actions[bot])
-assert_pass "bot committer skipped without sign-off" \
+# 26. Bot committer does not exempt human author (matching Probot dco.js author.type === "Bot")
+assert_fail "bot committer does not exempt human author without sign-off" \
+  "Missing or mismatched DCO Signed-off-by trailer" \
   run_in_repo "${FIXTURE_REPO}" env \
   GIT_AUTHOR_NAME="Human Contributor" \
   GIT_AUTHOR_EMAIL="human@example.com" \
@@ -315,21 +371,21 @@ assert_pass "bot committer skipped without sign-off" \
   GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
   "${CHECK_SCRIPT}" "${MSG_MISSING}"
 
-# 22. Bot author with uppercase [BOT] in name skipped
+# 27. Bot author with uppercase [BOT] in name skipped
 assert_pass "bot author uppercase [BOT] skipped" \
   run_in_repo "${FIXTURE_REPO}" env \
   GIT_AUTHOR_NAME="ci-bot[BOT]" \
   GIT_AUTHOR_EMAIL="ci@example.com" \
   "${CHECK_SCRIPT}" "${MSG_MISSING}"
 
-# 23. Autonomous agent bot without [bot] in name but with GitHub bot noreply email skipped
+# 28. Autonomous agent bot without [bot] in name but with GitHub bot noreply email skipped
 assert_pass "agent bot noreply email skipped without sign-off" \
   run_in_repo "${FIXTURE_REPO}" env \
   GIT_AUTHOR_NAME="fullsend-ai-coder" \
   GIT_AUTHOR_EMAIL="12345+fullsend-ai-coder[bot]@users.noreply.github.com" \
   "${CHECK_SCRIPT}" "${MSG_MISSING}"
 
-# 24. Human author with +[bot] in custom email is NOT exempt and fails without sign-off
+# 29. Human author with +[bot] in custom email is NOT exempt and fails without sign-off
 assert_fail "human with +[bot] in email is not exempt" \
   "Missing or mismatched DCO Signed-off-by trailer" \
   run_in_repo "${FIXTURE_REPO}" env \
@@ -337,7 +393,7 @@ assert_fail "human with +[bot] in email is not exempt" \
   GIT_AUTHOR_EMAIL="human+[bot]@example.com" \
   "${CHECK_SCRIPT}" "${MSG_MISSING}"
 
-# 25. Merge commit with MERGE_HEAD skipped
+# 30. Merge commit with MERGE_HEAD skipped
 MERGE_REPO="${TMPDIR}/merge_repo"
 mkdir -p "${MERGE_REPO}"
 git -C "${MERGE_REPO}" init -q
@@ -348,7 +404,7 @@ touch "${MERGE_REPO}/.git/MERGE_HEAD"
 assert_pass "merge commit with MERGE_HEAD skipped without sign-off" \
   run_in_repo "${MERGE_REPO}" "${CHECK_SCRIPT}" "${MSG_MISSING}"
 
-# 26. Single-parent commit starting with "Merge " without MERGE_HEAD requires sign-off
+# 31. Single-parent commit starting with "Merge " without MERGE_HEAD requires sign-off
 MSG_MERGE="${TMPDIR}/msg_merge.txt"
 cat > "${MSG_MERGE}" <<EOF
 Merge branch 'feature-branch' into main
@@ -360,12 +416,12 @@ assert_fail "single-parent commit starting with 'Merge ' requires sign-off" \
   "Missing or mismatched DCO Signed-off-by trailer" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${MSG_MERGE}"
 
-# 27. Missing argument fails
+# 32. Missing argument fails
 assert_fail "missing argument fails" \
   "Commit message file argument missing" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}"
 
-# 28. Non-existent file fails
+# 33. Non-existent file fails
 assert_fail "non-existent file fails" \
   "not found" \
   run_in_repo "${FIXTURE_REPO}" "${CHECK_SCRIPT}" "${TMPDIR}/does_not_exist.txt"

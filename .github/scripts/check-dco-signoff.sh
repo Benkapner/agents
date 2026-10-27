@@ -55,16 +55,17 @@ if [[ -z "${committer_name}" || -z "${committer_email}" || "${committer_email}" 
   exit 1
 fi
 
-# Skip [bot] git authors/committers:
-# Match if the name has [bot] (e.g. dependabot[bot], github-actions[bot])
-# or if the email is a GitHub bot noreply email (*[bot]@users.noreply.github.com)
+# Skip [bot] git authors:
+# Match if the author name has [bot] (e.g. dependabot[bot], github-actions[bot])
+# or if the author email is a GitHub bot noreply email (*[bot]@users.noreply.github.com),
+# matching Probot dco.js (author.type === "Bot").
 is_bot() {
   local name="$1"
   local email="$2"
   [[ "${name}" =~ \[[bB][oO][tT]\] ]] || [[ "${email}" =~ \[[bB][oO][tT]\]@users\.noreply\.github\.com$ ]]
 }
 
-if is_bot "${author_name}" "${author_email}" || is_bot "${committer_name}" "${committer_email}"; then
+if is_bot "${author_name}" "${author_email}"; then
   exit 0
 fi
 
@@ -82,7 +83,7 @@ fi
 # Uses a single awk process reading the file directly to avoid pipeline SIGPIPE issues.
 # Matches Probot dco.js behavior: accepts a Signed-off-by trailer whose name is in
 # {author_name, committer_name} and whose email is in {author_email, committer_email}
-# (case-insensitive for email and Signed-off-by prefix, tolerating trailing whitespace).
+# (case-insensitive for name, email and Signed-off-by prefix, tolerating trailing whitespace).
 # Author and committer idents are passed via environment variables so awk ENVIRON
 # reads them verbatim without interpreting backslash escapes (unlike awk -v).
 if ! AUTHOR_NAME="${author_name}" \
@@ -92,9 +93,9 @@ if ! AUTHOR_NAME="${author_name}" \
      COMMENT_CHAR="${comment_char}" \
      awk '
   BEGIN {
-    author_name = ENVIRON["AUTHOR_NAME"]
+    author_name = tolower(ENVIRON["AUTHOR_NAME"])
     author_email = tolower(ENVIRON["AUTHOR_EMAIL"])
-    committer_name = ENVIRON["COMMITTER_NAME"]
+    committer_name = tolower(ENVIRON["COMMITTER_NAME"])
     committer_email = tolower(ENVIRON["COMMITTER_EMAIL"])
     cchar = ENVIRON["COMMENT_CHAR"]
     found = 0
@@ -102,24 +103,20 @@ if ! AUTHOR_NAME="${author_name}" \
   {
     sub(/\r$/, "")
     sub(/[ \t]+$/, "")
-    cur = $0
-    sub(/^[ \t]+/, "", cur)
 
-    # Check if line begins with comment_char
-    if (length(cur) >= length(cchar) && substr(cur, 1, length(cchar)) == cchar) {
-      rem = substr(cur, length(cchar) + 1)
-      # Git scissors line: commentChar + space + dashes + (>8 or 8<) + dashes
-      # e.g. "# ------------------------ >8 ------------------------"
-      if (rem ~ /^[ \t]+-+.*(>8|8<).*-+/) {
+    # Only lines starting with comment_char at column 1 are comments
+    if (length($0) >= length(cchar) && substr($0, 1, length(cchar)) == cchar) {
+      # Git scissors line: commentChar + " ------------------------ >8 ------------------------"
+      if ($0 == cchar " ------------------------ >8 ------------------------") {
         exit
       }
       next
     }
 
-    # Case-insensitive check for Signed-off-by prefix
-    if (tolower(substr($0, 1, 14)) == "signed-off-by:") {
-      rest = substr($0, 15)
-      sub(/^[ \t]+/, "", rest)
+    # Probot dco.js format: /^Signed-off-by: (.*) <(.*)>\s*$/i
+    # Requires column-1 "Signed-off-by: " with exact single space after colon
+    if (tolower(substr($0, 1, 15)) == "signed-off-by: ") {
+      rest = substr($0, 16)
       if (substr(rest, length(rest)) == ">") {
         idx = 0
         for (i = length(rest) - 1; i >= 1; i--) {
@@ -128,14 +125,16 @@ if ! AUTHOR_NAME="${author_name}" \
             break
           }
         }
-        if (idx > 1) {
-          line_name = substr(rest, 1, idx - 1)
-          sub(/[ \t]+$/, "", line_name)
-          line_email = tolower(substr(rest, idx + 1, length(rest) - idx - 1))
-          name_match = (line_name == author_name || line_name == committer_name)
-          email_match = (line_email == author_email || line_email == committer_email)
-          if (name_match && email_match) {
-            found = 1
+        # Require space before "<", non-empty name, non-empty email, no ">" inside email
+        if (idx > 2 && substr(rest, idx - 1, 1) == " ") {
+          line_name = substr(rest, 1, idx - 2)
+          line_email = substr(rest, idx + 1, length(rest) - idx - 1)
+          if (length(line_name) > 0 && length(line_email) > 0 && index(line_email, ">") == 0) {
+            name_match = (tolower(line_name) == author_name || tolower(line_name) == committer_name)
+            email_match = (tolower(line_email) == author_email || tolower(line_email) == committer_email)
+            if (name_match && email_match) {
+              found = 1
+            }
           }
         }
       }
