@@ -2899,7 +2899,7 @@ run_gitlab_disposition_case "gitlab-dismissed-by-human-closes-by-id" \
 
 # GitLab keeps the line a note was written on, so it cannot show the
 # dismissed line is unchanged: a category rename there still mints.
-MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.path = "a.go" | .line = 10 | .comments[0].body = "<!-- finding:f_old --> Logic issue.")' <<< "${GITLAB_HUMAN_DISMISSAL_RESPONSE}")"
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.path = "a.go" | .line = 10 | .old_line = 10 | .comments[0].body = "<!-- finding:f_old --> Logic issue.")' <<< "${GITLAB_HUMAN_DISMISSAL_RESPONSE}")"
 export MOCK_REVIEW_THREADS_RESPONSE
 run_gitlab_disposition_case "gitlab-dismissal-category-change-mints" \
   "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
